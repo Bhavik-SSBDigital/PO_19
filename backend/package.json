@@ -1,0 +1,26 @@
+{
+  "name": "aia-p2p-audit-backend-postgres",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node api.js",
+    "create-admin": "node createAdmin.js",
+    "seed": "node seed.js",
+    "add-po": "node addpo.js",
+    "prisma:generate": "prisma generate",
+    "prisma:push": "prisma db push",
+    "prisma:studio": "prisma studio"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "body-parser": "^1.20.2",
+    "dotenv": "^16.4.5",
+    "@prisma/client": "^5.18.0",
+    "bcryptjs": "^2.4.3",
+    "axios": "^1.7.2"
+  },
+  "devDependencies": {
+    "prisma": "^5.18.0"
+  }
+}

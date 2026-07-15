@@ -1,0 +1,113 @@
+From: John Smith <john.smith@example.com>
+To: Alice Johnson <alice.johnson@example.com>
+Cc: team@example.com
+Subject: Re: Project Proposal Review
+Date: Fri, 21 Jun 2024 11:20:00 +0000
+Message-ID: <msg3@example.com>
+In-Reply-To: <msg2@example.com>
+References: <msg1@example.com> <msg2@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="OUTER-BOUNDARY-1001"
+
+--OUTER-BOUNDARY-1001
+Content-Type: multipart/alternative; boundary="ALT-BOUNDARY-2001"
+
+--ALT-BOUNDARY-2001
+Content-Type: text/plain; charset="utf-8"
+
+Hi Alice,
+
+Thanks for reviewing everything.
+
+Friday at 2:00 PM works perfectly. Looking forward to discussing the proposal and implementation plan.
+
+Best,
+John
+
+On Thu, 20 Jun 2024 16:45:00 +0000, Alice Johnson <alice.johnson@example.com> wrote:
+> Hi John,
+>
+> I reviewed the proposal. Everything looks good.
+> I've attached the implementation checklist so the team can prepare.
+>
+> Regards,
+> Alice
+>
+> On Thu, 20 Jun 2024 09:00:00 +0000, John Smith <john.smith@example.com> wrote:
+> > Hi Alice,
+> >
+> > Please find attached the updated project proposal.
+> > Let me know if you have any comments before Friday's meeting.
+> >
+> > Thanks,
+> > John
+
+--ALT-BOUNDARY-2001
+Content-Type: text/html; charset="utf-8"
+
+<html>
+<body>
+<p>Hi Alice,</p>
+
+<p>Thanks for reviewing everything.</p>
+
+<p>Friday at <b>2:00 PM</b> works perfectly. Looking forward to discussing the proposal and implementation plan.</p>
+
+<p>Best,<br>John</p>
+
+<blockquote>
+<p><b>On Thu, 20 Jun 2024 16:45:00 +0000, Alice Johnson wrote:</b></p>
+
+<p>Hi John,</p>
+
+<p>I reviewed the proposal. Everything looks good.
+I've attached the implementation checklist so the team can prepare.</p>
+
+<p>Regards,<br>Alice</p>
+
+<blockquote>
+<p><b>On Thu, 20 Jun 2024 09:00:00 +0000, John Smith wrote:</b></p>
+
+<p>Hi Alice,</p>
+
+<p>Please find attached the updated project proposal.
+Let me know if you have any comments before Friday's meeting.</p>
+
+<p>Thanks,<br>John</p>
+
+</blockquote>
+</blockquote>
+
+</body>
+</html>
+
+--ALT-BOUNDARY-2001--
+
+--OUTER-BOUNDARY-1001
+Content-Type: application/pdf; name="Project_Proposal.pdf"
+Content-Disposition: attachment; filename="Project_Proposal.pdf"
+Content-Transfer-Encoding: 7bit
+
+%PDF-1.4
+TEST FIXTURE - Placeholder PDF content.
+Project Proposal
+Version 2.0
+Prepared for review.
+%%EOF
+
+--OUTER-BOUNDARY-1001
+Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document; name="Implementation_Plan.docx"
+Content-Disposition: attachment; filename="Implementation_Plan.docx"
+Content-Transfer-Encoding: 7bit
+
+TEST FIXTURE - Placeholder DOCX content.
+
+Implementation Plan
+
+1. Finalize requirements
+2. Create development environment
+3. Begin implementation
+4. Perform QA testing
+5. Deploy to production
+
+--OUTER-BOUNDARY-1001--
