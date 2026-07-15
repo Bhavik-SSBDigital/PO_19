@@ -7,7 +7,7 @@ yarn-error.log*
 # Frontend Builds (Vite/React)
 dist/
 dist-ssr/
-build/
+
 
 # Environment Variables (Never commit secrets!)
 .env
