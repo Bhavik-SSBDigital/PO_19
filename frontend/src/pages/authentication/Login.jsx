@@ -22,7 +22,7 @@ const Login = () => (
         mb: 3,
       }}
     >
-      AI Enabled Digital Audit
+      AI Based P2P Compliance
     </Typography> */}
     <Typography
       variant="h4"

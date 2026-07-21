@@ -5,7 +5,20 @@ import {
   classifyPoint,
   exceptionPointsOf,
   pointLabel,
+  ensureSeverityLoaded,
 } from "../utility/severity.js";
+import {
+  getVendorName,
+  getPlantName,
+  getPurchaseGroupName,
+  getPaymentTermDescription,
+  getPoTypeName,
+} from "../utility/master-data.js";
+import {
+  POINT_DEFINITIONS_BY_NO,
+  KPI_DEFINITIONS,
+  CHART_DEFINITIONS,
+} from "../utility/point-reference.js";
 
 const PURCHASE_GROUPS = [
   "P02",
@@ -83,11 +96,71 @@ const ROW_SELECT = {
   material_code: true,
   material_disc: true,
   net_value: true,
+  payment_term: true,
   results: true,
 };
 
+// Bucket helper shared by plant/vendor/PO-number groupings so every one of
+// them ends up with the same enrichment PO-Wise Exceptions already has:
+// vendor/plant/PO-type/purchasing-group names + the actual line item
+// numbers involved (never just a bare code/PO number).
+function newRichBucket() {
+  return {
+    count: 0,
+    pos: new Set(),
+    lineItems: new Set(),
+    valueExposure: 0,
+    vendorCode: null,
+    vendorName: null,
+    poType: null,
+    plant: null,
+    purchaseGroup: null,
+    paymentTerm: null,
+  };
+}
+
+function fillRichBucket(bucket, row) {
+  bucket.count += 1;
+  bucket.pos.add(row.po_number);
+  if (lineItemOf(row)) bucket.lineItems.add(lineItemOf(row));
+  bucket.valueExposure += parseNum(row.net_value);
+  if (!bucket.vendorName && (row.nameOfVendor || row.vendor_code))
+    bucket.vendorName = row.nameOfVendor || getVendorName(row.vendor_code);
+  if (!bucket.vendorCode && row.vendor_code)
+    bucket.vendorCode = row.vendor_code;
+  if (!bucket.poType && row.po_type) bucket.poType = row.po_type;
+  if (!bucket.plant && row.plant) bucket.plant = row.plant;
+  if (!bucket.purchaseGroup && row.purchase_group)
+    bucket.purchaseGroup = row.purchase_group;
+  if (!bucket.paymentTerm && row.payment_term)
+    bucket.paymentTerm = row.payment_term;
+}
+
+function richBucketToJson(key, bucket) {
+  return {
+    key,
+    value: bucket.count,
+    poCount: bucket.pos.size,
+    lineItems: [...bucket.lineItems].sort(),
+    distinctLineItems: bucket.lineItems.size,
+    valueExposure: Number(bucket.valueExposure.toFixed(2)),
+    vendorCode: bucket.vendorCode,
+    vendorName: bucket.vendorName || getVendorName(bucket.vendorCode),
+    poType: bucket.poType,
+    poTypeName: getPoTypeName(bucket.poType),
+    plant: bucket.plant,
+    plantName: getPlantName(bucket.plant),
+    purchaseGroup: bucket.purchaseGroup,
+    purchaseGroupName: getPurchaseGroupName(bucket.purchaseGroup),
+    paymentTerm: bucket.paymentTerm,
+    paymentTermDescription: getPaymentTermDescription(bucket.paymentTerm),
+  };
+}
+
 export const getExecutiveSummary = async (req, res) => {
   try {
+    await ensureSeverityLoaded();
+
     const where = buildWhere(req.body || {});
     const rows = await prisma.auditResult.findMany({
       where,
@@ -178,16 +251,8 @@ export const getExecutiveSummary = async (req, res) => {
           byPoType[row.po_type || "Unknown"].notVerified++;
 
           const poKey = row.po_number || "Unassigned";
-
-          byPoNumber[poKey] = byPoNumber[poKey] || {
-            notVerifiedPoints: 0,
-            lines: new Set(),
-            valueExposure: 0,
-          };
-
-          byPoNumber[poKey].notVerifiedPoints++;
-          byPoNumber[poKey].lines.add(uniqueKeyOf(row));
-          byPoNumber[poKey].valueExposure += parseNum(row.net_value);
+          byPoNumber[poKey] = byPoNumber[poKey] || newRichBucket();
+          fillRichBucket(byPoNumber[poKey], row);
 
           const severity = severityOf(pointNo);
           bySeverity[severity] = (bySeverity[severity] || 0) + 1;
@@ -209,10 +274,13 @@ export const getExecutiveSummary = async (req, res) => {
           vendorName: row.nameOfVendor || null,
           poType: row.po_type || null,
           plant: row.plant || null,
+          purchaseGroup: row.purchase_group || null,
+          paymentTerm: row.payment_term || null,
         };
         byPo[poKey].count += 1;
         byPo[poKey].pos.add(row.po_number);
         byPo[poKey].lineItems.add(uniqueKeyOf(row));
+        if (lineItemOf(row)) byPo[poKey].lineItems.add(lineItemOf(row));
         byPo[poKey].valueExposure += parseNum(row.net_value);
         if (!byPo[poKey].vendorName && row.nameOfVendor)
           byPo[poKey].vendorName = row.nameOfVendor;
@@ -221,29 +289,18 @@ export const getExecutiveSummary = async (req, res) => {
         if (!byPo[poKey].poType && row.po_type)
           byPo[poKey].poType = row.po_type;
         if (!byPo[poKey].plant && row.plant) byPo[poKey].plant = row.plant;
+        if (!byPo[poKey].purchaseGroup && row.purchase_group)
+          byPo[poKey].purchaseGroup = row.purchase_group;
+        if (!byPo[poKey].paymentTerm && row.payment_term)
+          byPo[poKey].paymentTerm = row.payment_term;
 
         const plantKey = row.plant || "Unassigned";
-        byPlant[plantKey] = byPlant[plantKey] || {
-          count: 0,
-          pos: new Set(),
-          valueExposure: 0,
-        };
-        byPlant[plantKey].count += 1;
-        byPlant[plantKey].pos.add(row.po_number);
-        byPlant[plantKey].valueExposure += parseNum(row.net_value);
+        byPlant[plantKey] = byPlant[plantKey] || newRichBucket();
+        fillRichBucket(byPlant[plantKey], row);
 
         const vendorKey = row.vendor_code || "Unassigned";
-        byVendor[vendorKey] = byVendor[vendorKey] || {
-          count: 0,
-          pos: new Set(),
-          valueExposure: 0,
-          name: row.nameOfVendor,
-        };
-        byVendor[vendorKey].count += 1;
-        byVendor[vendorKey].pos.add(row.po_number);
-        byVendor[vendorKey].valueExposure += parseNum(row.net_value);
-        if (!byVendor[vendorKey].name && row.nameOfVendor)
-          byVendor[vendorKey].name = row.nameOfVendor;
+        byVendor[vendorKey] = byVendor[vendorKey] || newRichBucket();
+        fillRichBucket(byVendor[vendorKey], row);
 
         if (row.po_created_date) {
           const monthKey = new Date(row.po_created_date)
@@ -273,24 +330,25 @@ export const getExecutiveSummary = async (req, res) => {
       Object.entries(obj)
         .sort((a, b) => b[1].count - a[1].count)
         .slice(0, n)
-        .map(([key, v]) => ({
-          key,
-          value: v.count,
-          poCount: v.pos.size,
-          valueExposure: Number(v.valueExposure.toFixed(2)),
-          ...(v.name ? { name: v.name } : {}),
-        }));
+        .map(([key, v]) => richBucketToJson(key, v));
 
     const poWiseExceptionsAll = Object.entries(byPo)
       .sort((a, b) => b[1].count - a[1].count)
       .map(([poNumber, v]) => ({
         poNumber,
         vendorCode: v.vendorCode,
-        vendorName: v.vendorName,
+        vendorName: v.vendorName || getVendorName(v.vendorCode),
         poType: v.poType,
+        poTypeName: getPoTypeName(v.poType),
         plant: v.plant,
+        plantName: getPlantName(v.plant),
+        purchaseGroup: v.purchaseGroup,
+        purchaseGroupName: getPurchaseGroupName(v.purchaseGroup),
+        paymentTerm: v.paymentTerm,
+        paymentTermDescription: getPaymentTermDescription(v.paymentTerm),
         exceptionLineCount: v.count,
         distinctLineItems: v.lineItems.size,
+        lineItems: [...v.lineItems].sort(),
         valueExposure: Number(v.valueExposure.toFixed(2)),
       }));
 
@@ -298,6 +356,8 @@ export const getExecutiveSummary = async (req, res) => {
       filtersApplied: req.body || {},
       validPurchaseGroups: PURCHASE_GROUPS,
       generatedAt: new Date().toISOString(),
+      kpiDefinitions: KPI_DEFINITIONS,
+      chartDefinitions: CHART_DEFINITIONS,
       kpis: {
         totalPOCount: poNumbers.size,
         totalPOLineItems: rows.length,
@@ -317,6 +377,9 @@ export const getExecutiveSummary = async (req, res) => {
             pointNo,
             severity: severityOf(pointNo),
             label: pointLabel(pointNo),
+            title:
+              POINT_DEFINITIONS_BY_NO[pointNo]?.title || pointLabel(pointNo),
+            summary: POINT_DEFINITIONS_BY_NO[pointNo]?.summary || "",
             compliancePct:
               v.verified + v.notVerified > 0
                 ? Number(
@@ -346,6 +409,7 @@ export const getExecutiveSummary = async (req, res) => {
         purchaseGroupCompliance: Object.entries(byPurchaseGroup).map(
           ([group, v]) => ({
             purchaseGroup: group,
+            purchaseGroupName: getPurchaseGroupName(group),
             compliancePct:
               v.verified + v.notVerified > 0
                 ? Number(
@@ -358,19 +422,15 @@ export const getExecutiveSummary = async (req, res) => {
             notVerified: v.notVerified,
           }),
         ),
-        plantWiseExceptions: topN(byPlant),
+        plantWiseExceptions: topN(byPlant, 10),
         poNumberWiseExceptions: Object.entries(byPoNumber)
-          .sort((a, b) => b[1].notVerifiedPoints - a[1].notVerifiedPoints)
+          .sort((a, b) => b[1].count - a[1].count)
           .slice(0, 15)
-          .map(([key, v]) => ({
-            key,
-            value: v.notVerifiedPoints,
-            lineCount: v.lines.size,
-            valueExposure: Number(v.valueExposure.toFixed(2)),
-          })),
-        vendorWiseTopExceptions: topN(byVendor),
+          .map(([key, v]) => richBucketToJson(key, v)),
+        vendorWiseTopExceptions: topN(byVendor, 10),
         poTypeWiseCompliance: Object.entries(byPoType).map(([poType, v]) => ({
           poType,
+          poTypeName: getPoTypeName(poType),
           verified: v.verified,
           notVerified: v.notVerified,
           compliancePct:
@@ -426,28 +486,45 @@ export const getFilterOptions = async (req, res) => {
     const vendorMap = new Map();
     for (const v of vendors) {
       if (!vendorMap.has(v.vendor_code))
-        vendorMap.set(v.vendor_code, v.nameOfVendor || "");
+        vendorMap.set(
+          v.vendor_code,
+          v.nameOfVendor || getVendorName(v.vendor_code),
+        );
     }
 
+    const plantCodes = plants
+      .map((p) => p.plant)
+      .filter(Boolean)
+      .sort();
+    const poTypeCodes = poTypes
+      .map((p) => p.po_type)
+      .filter(Boolean)
+      .sort();
+    const purchaseGroupCodes = [
+      ...new Set([
+        ...PURCHASE_GROUPS,
+        ...groups.map((g) => g.purchase_group).filter(Boolean),
+      ]),
+    ].sort();
+
     res.status(200).json({
-      plants: plants
-        .map((p) => p.plant)
-        .filter(Boolean)
-        .sort(),
+      plants: plantCodes,
       vendors: [...vendorMap.entries()]
         .map(([code, name]) => ({ code, name }))
         .sort((a, b) => a.code.localeCompare(b.code)),
-      poTypes: poTypes
-        .map((p) => p.po_type)
-        .filter(Boolean)
-        .sort(),
-      purchaseGroups: [
-        ...new Set([
-          ...PURCHASE_GROUPS,
-          ...groups.map((g) => g.purchase_group).filter(Boolean),
-        ]),
-      ].sort(),
+      poTypes: poTypeCodes,
+      purchaseGroups: purchaseGroupCodes,
       severities: SEVERITY_LEVELS,
+      plantNames: Object.fromEntries(
+        plantCodes.map((c) => [c, getPlantName(c)]),
+      ),
+      poTypeNames: Object.fromEntries(
+        poTypeCodes.map((c) => [c, getPoTypeName(c)]),
+      ),
+      purchaseGroupNames: Object.fromEntries(
+        purchaseGroupCodes.map((c) => [c, getPurchaseGroupName(c)]),
+      ),
+      poTypeNamesAreAssumptions: true,
     });
   } catch (error) {
     console.error("Error in getFilterOptions:", error);
@@ -457,6 +534,8 @@ export const getFilterOptions = async (req, res) => {
 
 export const getExecutiveDrilldown = async (req, res) => {
   try {
+    await ensureSeverityLoaded();
+
     const {
       dimension,
       value,
@@ -537,18 +616,53 @@ export const getExecutiveDrilldown = async (req, res) => {
 
     const matchesStatusFilter = (row) =>
       !statusFilter || rowHasStatus(row, statusFilter);
-
     const filtered = rows.filter(
       (row) => matchesDimension(row) && matchesStatusFilter(row),
     );
+
     const take = Math.min(Number(pageSize) || 25, 200);
     const skip = (Math.max(Number(page) || 1, 1) - 1) * take;
-    const paged = filtered.slice(skip, skip + take).map((r) => ({
-      ...r,
-      lineItemKey: uniqueKeyOf(r),
-      lineItem: lineItemOf(r),
-      exceptionPoints: exceptionPointsOf(r),
-    }));
+
+    const paged = filtered.slice(skip, skip + take).map((r) => {
+      const exceptionPoints = exceptionPointsOf(r).map((ep) => ({
+        ...ep,
+        ...(POINT_DEFINITIONS_BY_NO[String(ep.pointNo)]
+          ? {
+              title: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].title,
+              summary: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].summary,
+              logic: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].logic,
+            }
+          : {}),
+      }));
+
+      // NOTE: po_status is intentionally NOT surfaced as a display field
+      // here - it's raw SAP data (e.g. "H") that frontend code has been
+      // relabeling as "PO HOLD" and showing as a "Status" column, which the
+      // client does not want anywhere in the drilldown tables. Every
+      // consumer of this endpoint should render from the fields below and
+      // drop any "Status" column from its table markup.
+      return {
+        id: r.id,
+        po_number: r.po_number,
+        lineItem: lineItemOf(r),
+        lineItemKey: uniqueKeyOf(r),
+        material_code: r.material_code,
+        material_disc: r.material_disc,
+        net_value: r.net_value,
+        vendorCode: r.vendor_code,
+        vendorName: r.nameOfVendor || getVendorName(r.vendor_code),
+        plant: r.plant,
+        plantName: getPlantName(r.plant),
+        poType: r.po_type,
+        poTypeName: getPoTypeName(r.po_type),
+        purchaseGroup: r.purchase_group,
+        purchaseGroupName: getPurchaseGroupName(r.purchase_group),
+        paymentTerm: r.payment_term,
+        paymentTermDescription: getPaymentTermDescription(r.payment_term),
+        po_created_date: r.po_created_date,
+        exceptionPoints,
+      };
+    });
 
     res.status(200).json({
       results: paged,

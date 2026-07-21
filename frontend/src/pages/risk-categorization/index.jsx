@@ -7,10 +7,10 @@ const RiskCategorization = () => {
       <Typography variant="h4" sx={{ fontWeight: 700 }} mb={2}>
         Risk Categorization Master
       </Typography>
-      {/* <Typography variant="body1" color="textSecondary" mb={2}>
-        This is the Risk Categorization Master. It defines set points for
-        categorizing risk levels as High, Medium, or Low
-      </Typography> */}
+      <Typography variant="body1" color="textSecondary" mb={2}>
+        Every audit checkpoint's number and description are fixed. As an admin you can change how critical each one is —
+        that's the only editable field — and it drives the "Exceptions by Severity" chart and "High-Risk Exceptions" KPI.
+      </Typography>
       <RiskCategorizationForm />
     </>
   );

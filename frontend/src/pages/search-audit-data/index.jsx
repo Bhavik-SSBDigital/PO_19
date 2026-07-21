@@ -28,14 +28,13 @@ import {
   DialogTitle,
   DialogContent,
 } from "@mui/material";
-
 import { toast } from "react-toastify";
 import { useSelector } from "react-redux";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
 import KeyboardBackspaceRoundedIcon from "@mui/icons-material/KeyboardBackspaceRounded";
 import CloseIcon from "@mui/icons-material/Close";
-
+import VisibilityIcon from "@mui/icons-material/Visibility";
 import { get, post } from "utils/axiosApi";
 import { ViewDocumentProvider } from "./contexts";
 import AuditDetails from "./components/audit-details";
@@ -50,22 +49,26 @@ const getLastFiveYears = () => {
 const SearchAuditData = () => {
   const navigate = useNavigate();
   const role = localStorage.getItem("role");
-
   const [searchParams] = useSearchParams();
   const { dataViewType } = useSelector((state) => state.menu);
-
+  
   const [searchLoading, setSearchLoading] = useState(false);
   const [viewDocUrl, setViewDocUrl] = useState(null);
-
   const [searchData, setSearchData] = useState();
+  
+  // NEW: State to handle multiple line items
+  const [multipleMatches, setMultipleMatches] = useState(null);
+
   const [searchInputs, setSearchInputs] = useState({
     documentNumber: "",
     paymentDocumentNumber: "",
     fiscalYear: "",
     grrNumber: "",
     PONumber: "",
+    poLineItem: "", // NEW
     poMaterialNumber: "",
   });
+  
   const [pomaterialNoOptions, setPOMaterialNoOptions] = useState([]);
 
   const handleSearch = async ({
@@ -74,6 +77,7 @@ const SearchAuditData = () => {
     fiscalYear = "",
     grrNumber = "",
     PONumber = "",
+    poLineItem = "",
     poMaterialNumber = "",
   }) => {
     if (
@@ -90,7 +94,7 @@ const SearchAuditData = () => {
       toast.info("Please select year");
       return;
     }
-
+    
     setSearchLoading(true);
     const endpoint = {
       PJV: "get_audit_result",
@@ -109,15 +113,18 @@ const SearchAuditData = () => {
         : {};
     payload =
       dataViewType === "PO"
-        ? { po_number: PONumber.trim(), fiscalYear }
+        ? { 
+            po_number: PONumber.trim(), 
+            fiscalYear,
+            po_line_item: poLineItem.trim(),
+            poMaterialNumber: poMaterialNumber.trim()
+          }
         : payload;
     payload =
       dataViewType === "BPV"
         ? {
-            documentNumber:
-              paymentDocumentNumber.trim() || documentNumber.trim(),
-            paymentDocumentNumber:
-              paymentDocumentNumber.trim() || documentNumber.trim(),
+            documentNumber: paymentDocumentNumber.trim() || documentNumber.trim(),
+            paymentDocumentNumber: paymentDocumentNumber.trim() || documentNumber.trim(),
             fiscalYear,
           }
         : payload;
@@ -133,10 +140,19 @@ const SearchAuditData = () => {
     try {
       const res = await post(`/${endpoint}`, payload);
       console.log("FULL RESPONSE:", res);
-console.log("AUDIT RESULT:", res);
-      setSearchData(res);
-      sessionStorage.setItem("searchInput-audit", JSON.stringify(searchInputs));
-      window.scrollTo({ top: 520, left: 0, behavior: "smooth" });
+      console.log("AUDIT RESULT:", res);
+      
+      // If backend returns multiple matches, open the selector dialog
+      if (res.multipleMatches) {
+        setMultipleMatches(res.results);
+        setSearchData(null);
+      } else {
+        // Direct hit - single record
+        setSearchData(res);
+        setMultipleMatches(null);
+        sessionStorage.setItem("searchInput-audit", JSON.stringify(searchInputs));
+        window.scrollTo({ top: 520, left: 0, behavior: "smooth" });
+      }
     } catch (error) {
       setSearchData();
       toast.error(
@@ -155,7 +171,6 @@ console.log("AUDIT RESULT:", res);
     const PONoParams = searchParams.get("PONo")?.trim();
     const poMaterialNo = searchParams.get("poMaterialNo")?.trim();
     const paymentDocumentNumber = searchParams.get("paymentDocumentNumber");
-
     const storedInput = sessionStorage.getItem("searchInput-audit");
     const searchInput = storedInput ? JSON.parse(storedInput) : null;
 
@@ -164,6 +179,8 @@ console.log("AUDIT RESULT:", res);
         documentNumber: documentNo || "",
         fiscalYear: year || "",
         PONumber: PONoParams || "",
+        poLineItem: "",
+        poMaterialNumber: poMaterialNo || "",
         paymentDocumentNumber: paymentDocumentNumber || "",
       };
       handleSearch(inputs);
@@ -175,9 +192,9 @@ console.log("AUDIT RESULT:", res);
         grrNumber = "",
         poMaterialNumber = "",
         PONumber = "",
+        poLineItem = "",
         paymentDocumentNumber = "",
       } = searchInput;
-
       if (
         documentNumber.trim() ||
         grrNumber.trim() ||
@@ -360,7 +377,6 @@ console.log("AUDIT RESULT:", res);
                   </Select>
                 </Box>
               )}
-
               {dataViewType === "PO" && (
                 <>
                   <Box sx={{ maxWidth: "400px", width: "100%" }}>
@@ -375,6 +391,7 @@ console.log("AUDIT RESULT:", res);
                         setSearchInputs({
                           ...searchInputs,
                           PONumber: e.target.value,
+                          poMaterialNumber: "",
                         });
                       }}
                       InputProps={{
@@ -390,6 +407,24 @@ console.log("AUDIT RESULT:", res);
                         ),
                       }}
                     />
+                    
+                    {/* NEW: Line Item Field */}
+                    <InputLabel sx={{ width: "100%", mt: "10px" }}>Line Item (Optional) :</InputLabel>
+                    <TextField
+                      disabled={searchLoading}
+                      placeholder="e.g., 10"
+                      name="poLineItem"
+                      value={searchInputs.poLineItem}
+                      fullWidth
+                      onChange={(e) => {
+                        setSearchInputs({
+                          ...searchInputs,
+                          poLineItem: e.target.value,
+                          poMaterialNumber: "",
+                        });
+                      }}
+                    />
+
                     <InputLabel sx={{ width: "100%", mt: "10px" }}>
                       Fiscal Year :
                     </InputLabel>
@@ -484,7 +519,6 @@ console.log("AUDIT RESULT:", res);
             }}
           >
             <AuditDetails auditDetails={searchData} />
-
             {dataViewType === "PO" &&
               searchData?.processDocuments &&
               searchData.processDocuments.length > 0 && (
@@ -574,13 +608,11 @@ console.log("AUDIT RESULT:", res);
                                         import.meta.env
                                           .VITE_APP_BACKEND_URL ||
                                         "http://localhost:5000";
-
                                       const fileUrl = `${baseUrl}/getDocument/${encodeURIComponent(
                                         doc.name
                                       )}?path=${encodeURIComponent(
                                         doc.path || ""
                                       )}`;
-
                                       if (isPdf) {
                                         setViewDocUrl(fileUrl);
                                       } else {
@@ -613,7 +645,6 @@ console.log("AUDIT RESULT:", res);
                   </TableContainer>
                 </Box>
               )}
-
             {role !== "isAuditor" ? (
               <AuditResults
                 searchData={searchData}
@@ -627,6 +658,80 @@ console.log("AUDIT RESULT:", res);
             )}
           </Card>
         )}
+
+        {/* NEW: Multiple Line Item Selector Dialog */}
+        <Dialog 
+          open={!!multipleMatches} 
+          onClose={() => setMultipleMatches(null)} 
+          maxWidth="md" 
+          fullWidth
+        >
+          <DialogTitle sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", bgcolor: "#f5f5f5", py: 1.5 }}>
+            <Typography variant="h5" fontWeight={700}>Select Line Item</Typography>
+            <IconButton onClick={() => setMultipleMatches(null)} size="small">
+              <CloseIcon />
+            </IconButton>
+          </DialogTitle>
+          <DialogContent sx={{ p: 0 }}>
+            <TableContainer>
+              <Table stickyHeader size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell sx={{ fontWeight: 600 }}>PO Number</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }}>Line Item</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }}>Material</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }}>Plant</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }}>Action</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {multipleMatches?.map((item) => (
+                    <TableRow key={item.id} hover>
+                      <TableCell>{item.po_number}</TableCell>
+                      <TableCell>
+                        <Typography fontWeight={700} color="primary">
+                          {item.po_line_item}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2" fontWeight={600}>{item.material_code}</Typography>
+                        <Typography variant="caption" color="textSecondary">
+                          {item.material_disc || "N/A"}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2">{item.plantName || item.plant}</Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Button
+                          size="small"
+                          variant="contained"
+                          disableElevation
+                          startIcon={<VisibilityIcon />}
+                          onClick={() => {
+                            setMultipleMatches(null); // Close dialog
+                            
+                            // Re-trigger search for exact Material Number match
+                            const exactPayload = { 
+                              ...searchInputs, 
+                              poMaterialNumber: item.po_material_number, 
+                              PONumber: item.po_number,
+                              poLineItem: item.po_line_item
+                            };
+                            setSearchInputs(exactPayload);
+                            handleSearch(exactPayload);
+                          }}
+                        >
+                          View
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </DialogContent>
+        </Dialog>
 
         <Dialog
           open={!!viewDocUrl}
@@ -664,5 +769,4 @@ console.log("AUDIT RESULT:", res);
     </ViewDocumentProvider>
   );
 };
-
 export default SearchAuditData;

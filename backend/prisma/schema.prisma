@@ -105,6 +105,15 @@ model Point {
   @@map("points")
 }
 
+
+// Add to schema.prisma
+model AuditPointConfig {
+  pointNo   Int      @id
+  severity  String   @default("Medium") // Critical | High | Medium | Low
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+}
+
 // ---------------------------------------------------------------------------
 // audit_results (models/audit_result.js) — the core transaction/audit table
 // ---------------------------------------------------------------------------

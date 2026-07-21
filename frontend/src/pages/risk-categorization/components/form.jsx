@@ -1,252 +1,110 @@
 import { useEffect, useState } from "react";
 import {
-  Button,
-  Checkbox,
-  CircularProgress,
-  Paper,
-  Stack,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
+  Paper, Table, TableHead, TableRow, TableCell, TableBody, TableContainer,
+  Select, MenuItem, Chip, Skeleton, Typography, Box,
 } from "@mui/material";
-
-import { useSelector } from "react-redux";
-
-// toast messages
 import { toast } from "react-toastify";
-
 import { get, post } from "utils/axiosApi";
-import { TableSkeleton } from "../../../components/Skeletons";
+
+const SEVERITY_COLORS = { Critical: "#c0392b", High: "#e67e22", Medium: "#f1c40f", Low: "#95a5a6" };
+const DEFAULT_SEVERITY_LEVELS = ["Critical", "High", "Medium", "Low"];
 
 const RiskCategorizationForm = () => {
-  const isExecutor = localStorage.getItem("role") === "isExecutor";
-  const { dataViewType } = useSelector((state) => state.menu);
-  const [data, setData] = useState([]);
-  const [initialDataCopy, setInitialDataCopy] = useState([]);
-  const [saveLoading, setSaveLoading] = useState(false);
+  const [points, setPoints] = useState([]);
+  const [severityLevels, setSeverityLevels] = useState(DEFAULT_SEVERITY_LEVELS);
+  const [loading, setLoading] = useState(true);
+  const [savingPointNo, setSavingPointNo] = useState(null);
 
-  //   handlers
-  const handleCheckboxChange = (id, type) => {
-    if (isExecutor) return;
-    setData((prevData) =>
-      prevData.map((item) => {
-        if (item._id === id) {
-          return {
-            ...item,
-            high: type === "high" ? (item.high ? false : true) : false,
-            medium: type === "medium" ? (item.medium ? false : true) : false,
-            low: type === "low" ? (item.low ? false : true) : false,
-          };
-        }
-        return item;
-      })
-    );
-  };
-  const handleResetForm = async () => {
-  if (isExecutor) return;
+  // Adjust this to however your app actually determines the logged-in
+  // user's role (redux store, decoded JWT, etc.) - localStorage.role is
+  // what SearchAuditData.jsx in this codebase already reads elsewhere.
+  const role = localStorage.getItem("role");
+  const isAdmin = role === "admin" || role === "isAdmin";
 
-  const resetData = data.map((item) => ({
-    ...item,
-    high: false,
-    medium: false,
-    low: false,
-  }));
-
-  setSaveLoading(true);
-  try {
-    await post(`/editPoints`, {
-      type: dataViewType,
-      points: resetData,
-    });
-
-    await get(`/clearCache`);
-
-    setData(resetData);
-    setInitialDataCopy(resetData);
-
-    toast.success("All points reset successfully");
-  } catch (error) {
-    toast.error(error?.response?.data?.message || error?.message);
-  } finally {
-    setSaveLoading(false);
-  }
-};
-  const handleSaveChanges = async () => {
-    let isDataModified = false;
-    data.forEach((originalObj, index) => {
-      const modifiedObj = initialDataCopy[index];
-      // Compare the properties
-      if (originalObj.high !== modifiedObj.high) {
-        isDataModified = true;
-      }
-
-      if (originalObj.medium !== modifiedObj.medium) {
-        isDataModified = true;
-      }
-
-      if (originalObj.low !== modifiedObj.low) {
-        isDataModified = true;
-      }
-    });
-    if (isDataModified) {
-      setSaveLoading(true);
-      try {
-        await post(`/editPoints`, {
-          type: dataViewType,
-          points: data,
-        });
-        await get(`/clearCache`);
-        toast.success("Saved changes");
-        setInitialDataCopy(data);
-      } catch (error) {
-        toast.error(error?.response?.data?.message || error?.message);
-      }
-      setSaveLoading(false);
-    } else {
-      toast.info("No changes to save.");
-    }
-  };
-  //   network calls
-  const get_points = async () => {
-    setSaveLoading(true);
+  const load = async () => {
+    setLoading(true);
     try {
-      const res = await post(`/getPoints`, { type: dataViewType });
-      setData(res.points);
-      setInitialDataCopy(res.points);
-    } catch (error) {
-      console.error(error?.response?.data?.message || error?.message);
+      const res = await get("/reports/audit-point-config");
+      setPoints(res?.points || []);
+      if (res?.severityLevels?.length) setSeverityLevels(res.severityLevels);
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to load audit point configuration");
     } finally {
-      setSaveLoading(false);
+      setLoading(false);
     }
   };
+
   useEffect(() => {
-    get_points();
-  }, [dataViewType]);
-  if (saveLoading) {
-    return <TableSkeleton />;
-  }
+    load();
+  }, []);
+
+  const handleSeverityChange = async (pointNo, severity) => {
+    const prev = points;
+    setPoints((cur) => cur.map((p) => (p.pointNo === pointNo ? { ...p, severity } : p)));
+    setSavingPointNo(pointNo);
+    try {
+      await post("/risk-categorization/update-severity", { pointNo, severity });
+      toast.success(`Point #${pointNo} criticality updated to ${severity}`);
+    } catch (err) {
+      setPoints(prev);
+      toast.error(err?.response?.data?.message || "Failed to update criticality");
+    } finally {
+      setSavingPointNo(null);
+    }
+  };
+
+  if (loading) return <Skeleton variant="rectangular" height={400} />;
+
   return (
-    <>
-      <Paper
-        sx={{
-          border: "1px solid #e6e6e6",
-          borderRadius: "10px",
-          paddingRight: "3px",
-        }}
-        elevation={0}
-      >
-        <TableContainer
-          sx={{
-            maxHeight: "500px",
-            width: "100%",
-            overflow: "auto",
-            borderRadius: "10px",
-          }}
-        >
-          <Table
-            sx={{ minWidth: 650 }}
-            size="small"
-            stickyHeader
-            aria-label="risk categorization table"
-          >
-            <TableHead>
-              <TableRow>
-                <TableCell width="80px" align="center">
-                  Point No
+    <Paper variant="outlined" sx={{ p: 2 }}>
+      {!isAdmin && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+          View only — only an admin can change criticality.
+        </Typography>
+      )}
+      <TableContainer>
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell sx={{ width: 50 }}>#</TableCell>
+              <TableCell sx={{ width: 260 }}>Audit Point</TableCell>
+              <TableCell>What It Checks</TableCell>
+              <TableCell sx={{ width: 160 }}>Criticality</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {points.map((p) => (
+              <TableRow key={p.pointNo} hover>
+                <TableCell sx={{ fontWeight: 600 }}>{p.pointNo}</TableCell>
+                <TableCell>{p.title}</TableCell>
+                <TableCell>
+                  <Typography variant="body2" color="text.secondary">{p.summary}</Typography>
                 </TableCell>
-                <TableCell>Description</TableCell>
-                <TableCell width="70px" align="center">
-                  High
-                </TableCell>
-                <TableCell width="70px" align="center">
-                  Medium
-                </TableCell>
-                <TableCell width="70px" align="center">
-                  Low
+                <TableCell>
+                  {isAdmin ? (
+                    <Select
+                      size="small"
+                      fullWidth
+                      value={p.severity}
+                      disabled={savingPointNo === p.pointNo}
+                      onChange={(e) => handleSeverityChange(p.pointNo, e.target.value)}
+                    >
+                      {severityLevels.map((lvl) => (
+                        <MenuItem key={lvl} value={lvl}>{lvl}</MenuItem>
+                      ))}
+                    </Select>
+                  ) : (
+                    <Chip size="small" label={p.severity} sx={{ bgcolor: SEVERITY_COLORS[p.severity] || "#999", color: "#fff" }} />
+                  )}
                 </TableCell>
               </TableRow>
-            </TableHead>
-            <TableBody>
-              {data.length ? (
-                data
-                  ?.sort((a, b) => +a.pointNo - +b.pointNo)
-                  .map((row) => {
-                    return (
-                      <TableRow key={row.pointNo}>
-                        <TableCell align="center">{row.pointNo}</TableCell>
-                        <TableCell>{row.description}</TableCell>
-                        <TableCell align="center">
-                          <Checkbox
-                            sx={{ padding: "5px" }}
-                            checked={row.high}
-                            onChange={() =>
-                              handleCheckboxChange(row._id, "high")
-                            }
-                          />
-                        </TableCell>
-                        <TableCell align="center">
-                          <Checkbox
-                            sx={{ padding: "5px" }}
-                            checked={row.medium}
-                            onChange={() =>
-                              handleCheckboxChange(row._id, "medium")
-                            }
-                          />
-                        </TableCell>
-                        <TableCell align="center">
-                          <Checkbox
-                            sx={{ padding: "5px" }}
-                            checked={row.low}
-                            onChange={() =>
-                              handleCheckboxChange(row._id, "low")
-                            }
-                          />
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })
-              ) : (
-                <TableRow>
-                  <TableCell align="center" colSpan={5}>
-                    No Data
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </TableContainer>
-      </Paper>
-      {!isExecutor && data.length ? (
-        <Stack
-          gap={2}
-          flexDirection="row"
-          justifyContent="end"
-          sx={{ mt: "10px" }}
-        >
-          <Button
-            sx={{ width: "140px" }}
-            variant="outlined"
-            color="error"
-            disabled={saveLoading}
-            onClick={handleResetForm}
-          >
-            Reset
-          </Button>
-          <Button
-            sx={{ width: "140px" }}
-            variant="contained"
-            disabled={saveLoading}
-            color="primary"
-            onClick={handleSaveChanges}
-          >
-            {saveLoading ? <CircularProgress size={20} /> : "Submit"}
-          </Button>
-        </Stack>
-      ) : null}
-    </>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </Paper>
   );
 };
+
 export default RiskCategorizationForm;

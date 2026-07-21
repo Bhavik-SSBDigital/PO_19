@@ -123,541 +123,117 @@ export const VerificationChip = ({ result }) => {
 
 // ==============================|| SEARCH AUDIT DATA ||============================== //
 
-const AuditResults = ({ searchData, setSearchData }) => {
-  const role = localStorage.getItem("role");
-  const { dataViewType } = useSelector((state) => state.menu);
-  const { viewDocument } = useViewDocument();
+const AuditResults = ({ searchData }) => {
+  // If there is no data or no results array, do not render the table
+  if (!searchData || !searchData.results || searchData.results.length === 0) {
+    return null;
+  }
 
-  const [fileURL, setFileURL] = useState("");
-  const [open, setOpen] = useState(false);
-  const [userList, setUserList] = useState([]);
-
-  const [remarksData, setRemarksData] = useState({
-    modalOpen: false,
-    id: "",
-    pointNo: 1,
-    remarks: "",
-  });
-  const [reassignData, setReassignData] = useState({
-    modalOpen: false,
-    assignedTo: "",
-    remarks: "",
-  });
-  const [assignData, setAssignData] = useState({
-    modalOpen: false,
-    assignedTo: "",
-    remarks: "",
-  });
-
-  const [remarks, setRemarks] = useState([]);
-
-  useEffect(() => {
-    setFileURL(viewDocument?.document || viewDocument?.documents[0] || "");
-  }, [viewDocument]);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const response = await get("/getAuditors");
-        setUserList(response?.auditors || response || []);
-      } catch (error) {
-        console.error("Error fetching user list:", error);
-      }
-    })();
-  }, []);
-
-  const addRemarks = async () => {
-    try {
-      const isAvilable = remarks.find((r) => r.pointNo === remarksData.pointNo);
-      if (isAvilable) {
-        setRemarks(
-          remarks.map((r) =>
-            r.pointNo === remarksData.pointNo
-              ? { ...r, remarks: remarksData.remarks }
-              : r
-          )
-        );
-      } else {
-        setRemarks([
-          ...remarks,
-          { pointNo: remarksData.pointNo, remarks: remarksData.remarks },
-        ]);
-      }
-
-      setRemarksData({ modalOpen: false, id: "", pointNo: "", remarks: "" });
-    } catch (error) {
-      console.error(error);
+  // Helper function to color-code severity
+  const getSeverityColor = (severity) => {
+    switch (severity?.toLowerCase()) {
+      case "critical": return "error";
+      case "high": return "warning";
+      case "medium": return "info";
+      case "low": return "success";
+      default: return "default";
     }
   };
-
-  const reassignHandeler = async () => {
-    try {
-      const res = await post(`/headReviewAuditResult/${searchData._id}`, {
-        action: "reassign",
-        reassignTo: reassignData.assignedTo,
-        reassignRemarks: reassignData.remarks,
-      });
-      toast.success(res.message);
-      setReassignData({ modalOpen: false, remarks: "", reassignTo: "" });
-      setSearchData();
-    } catch (error) {
-      console.error(error);
-    }
-  };
-
-  const assignHandeler = async () => {
-    try {
-      const res = await post(`/assignAuditResult/${searchData._id}`, {
-        forceReassign: false,
-        assignedTo: assignData.assignedTo,
-      });
-      toast.success(res.message);
-      setReassignData({ modalOpen: false, remarks: "", reassignTo: "" });
-      setSearchData();
-    } catch (error) {
-      console.error(error);
-    }
-  };
-
-  const pointHistoryAvilable = (pointNo) => {
-    const pointHistoryLength =
-      searchData?.workflowDetails?.pointHistory?.[pointNo]?.history?.length;
-
-    if (pointHistoryLength > 0) {
-      return searchData?.workflowDetails?.pointHistory?.[pointNo];
-    } else {
-      return false;
-    }
-  };
-
-  if (role === "isAuditor") return null;
 
   return (
-    <>
-      <Box sx={{ mt: 2, display: "flex", justifyContent: "space-between" }}>
-        {dataViewType === "BPV" && (
-          <>
-            <Box />
-            {viewDocument?.isOpen && viewDocument?.documents?.length > 0 && (
-              <Box>
-                <Typography variant="h6" sx={{ fontWeight: "bold", mt: 2 }}>
-                  Select Document name
-                </Typography>
-                <Select
-                  value={fileURL}
-                  onChange={(e) => setFileURL(e.target.value)}
-                >
-                  {viewDocument?.documents?.map((doc, idx) => (
-                    <MenuItem value={doc} key={doc + idx}>
-                      {doc}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </Box>
-            )}
-          </>
-        )}
-      </Box>
-      <Box sx={{ display: "flex", flexDirection: "row", gap: "10px" }}>
-        <AutoSplit
-          direction="horizontal"
-          initialSizes={viewDocument?.isOpen ? [50, 50] : [100]}
-          minSizes={viewDocument?.isOpen ? [10, 20] : [100]}
-        >
-          <SplitBox style={viewDocument?.isOpen ? {} : { flexBasis: "100%" }}>
-            <TableContainer
-              component={Paper}
-              elevation={0}
-              sx={{
-                mt: "5px",
-                flex: 1,
-                overflow: "auto",
-                border: "1px solid #e5e5e5",
-                borderRadius: "10px",
-                maxHeight: "600px",
-              }}
-            >
-              <Table stickyHeader size="small">
-                <TableHead sx={{ bgcolor: "#f9f9f9" }}>
-                  <TableRow>
-                    <TableCell sx={{ minWidth: { sm: "80px" } }}>
-                      Point No
-                    </TableCell>
-                    <TableCell sx={{ minWidth: { sm: "150px" } }}>
-                      Description
-                    </TableCell>
-                    <TableCell>System Remarks</TableCell>
-                    <TableCell>System Verification</TableCell>
-                    <TableCell>Auditor Actions</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {searchData?.results
-                    ?.sort((a, b) => +a.pointNo - +b.pointNo)
-                    ?.map((result) => {
-                      return (
-                        <TableRow key={+result.pointNo}>
-                          <TableCell align="center">{result.pointNo}</TableCell>
-                          <TableCell>
-                            {result.description ? result.description : "-"}
-                          </TableCell>
-                          <TableCell>
-                            <ul>
-                              {result?.remarks?.length
-                                ? result.remarks?.map((list, idx) => (
-                                    <li key={idx + list}>{list}</li>
-                                  ))
-                                : "-"}
-                            </ul>
-                          </TableCell>
-                          <TableCell>
-                            {/* ── ONLY THIS CHIP BLOCK CHANGED ── */}
-                            <VerificationChip result={result} />
-                          </TableCell>
-                          <TableCell>
-                            <Button
-                              variant="outlined"
-                              onClick={() => {
-                                setOpen({
-                                  modalOpen: true,
-                                  data: pointHistoryAvilable(result.pointNo),
-                                  pointNo: result.pointNo,
-                                  latestSubmission:
-                                    searchData?.workflowDetails?.latestSubmission?.results?.find(
-                                      (item) => item.pointNo === result.pointNo
-                                    ),
-                                });
-                              }}
-                              disabled={!pointHistoryAvilable(result.pointNo)}
-                              size="small"
-                              sx={{ position: "inherit", width: "100px" }}
-                            >
-                              View Details
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  {!searchData?.results?.length && (
-                    <TableRow>
-                      <TableCell colSpan={5} align="center">
-                        No Data
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          </SplitBox>
+    <Box sx={{ mt: 3, mb: 2, px: 2 }}>
+      <Typography variant="h5" sx={{ mb: 1.5, fontWeight: 700 }}>
+        Audit Check Results
+      </Typography>
+      
+      <TableContainer component={Paper} variant="outlined">
+        <Table size="small">
+          <TableHead sx={{ bgcolor: "#f5f5f5" }}>
+            <TableRow>
+              <TableCell sx={{ fontWeight: 600, width: '5%' }}>Pt #</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: '25%' }}>Title & Summary</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: '30%' }}>Logic</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: '10%' }}>Severity</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: '10%' }}>Status</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: '20%' }}>Remarks</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {searchData.results.map((row, index) => {
+              // Determine status text and color
+              let statusText = "Not Verified";
+              let statusColor = "error";
 
-          <SplitBox style={viewDocument?.isOpen ? {} : { flexBasis: "0%" }}>
-            <DocumentView fileURL={fileURL} />
-          </SplitBox>
-        </AutoSplit>
-      </Box>
-      {searchData?.workflowDetails?.currentStatus ===
-      "completed" ? null : searchData?.workflowDetails?.latestSubmission &&
-        searchData?.workflowDetails?.pointHistory &&
-        Object.keys(searchData?.workflowDetails?.pointHistory).length ? (
-        <></>
-      ) : (
-        role === "isAuditHead" && (
-          <Button
-            sx={{ width: "150px", m: 1, marginRight: "5px" }}
-            variant="contained"
-            onClick={() => setAssignData({ modalOpen: true })}
-          >
-            Assign
-          </Button>
-        )
-      )}
-      <Dialog
-        open={remarksData.modalOpen}
-        onClose={() => setRemarksData({})}
-        fullWidth
-        maxWidth="xs"
-        sx={{ "& .MuiDialog-paper": { borderRadius: "12px" } }}
-      >
-        <DialogTitle sx={{ display: "flex", justifyContent: "center" }}>
-          <Typography variant="h4" align="center" sx={{ fontWeight: 700 }}>
-            Remarks (Point No: {remarksData.pointNo})
-          </Typography>
-          <IconButton
-            onClick={() => setRemarksData({})}
-            sx={{ position: "absolute", top: "5px", right: "10px" }}
-          >
-            <CloseRoundedIcon />
-          </IconButton>
-        </DialogTitle>
-        <DialogContent>
-          <form style={{ width: "100%" }}>
-            <Typography variant="h6">Remarks :</Typography>
-            <TextField
-              id="outlined-basic"
-              value={remarksData.remarks}
-              onChange={(event) =>
-                setRemarksData({ ...remarksData, remarks: event.target.value })
+              if (row.not_applicable) {
+                statusText = "N/A";
+                statusColor = "default";
+              } else if (row.verified) {
+                statusText = "Verified";
+                statusColor = "success";
               }
-              fullWidth
-              placeholder="Remarks"
-              variant="outlined"
-            />
-          </form>
-        </DialogContent>
-        <DialogActions>
-          <Button
-            color="error"
-            variant="outlined"
-            sx={{ width: "120px", margin: "-5px 0 5px 0" }}
-            onClick={() => setRemarksData({})}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            sx={{ width: "120px", margin: "-5px 10px 5px 0" }}
-            onClick={addRemarks}
-          >
-            Add
-          </Button>
-        </DialogActions>
-      </Dialog>
-      <Dialog
-        open={reassignData.modalOpen}
-        onClose={() => setReassignData({})}
-        fullWidth
-        maxWidth="xs"
-        sx={{ "& .MuiDialog-paper": { borderRadius: "12px" } }}
-      >
-        <DialogTitle sx={{ display: "flex", justifyContent: "center" }}>
-          <Typography variant="h3" align="center" sx={{ fontWeight: 700 }}>
-            Re-assign
-          </Typography>
-          <IconButton
-            onClick={() => setRemarksData({})}
-            sx={{ position: "absolute", top: "5px", right: "10px" }}
-          >
-            <CloseRoundedIcon />
-          </IconButton>
-        </DialogTitle>
-        <DialogContent>
-          <form style={{ width: "100%" }}>
-            <Typography variant="h6">Reassign to :</Typography>
-            <Autocomplete
-              disablePortal
-              options={userList}
-              onChange={(_, value) =>
-                setReassignData({ ...reassignData, assignedTo: value })
-              }
-              fullWidth
-              value={reassignData.assignedTo}
-              renderInput={(params) => (
-                <TextField {...params} placeholder="Select username" />
-              )}
-            />
-            <Typography variant="h6">Remarks :</Typography>
-            <TextField
-              id="outlined-basic-remarks"
-              fullWidth
-              value={reassignData.remarks}
-              onChange={(event) =>
-                setReassignData({
-                  ...reassignData,
-                  remarks: event.target.value,
-                })
-              }
-              placeholder="enter remarks"
-              variant="outlined"
-            />
-          </form>
-        </DialogContent>
-        <DialogActions>
-          <Button
-            color="error"
-            variant="outlined"
-            onClick={() => setReassignData({})}
-            sx={{ width: "100px", margin: "-5px 0 5px 0" }}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            onClick={reassignHandeler}
-            sx={{ width: "100px", margin: "-5px 10px 5px 0" }}
-          >
-            Reassign
-          </Button>
-        </DialogActions>
-      </Dialog>
-      <Dialog
-        open={assignData.modalOpen}
-        onClose={() => setAssignData({})}
-        sx={{ "& .MuiDialog-paper": { borderRadius: "12px" } }}
-        fullWidth
-        maxWidth="xs"
-      >
-        <DialogTitle sx={{ display: "flex", justifyContent: "center" }}>
-          <Typography variant="h3" align="center" sx={{ fontWeight: 700 }}>
-            Assign
-          </Typography>
-          <IconButton
-            onClick={() => setRemarksData({})}
-            sx={{ position: "absolute", top: "5px", right: "10px" }}
-          >
-            <CloseRoundedIcon />
-          </IconButton>
-        </DialogTitle>
-        <DialogContent>
-          <form style={{ width: "100%" }}>
-            <Typography variant="h6">Assign to :</Typography>
-            <Autocomplete
-              disablePortal
-              options={userList}
-              onChange={(_, value) =>
-                setAssignData({ ...assignData, assignedTo: value })
-              }
-              fullWidth
-              value={assignData.assignedTo}
-              renderInput={(params) => (
-                <TextField {...params} placeholder="Select username" />
-              )}
-            />
-          </form>
-          {searchData?.workflowDetails?.currentStatus === "assigned" ? (
-            <Typography sx={{ mt: "10px" }}>
-              This audit is assigned to{" "}
-              <strong>
-                {searchData?.verificationWorkflow?.assignedTo?.username || ""}
-              </strong>
-              , but if you want to assign to someone else proceed{" "}
-            </Typography>
-          ) : null}
-        </DialogContent>
-        <DialogActions>
-          <Button
-            color="error"
-            variant="outlined"
-            onClick={() => setAssignData({})}
-            sx={{ width: "100px", margin: "-5px 0 5px 0" }}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            onClick={assignHandeler}
-            sx={{ width: "100px", margin: "-5px 10px 5px 0" }}
-          >
-            Assign
-          </Button>
-        </DialogActions>
-      </Dialog>
-      <Dialog
-        open={open.modalOpen}
-        onClose={() => setOpen({})}
-        maxWidth="xl"
-        sx={{ "& .MuiDialog-paper": { borderRadius: "12px" } }}
-      >
-        <DialogTitle sx={{ display: "flex", justifyContent: "center" }}>
-          <Typography variant="h4" align="center" sx={{ fontWeight: 700 }}>
-            Point History (Point No: {open.pointNo})
-          </Typography>
-          <IconButton
-            onClick={() => setOpen({})}
-            sx={{ position: "absolute", top: "10px", right: "10px" }}
-          >
-            <CloseRoundedIcon />
-          </IconButton>
-        </DialogTitle>
-        <DialogContent>
-          <TableContainer
-            sx={{
-              maxHeight: "600px",
-              border: "1px solid #cccccc",
-              borderRadius: "10px",
-            }}
-          >
-            <Table stickyHeader sx={{ minWidth: "700px" }} size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Username</TableCell>
-                  <TableCell>System Verification</TableCell>
-                  <TableCell>Manual Verification</TableCell>
-                  <TableCell>System Remarks</TableCell>
-                  <TableCell>Manual Remarks</TableCell>
-                  <TableCell>Time</TableCell>
+
+              return (
+                <TableRow key={index} hover>
+                  <TableCell>{row.pointNo}</TableCell>
+                  
+                  <TableCell>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                      {row.title}
+                    </Typography>
+                    {/* Note: Mapping "summary", not "description" based on your JSON */}
+                    <Typography variant="body2" color="textSecondary" sx={{ mt: 0.5 }}>
+                      {row.summary}
+                    </Typography>
+                  </TableCell>
+                  
+                  <TableCell>
+                    <Typography variant="body2">
+                      {row.logic || "N/A"}
+                    </Typography>
+                  </TableCell>
+                  
+                  <TableCell>
+                    {row.severity && (
+                      <Chip 
+                        label={row.severity} 
+                        size="small" 
+                        color={getSeverityColor(row.severity)} 
+                        variant="outlined"
+                      />
+                    )}
+                  </TableCell>
+                  
+                  <TableCell>
+                    <Chip 
+                      label={statusText} 
+                      size="small" 
+                      color={statusColor} 
+                      sx={{ fontWeight: 600 }}
+                    />
+                  </TableCell>
+                  
+                  <TableCell>
+                    {row.remarks && row.remarks.length > 0 ? (
+                      <ul style={{ margin: 0, paddingLeft: '20px' }}>
+                        {row.remarks.map((remark, rIdx) => (
+                          <li key={rIdx}>
+                            <Typography variant="body2">{remark}</Typography>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <Typography variant="body2" color="textSecondary">
+                        None
+                      </Typography>
+                    )}
+                  </TableCell>
                 </TableRow>
-              </TableHead>
-              <TableBody>
-                {open?.data?.history?.map((item, index) => (
-                  <TableRow key={index}>
-                    <TableCell>{item.user}</TableCell>
-                    <TableCell>
-                      <Chip
-                        sx={{
-                          borderRadius: "20px",
-                          width: "110px",
-                          fontSize: "12px",
-                          fontWeight: "700",
-                        }}
-                        icon={
-                          <TaskAltRoundedIcon style={{ fontSize: "13px" }} />
-                        }
-                        size="small"
-                        label={
-                          open?.data?.systemResult?.systemVerification
-                            ? "Verified"
-                            : "Not Verified"
-                        }
-                        color={
-                          open?.data?.systemResult?.systemVerification
-                            ? "success"
-                            : "error"
-                        }
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Chip
-                        sx={{
-                          borderRadius: "20px",
-                          width: "110px",
-                          fontSize: "12px",
-                          fontWeight: "700",
-                        }}
-                        icon={
-                          <TaskAltRoundedIcon style={{ fontSize: "13px" }} />
-                        }
-                        size="small"
-                        label={
-                          item.manualVerified ? "Verified" : "Not Verified"
-                        }
-                        color={item.manualVerified ? "success" : "error"}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      {open?.data?.systemResult?.systemRemarks?.length
-                        ? open?.data?.systemResult?.systemRemarks?.map(
-                            (list, idx) => <li key={idx + list}>{list}</li>
-                          )
-                        : "-"}
-                    </TableCell>
-                    <TableCell>
-                      {item.manualRemarks?.length
-                        ? item.manualRemarks?.map((list, idx) => (
-                            <li key={idx + list}>{list}</li>
-                          ))
-                        : "-"}
-                    </TableCell>
-                    <TableCell>
-                      {moment(item.timestamp).format("DD-MM-YYYY HH:MM A")}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
-        </DialogContent>
-      </Dialog>
-    </>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </Box>
   );
 };
 

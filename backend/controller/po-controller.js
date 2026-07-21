@@ -3,7 +3,16 @@ import {
   severityOf,
   classifyPoint,
   exceptionPointsOf,
+  ensureSeverityLoaded,
 } from "../utility/severity.js";
+import {
+  getVendorName,
+  getPlantName,
+  getPurchaseGroupName,
+  getPaymentTermDescription,
+  getPoTypeName,
+} from "../utility/master-data.js";
+import { POINT_DEFINITIONS_BY_NO } from "../utility/point-reference.js";
 
 function buildWhere(body = {}) {
   const and = [{ type: "PO" }];
@@ -105,6 +114,7 @@ const ROW_SELECT = {
   material_code: true,
   material_disc: true,
   net_value: true,
+  payment_term: true,
   results: true,
 };
 
@@ -119,15 +129,53 @@ const lineItemOf = (row) => {
 const uniqueKeyOf = (row) =>
   row.po_material_number || `${row.po_number}-${lineItemOf(row) ?? row.id}`;
 
+// Attaches full audit-point reference (title/summary/logic + current
+// severity) to EVERY point in a result set, not only the failing ones - so
+// a full 19-point breakdown (po-audit-result-dialog) can show "what does
+// this point check?" regardless of whether it passed.
+function withPointReference(results) {
+  return (results || []).map((p) => ({
+    ...p,
+    severity: severityOf(p.pointNo),
+    ...(POINT_DEFINITIONS_BY_NO[String(p.pointNo)]
+      ? {
+          title: POINT_DEFINITIONS_BY_NO[String(p.pointNo)].title,
+          summary: POINT_DEFINITIONS_BY_NO[String(p.pointNo)].summary,
+          logic: POINT_DEFINITIONS_BY_NO[String(p.pointNo)].logic,
+        }
+      : {}),
+  }));
+}
+
+// Enriches a row for frontend display. `po_status` is deliberately kept as
+// raw data (some screens need it to compute the Hold badge/ageing) but it
+// must never be rendered as a bare "Status" column showing values like
+// "PO HOLD" - strip that column from any table consuming this.
 const withExceptionPoints = (row) => ({
   ...row,
   lineItemKey: uniqueKeyOf(row),
   lineItem: lineItemOf(row),
-  exceptionPoints: exceptionPointsOf(row),
+  results: withPointReference(row.results),
+  exceptionPoints: exceptionPointsOf(row).map((ep) => ({
+    ...ep,
+    ...(POINT_DEFINITIONS_BY_NO[String(ep.pointNo)]
+      ? {
+          title: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].title,
+          summary: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].summary,
+          logic: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].logic,
+        }
+      : {}),
+  })),
+  vendorName: row.nameOfVendor || getVendorName(row.vendor_code),
+  plantName: getPlantName(row.plant),
+  poTypeName: getPoTypeName(row.po_type),
+  purchaseGroupName: getPurchaseGroupName(row.purchase_group),
+  paymentTermDescription: getPaymentTermDescription(row.payment_term),
 });
 
 export const get_po_audit_results = async (req, res) => {
   try {
+    await ensureSeverityLoaded();
     const {
       page = 1,
       pageSize = 25,
@@ -183,7 +231,9 @@ export const get_po_audit_results = async (req, res) => {
 
 export const get_po_audit_result = async (req, res) => {
   try {
-    const { poMaterialNumber, id, po_number, fiscalYear } = req.body || {};
+    await ensureSeverityLoaded();
+    const { poMaterialNumber, id, po_number, po_line_item, fiscalYear } =
+      req.body || {};
 
     if (!id && !poMaterialNumber && !po_number) {
       return res
@@ -191,38 +241,52 @@ export const get_po_audit_result = async (req, res) => {
         .json({ message: "id, poMaterialNumber, or po_number is required" });
     }
 
-    if (id || poMaterialNumber) {
+    // 1. Direct hit: If we have an exact ID, Material Number, or PO + Line Item
+    if (id || poMaterialNumber || (po_number && po_line_item)) {
       const where = { type: "PO" };
       if (id) where.id = id;
       if (poMaterialNumber) where.po_material_number = poMaterialNumber;
+      if (!id && !poMaterialNumber && po_number && po_line_item) {
+        where.po_number = po_number;
+        where.po_line_item = po_line_item;
+      }
       if (fiscalYear) where.fiscalYear = fiscalYear;
 
       const result = await prisma.auditResult.findFirst({
         where,
         include: RESULT_INCLUDE,
       });
-      if (!result)
-        return res.status(404).json({ message: "PO audit result not found" });
-      return res.status(200).json(withExceptionPoints(result));
+
+      if (result) {
+        return res.status(200).json(withExceptionPoints(result));
+      }
+
+      // If user typed a specific line item but it doesn't exist
+      if (po_line_item) {
+        return res.status(404).json({
+          message: `Line item ${po_line_item} not found for PO ${po_number}`,
+        });
+      }
     }
 
+    // 2. Broad search: Only PO Number is provided
     const where = { type: "PO", po_number };
     if (fiscalYear) where.fiscalYear = fiscalYear;
 
     const matches = await prisma.auditResult.findMany({
       where,
       include: RESULT_INCLUDE,
-      orderBy: { po_material_number: "asc" },
+      orderBy: { po_line_item: "asc" }, // Order chronologically by line item
     });
 
-    if (matches.length === 0) {
+    if (matches.length === 0)
       return res.status(404).json({ message: "PO audit result not found" });
-    }
 
-    if (matches.length === 1) {
+    // If only 1 line item exists in the PO, just return it directly (skip the selection step)
+    if (matches.length === 1)
       return res.status(200).json(withExceptionPoints(matches[0]));
-    }
 
+    // If multiple line items exist, return a lightweight array to populate the frontend selection table
     return res.status(200).json({
       multipleMatches: true,
       total: matches.length,
@@ -234,6 +298,10 @@ export const get_po_audit_result = async (req, res) => {
         material_code: r.material_code,
         material_disc: r.material_disc,
         plant: r.plant,
+        plantName: getPlantName(r.plant),
+        vendorName: r.nameOfVendor || getVendorName(r.vendor_code),
+        poTypeName: getPoTypeName(r.po_type),
+        purchaseGroupName: getPurchaseGroupName(r.purchase_group),
         net_value: r.net_value,
         fiscalYear: r.fiscalYear,
       })),
@@ -246,6 +314,7 @@ export const get_po_audit_result = async (req, res) => {
 
 export const get_po_lines = async (req, res) => {
   try {
+    await ensureSeverityLoaded();
     const { poNumber } = req.body || {};
     if (!poNumber)
       return res.status(400).json({ message: "poNumber is required" });
@@ -256,13 +325,7 @@ export const get_po_lines = async (req, res) => {
       orderBy: { po_line_item: "asc" },
     });
 
-    const lines = rows.map((r) => ({
-      ...r,
-      lineItemKey: uniqueKeyOf(r),
-      lineItem: lineItemOf(r),
-      exceptionPoints: exceptionPointsOf(r),
-    }));
-
+    const lines = rows.map(withExceptionPoints);
     return res.status(200).json({ poNumber, total: lines.length, lines });
   } catch (error) {
     console.error("Error in get_po_lines:", error);

@@ -27,7 +27,7 @@ const DrawerHeader = ({ open }) => {
           // marginBottom: 10,
         }}
       >
-        AI Enabled Digital Audit
+       AI Based P2P Compliance
       </Typography>
     </Box>
     // <DrawerHeaderStyled theme={theme} open={open}>
