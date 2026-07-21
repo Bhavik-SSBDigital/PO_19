@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import {
   Box,
   Card,
@@ -11,6 +11,14 @@ import {
   Tooltip as MuiTooltip,
   Typography,
   Chip,
+  TextField,
+  TableContainer,
+  Table,
+  TableHead,
+  TableRow,
+  TableCell,
+  TableBody,
+  TableSortLabel,
 } from "@mui/material";
 import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
 import FileDownloadRoundedIcon from "@mui/icons-material/FileDownloadRounded";
@@ -113,6 +121,121 @@ const buildSummaryBody = (f) => ({
 });
 
 const csvEscape = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+
+/* ============================================================================
+   DROP-IN REPLACEMENT for the "PO Number-Wise Exception Count" 
+============================================================================ */
+const PoWiseExceptionsTable = ({ rows, loading, onOpenPo }) => {
+  const [search, setSearch] = useState("");
+  const [orderBy, setOrderBy] = useState("exceptionLineCount");
+  const [order, setOrder] = useState("desc");
+
+  const filtered = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    const base = !term
+      ? rows
+      : rows.filter((r) =>
+          [r.poNumber, r.vendorName, r.vendorCode, r.poType, r.plant]
+            .filter(Boolean)
+            .some((f) => String(f).toLowerCase().includes(term)),
+        );
+    const sorted = [...base].sort((a, b) => {
+      const av = a[orderBy] ?? "";
+      const bv = b[orderBy] ?? "";
+      if (typeof av === "number" && typeof bv === "number") {
+        return order === "asc" ? av - bv : bv - av;
+      }
+      return order === "asc"
+        ? String(av).localeCompare(String(bv))
+        : String(bv).localeCompare(String(av));
+    });
+    return sorted;
+  }, [rows, search, orderBy, order]);
+
+  const toggleSort = (field) => {
+    if (orderBy === field) {
+      setOrder(order === "asc" ? "desc" : "asc");
+    } else {
+      setOrderBy(field);
+      setOrder("desc");
+    }
+  };
+
+  const columns = [
+    { key: "poNumber", label: "PO Number" },
+    { key: "vendorName", label: "Vendor" },
+    { key: "poType", label: "PO Type" },
+    { key: "plant", label: "Plant" },
+    { key: "distinctLineItems", label: "Line Items" },
+    { key: "exceptionLineCount", label: "Exceptions" },
+    { key: "valueExposure", label: "Value Exposure" },
+  ];
+
+  return (
+    <Paper variant="outlined" sx={{ p: 2 }}>
+      <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 1, flexWrap: "wrap", gap: 1 }}>
+        <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+          PO-Wise Exceptions ({rows.length} POs with at least one exception)
+        </Typography>
+        <TextField
+          size="small"
+          placeholder="Search PO, vendor, type, plant..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          sx={{ minWidth: 260 }}
+        />
+      </Box>
+      {loading ? (
+        <Skeleton variant="rectangular" height={320} />
+      ) : (
+        <TableContainer sx={{ maxHeight: 480 }}>
+          <Table size="small" stickyHeader>
+            <TableHead>
+              <TableRow>
+                {columns.map((c) => (
+                  <TableCell key={c.key}>
+                    <TableSortLabel
+                      active={orderBy === c.key}
+                      direction={orderBy === c.key ? order : "asc"}
+                      onClick={() => toggleSort(c.key)}
+                    >
+                      {c.label}
+                    </TableSortLabel>
+                  </TableCell>
+                ))}
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {filtered.map((r) => (
+                <TableRow
+                  key={r.poNumber}
+                  hover
+                  sx={{ cursor: "pointer" }}
+                  onClick={() => onOpenPo(r)}
+                >
+                  <TableCell>{r.poNumber}</TableCell>
+                  <TableCell>{r.vendorName || r.vendorCode || "—"}</TableCell>
+                  <TableCell>{r.poType || "—"}</TableCell>
+                  <TableCell>{r.plant || "—"}</TableCell>
+                  <TableCell>{r.distinctLineItems}</TableCell>
+                  <TableCell>{r.exceptionLineCount}</TableCell>
+                  <TableCell>{r.valueExposure?.toLocaleString?.() ?? r.valueExposure}</TableCell>
+                </TableRow>
+              ))}
+              {filtered.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={columns.length} align="center">
+                    No matching POs.
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      )}
+    </Paper>
+  );
+};
 
 const ExecutiveDashboard = () => {
   const [loading, setLoading] = useState(true);
@@ -248,32 +371,14 @@ const ExecutiveDashboard = () => {
       )}
 
       <Grid item xs={12} md={12}>
-          <ChartPanel title="PO Number-Wise Exception Count (top 10)" hint="Click a bar to drill in">
-            {loading ? (
-              <Skeleton variant="rectangular" height="100%" />
-            ) : (
-              <ResponsiveContainer>
-                <BarChart data={charts.poWiseExceptions || []}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="poNumber" />
-                  <YAxis allowDecimals={false} />
-                  <Tooltip content={<BucketTooltip />} />
-                  <Bar
-                    dataKey="count"
-                    fill={NOT_VERIFIED_COLOR}
-                    radius={[3, 3, 0, 0]}
-                    cursor="pointer"
-                    activeBar={{ stroke: "#000", strokeWidth: 2 }}
-                    onClick={(d) => {
-                      const p = payloadOf(d);
-                      openDrilldown("poNumber", p.poNumber, `PO Number: ${p.poNumber} Exceptions`);
-                    }}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </ChartPanel>
-        </Grid>
+        <PoWiseExceptionsTable
+          rows={charts.poWiseExceptions || []}
+          loading={loading}
+          onOpenPo={(r) =>
+            openDrilldown("poNumber", r.poNumber, `PO Number: ${r.poNumber} — ${r.vendorName || r.vendorCode || ""}`.trim())
+          }
+        />
+      </Grid>
 
       {/* KPI cards - every one of these is now clickable and opens the rows
           that actually make up that number (same drilldown dialog the

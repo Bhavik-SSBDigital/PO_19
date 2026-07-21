@@ -115,6 +115,7 @@ model AuditResult {
   reference             String?
   objectKey             String?   @map("object_key")
   documentNumber        String?   @map("document_number")
+  po_line_item                          String?  @map("po_line_item")
   processDocuments      Json      @default("[]") @map("process_documents")
   vendorTitle           String?   @default("") @map("vendor_title")
   documentName          String?   @map("document_name")
@@ -187,7 +188,7 @@ model AuditResult {
 
   verificationWorkflow  VerificationWorkflow?
   manualVerifications   ManualVerification[]
-
+@@index([po_number, po_line_item])
   @@index([po_number])
   @@index([po_material_number])
   @@index([type])

@@ -55,9 +55,22 @@ const parseNum = (v) => {
   return isNaN(n) ? 0 : n;
 };
 
+const lineItemOf = (row) => {
+  if (row.po_line_item) return row.po_line_item;
+  if (row.po_material_number && row.po_material_number.includes("-")) {
+    return row.po_material_number.split("-").slice(1).join("-");
+  }
+  return null;
+};
+
+const uniqueKeyOf = (row) =>
+  row.po_material_number || `${row.po_number}-${lineItemOf(row) ?? row.id}`;
+
 const ROW_SELECT = {
   id: true,
   po_number: true,
+  po_line_item: true,
+  po_material_number: true,
   purchase_req: true,
   po_type: true,
   po_status: true,
@@ -68,34 +81,18 @@ const ROW_SELECT = {
   vendor_code: true,
   nameOfVendor: true,
   material_code: true,
+  material_disc: true,
   net_value: true,
   results: true,
 };
 
-/**
- * POST /api/reports/executive-summary
- * Body (all optional): { poDateFrom, poDateTo, prDateFrom, prDateTo,
- *   purchaseGroup: [...], poType: [...], plant, vendorCode, materialCode }
- *
- * Implements the "Executive P2P Compliance Control Tower" page from
- * Dashboard_Product_Design.docx: KPI cards + the chart-ready aggregates
- * listed there. Everything is computed here (not pre-stored) so filters
- * apply live. Every chart bucket also carries a distinct PO count and value
- * exposure (not just a line-item count) so the UI can show rich tooltips,
- * and every bucket key can be passed straight to /reports/executive-drilldown
- * to get the underlying rows.
- */
 export const getExecutiveSummary = async (req, res) => {
   try {
     const where = buildWhere(req.body || {});
-
-    // Only pull the columns aggregation actually needs - `results` is the
-    // only large field, everything else is cheap.
     const rows = await prisma.auditResult.findMany({
       where,
       select: ROW_SELECT,
     });
-    console.log(JSON.stringify(rows[0].results, null, 2));
 
     const poNumbers = new Set();
     const prNumbers = new Set();
@@ -106,7 +103,6 @@ export const getExecutiveSummary = async (req, res) => {
     let highRiskExceptions = 0;
     let exceptionValueExposure = 0;
 
-    // Pre-fill points 1 to 19 so the chart ALWAYS renders 19 bars on the X-axis
     const controlWise = {};
     for (let i = 1; i <= 19; i++) {
       controlWise[String(i)] = {
@@ -117,16 +113,13 @@ export const getExecutiveSummary = async (req, res) => {
       };
     }
     const bySeverity = Object.fromEntries(SEVERITY_LEVELS.map((s) => [s, 0]));
-
-    const byPurchaseGroup = {}; // group -> { verified, notVerified }
-
-    const byPo = {}; // <-- ADD THIS
-
-    const byPlant = {}; // plant -> { count, pos:Set, valueExposure }
-    const byVendor = {}; // vendor -> { count, pos:Set, valueExposure, name }
-    const byPoType = {}; // poType -> { verified, notVerified }
-    const byPoNumber = {}; // po_number -> { notVerifiedPoints, lines:Set, valueExposure }
-    const monthlyExceptions = {}; // "YYYY-MM" -> { count, valueExposure }
+    const byPurchaseGroup = {};
+    const byPo = {};
+    const byPlant = {};
+    const byVendor = {};
+    const byPoType = {};
+    const byPoNumber = {};
+    const monthlyExceptions = {};
 
     const holdPoNumbers = new Set();
     const holdAgeingBuckets = {
@@ -166,9 +159,6 @@ export const getExecutiveSummary = async (req, res) => {
         ] || { verified: 0, notVerified: 0 };
 
         const status = classifyPoint(point);
-        // if (point.pointNo == 9 || point.pointNo == 15 || point.pointNo == 19) {
-        //   console.log(point.pointNo, point.status, point.result, status, point);
-        // }
         if (status === "na") {
           naCount++;
           controlWise[pointNo].na++;
@@ -196,7 +186,7 @@ export const getExecutiveSummary = async (req, res) => {
           };
 
           byPoNumber[poKey].notVerifiedPoints++;
-          byPoNumber[poKey].lines.add(row.id);
+          byPoNumber[poKey].lines.add(uniqueKeyOf(row));
           byPoNumber[poKey].valueExposure += parseNum(row.net_value);
 
           const severity = severityOf(pointNo);
@@ -213,11 +203,24 @@ export const getExecutiveSummary = async (req, res) => {
         byPo[poKey] = byPo[poKey] || {
           count: 0,
           pos: new Set(),
+          lineItems: new Set(),
           valueExposure: 0,
+          vendorCode: row.vendor_code || null,
+          vendorName: row.nameOfVendor || null,
+          poType: row.po_type || null,
+          plant: row.plant || null,
         };
         byPo[poKey].count += 1;
         byPo[poKey].pos.add(row.po_number);
+        byPo[poKey].lineItems.add(uniqueKeyOf(row));
         byPo[poKey].valueExposure += parseNum(row.net_value);
+        if (!byPo[poKey].vendorName && row.nameOfVendor)
+          byPo[poKey].vendorName = row.nameOfVendor;
+        if (!byPo[poKey].vendorCode && row.vendor_code)
+          byPo[poKey].vendorCode = row.vendor_code;
+        if (!byPo[poKey].poType && row.po_type)
+          byPo[poKey].poType = row.po_type;
+        if (!byPo[poKey].plant && row.plant) byPo[poKey].plant = row.plant;
 
         const plantKey = row.plant || "Unassigned";
         byPlant[plantKey] = byPlant[plantKey] || {
@@ -278,6 +281,19 @@ export const getExecutiveSummary = async (req, res) => {
           ...(v.name ? { name: v.name } : {}),
         }));
 
+    const poWiseExceptionsAll = Object.entries(byPo)
+      .sort((a, b) => b[1].count - a[1].count)
+      .map(([poNumber, v]) => ({
+        poNumber,
+        vendorCode: v.vendorCode,
+        vendorName: v.vendorName,
+        poType: v.poType,
+        plant: v.plant,
+        exceptionLineCount: v.count,
+        distinctLineItems: v.lineItems.size,
+        valueExposure: Number(v.valueExposure.toFixed(2)),
+      }));
+
     res.status(200).json({
       filtersApplied: req.body || {},
       validPurchaseGroups: PURCHASE_GROUPS,
@@ -313,11 +329,7 @@ export const getExecutiveSummary = async (req, res) => {
             notVerified: v.notVerified,
           }))
           .sort((a, b) => Number(a.pointNo) - Number(b.pointNo)),
-        poWiseExceptions: topN(byPo, 10).map((v) => ({
-          poNumber: v.key,
-          count: v.value,
-          valueExposure: v.valueExposure,
-        })),
+        poWiseExceptions: poWiseExceptionsAll,
         exceptionBySeverity: SEVERITY_LEVELS.map((severity) => ({
           severity,
           count: bySeverity[severity] || 0,
@@ -390,12 +402,6 @@ export const getExecutiveSummary = async (req, res) => {
   }
 };
 
-/**
- * POST /api/reports/filter-options
- * Populates the dashboard filter bar from data actually present in the DB
- * (plants/vendors/PO types), plus the static list of valid purchase groups
- * and severities used by the summary/drilldown endpoints.
- */
 export const getFilterOptions = async (req, res) => {
   try {
     const [plants, vendors, poTypes, groups] = await Promise.all([
@@ -449,21 +455,6 @@ export const getFilterOptions = async (req, res) => {
   }
 };
 
-/**
- * POST /api/reports/executive-drilldown
- * Body: same filters as /reports/executive-summary, PLUS
- *   { dimension: "plant"|"vendor"|"purchaseGroup"|"poType"|"severity"|"pointNo"|"month"|"holdBucket",
- *     value: <bucket key clicked on the chart>, page, pageSize }
- *
- * Returns the row-level PO lines that make up whichever bar/slice/point the
- * user clicked, using the exact same buildWhere() as the summary above so
- * the drill-down always matches what's on screen. Each row is annotated
- * with `exceptionPoints` (which rules failed + severity) for the drilldown
- * table. Row-level dimension matching (severity/pointNo especially) can't be
- * expressed as a simple Prisma `where` against the results Json column, so
- * it's done in-memory after the (already filtered, already indexed) rows are
- * fetched - fine at this data scale, same approach the summary endpoint uses.
- */
 export const getExecutiveDrilldown = async (req, res) => {
   try {
     const {
@@ -530,7 +521,6 @@ export const getExecutiveDrilldown = async (req, res) => {
           const overdue = new Date(row.hold_due_date) < today;
           return value === "Overdue" ? overdue : !overdue;
         }
-        // KPI-card dimensions - "how many rows make up this number box"
         case "anyException":
           return rowHasException(row);
         case "verifiedAny":
@@ -545,11 +535,6 @@ export const getExecutiveDrilldown = async (req, res) => {
       }
     };
 
-    // statusFilter narrows further by point classification - this is what
-    // makes clicking the green "Verified" segment of a stacked bar return a
-    // different, clearly-distinguishable result set than clicking the red
-    // "Not Verified" segment of the *same* bar (same dimension/value, both
-    // segments belong to the same PO type/purchase group).
     const matchesStatusFilter = (row) =>
       !statusFilter || rowHasStatus(row, statusFilter);
 
@@ -560,6 +545,8 @@ export const getExecutiveDrilldown = async (req, res) => {
     const skip = (Math.max(Number(page) || 1, 1) - 1) * take;
     const paged = filtered.slice(skip, skip + take).map((r) => ({
       ...r,
+      lineItemKey: uniqueKeyOf(r),
+      lineItem: lineItemOf(r),
       exceptionPoints: exceptionPointsOf(r),
     }));
 

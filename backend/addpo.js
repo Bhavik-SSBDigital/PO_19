@@ -105,6 +105,12 @@ function normalizeResult(r) {
  * an unrecognised key to prisma.auditResult.create()/update() throws. So
  * unlike the original addpo.js, we explicitly whitelist which fields get
  * forwarded to the DB, matching prisma/schema.prisma's AuditResult model.
+ *
+ * Added: "po_line_item" - the raw PO line-item number (e.g. "10"), now
+ * stored as its own column instead of only existing inside the composite
+ * "po_material_number" string. This is what lets the frontend show a real
+ * "PO Number / Line Item" column instead of one opaque PO number that hides
+ * multiple line entries.
  * ------------------------------------------------------------------------ */
 const AUDIT_RESULT_FIELDS = [
   "documentDate",
@@ -131,6 +137,7 @@ const AUDIT_RESULT_FIELDS = [
   "results",
   "auditedOn",
   "po_number",
+  "po_line_item",
   "po_type",
   "po_status",
   "hold_due_date",
@@ -237,6 +244,16 @@ async function processDocuments() {
           doc.results = doc.results.map(normalizeResult);
         }
 
+        /* ---------- ENSURE po_line_item / po_material_number ----------
+         * If an older JSON file (pre-fix) is fed in without po_line_item,
+         * derive it from po_material_number ("PO-LINE") as a fallback so
+         * this importer never regresses on older exports.
+         * -------------------------------------------------------------- */
+        if (!doc.po_line_item && doc.po_material_number) {
+          const parts = String(doc.po_material_number).split("-");
+          if (parts.length > 1) doc.po_line_item = parts[parts.length - 1];
+        }
+
         /* ---------- MAP FIELDS ----------
          * ✅ Cast all string schema fields explicitly, same as the Mongo
          *    version, then whitelist to the columns Prisma actually knows about.
@@ -248,6 +265,7 @@ async function processDocuments() {
           nameOfVendor: doc.vendor_name || doc.nameOfVendor || "",
           GSTInOfVendor: doc.vendor_gstin || doc.GSTInOfVendor || "",
           po_number: String(doc.po_number || ""),
+          po_line_item: doc.po_line_item ? String(doc.po_line_item) : "",
           vendor_code: String(doc.vendor_code || ""),
           tax_code: String(doc.tax_code || ""),
           hsn_code: String(doc.hsn_code || ""),

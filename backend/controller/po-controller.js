@@ -47,12 +47,6 @@ function buildWhere(body = {}) {
   return { AND: and };
 }
 
-// `severity` / `notVerifiedPointNo` filter on the per-point `results` Json
-// array, which Prisma can't express as a plain `where` clause (there's no
-// "some array element matches this condition" operator for Json columns
-// here). Both are applied in-memory after the DB-level `where` above has
-// already narrowed things down by every indexed column, so this only ever
-// scans the rows that already matched plant/vendor/PO type/etc.
 function matchesPointFilter(row, { severity, notVerifiedPointNo }) {
   if (!severity && !notVerifiedPointNo) return true;
   const wantedSeverities = severity
@@ -80,8 +74,55 @@ const INCLUDE = {
   },
 };
 
+const RESULT_INCLUDE = {
+  verificationWorkflow: {
+    include: {
+      assignee: {
+        select: { id: true, username: true, firstName: true, lastName: true },
+      },
+      closer: {
+        select: { id: true, username: true, firstName: true, lastName: true },
+      },
+      workflowSteps: { orderBy: { timestamp: "asc" } },
+    },
+  },
+};
+
+const ROW_SELECT = {
+  id: true,
+  po_number: true,
+  po_line_item: true,
+  po_material_number: true,
+  purchase_req: true,
+  po_type: true,
+  po_status: true,
+  po_created_date: true,
+  hold_due_date: true,
+  plant: true,
+  purchase_group: true,
+  vendor_code: true,
+  nameOfVendor: true,
+  material_code: true,
+  material_disc: true,
+  net_value: true,
+  results: true,
+};
+
+const lineItemOf = (row) => {
+  if (row.po_line_item) return row.po_line_item;
+  if (row.po_material_number && row.po_material_number.includes("-")) {
+    return row.po_material_number.split("-").slice(1).join("-");
+  }
+  return null;
+};
+
+const uniqueKeyOf = (row) =>
+  row.po_material_number || `${row.po_number}-${lineItemOf(row) ?? row.id}`;
+
 const withExceptionPoints = (row) => ({
   ...row,
+  lineItemKey: uniqueKeyOf(row),
+  lineItem: lineItemOf(row),
   exceptionPoints: exceptionPointsOf(row),
 });
 
@@ -98,11 +139,6 @@ export const get_po_audit_results = async (req, res) => {
     const skip = (Math.max(Number(page) || 1, 1) - 1) * take;
 
     if (severity || notVerifiedPointNo) {
-      // Row-level Json filter requested (e.g. drilled down from the
-      // dashboard's "Exceptions by Severity" or "Control-Wise Compliance"
-      // charts) - fetch the DB-filtered set, filter in memory, paginate
-      // after. `results` is always returned (no `select`), so no extra
-      // query is needed.
       const all = await prisma.auditResult.findMany({
         where,
         include: INCLUDE,
@@ -145,20 +181,6 @@ export const get_po_audit_results = async (req, res) => {
   }
 };
 
-const RESULT_INCLUDE = {
-  verificationWorkflow: {
-    include: {
-      assignee: {
-        select: { id: true, username: true, firstName: true, lastName: true },
-      },
-      closer: {
-        select: { id: true, username: true, firstName: true, lastName: true },
-      },
-      workflowSteps: { orderBy: { timestamp: "asc" } },
-    },
-  },
-};
-
 export const get_po_audit_result = async (req, res) => {
   try {
     const { poMaterialNumber, id, po_number, fiscalYear } = req.body || {};
@@ -169,8 +191,6 @@ export const get_po_audit_result = async (req, res) => {
         .json({ message: "id, poMaterialNumber, or po_number is required" });
     }
 
-    // Unique lookups - id or po_material_number both resolve to exactly one
-    // row (or none), so these can go straight through findFirst as before.
     if (id || poMaterialNumber) {
       const where = { type: "PO" };
       if (id) where.id = id;
@@ -186,7 +206,6 @@ export const get_po_audit_result = async (req, res) => {
       return res.status(200).json(withExceptionPoints(result));
     }
 
-    // po_number (+ fiscalYear) lookup - NOT guaranteed unique, see note above.
     const where = { type: "PO", po_number };
     if (fiscalYear) where.fiscalYear = fiscalYear;
 
@@ -204,14 +223,13 @@ export const get_po_audit_result = async (req, res) => {
       return res.status(200).json(withExceptionPoints(matches[0]));
     }
 
-    // Multiple line items under the same PO number (+ fiscal year) - refuse
-    // to guess. Return enough to build a picker.
     return res.status(200).json({
       multipleMatches: true,
       total: matches.length,
       results: matches.map((r) => ({
         id: r.id,
         po_number: r.po_number,
+        po_line_item: lineItemOf(r),
         po_material_number: r.po_material_number,
         material_code: r.material_code,
         material_disc: r.material_disc,
@@ -223,5 +241,31 @@ export const get_po_audit_result = async (req, res) => {
   } catch (error) {
     console.error("Error in get_po_audit_result:", error);
     return res.status(500).json({ message: "Failed to fetch PO audit result" });
+  }
+};
+
+export const get_po_lines = async (req, res) => {
+  try {
+    const { poNumber } = req.body || {};
+    if (!poNumber)
+      return res.status(400).json({ message: "poNumber is required" });
+
+    const rows = await prisma.auditResult.findMany({
+      where: { type: "PO", po_number: poNumber },
+      select: ROW_SELECT,
+      orderBy: { po_line_item: "asc" },
+    });
+
+    const lines = rows.map((r) => ({
+      ...r,
+      lineItemKey: uniqueKeyOf(r),
+      lineItem: lineItemOf(r),
+      exceptionPoints: exceptionPointsOf(r),
+    }));
+
+    return res.status(200).json({ poNumber, total: lines.length, lines });
+  } catch (error) {
+    console.error("Error in get_po_lines:", error);
+    return res.status(500).json({ message: "Failed to fetch PO lines" });
   }
 };

@@ -13,7 +13,7 @@ Each of the three inputs can be either .csv (the original export format) or
 
 Output:
     audit_results.xlsx
-        - "PO Line Results"  : one row per PO line item, one column per rule (1-18)
+        - "PO Line Results"  : one row per PO line item, one column per rule (1-19)
                                  with Verified / Not Verified / Not Applicable /
                                  Manual Review Required, plus a remarks column.
         - "Rule 19 - RC Overlap" : RC-level results (rule 19 is not a PO-line rule).
@@ -22,6 +22,32 @@ Output:
                                  was not present in the uploaded files. THESE MUST
                                  BE CONFIRMED WITH THE CLIENT (see accompanying
                                  Word document).
+
+CHANGELOG (this revision):
+    - Rule 19 was being silently dropped from every PO line's `results` array.
+      PO_LINE_RULES was defined three times in this module; the third
+      (final, winning) definition ended at rule 18 and omitted rule 19
+      entirely. There is now exactly ONE definition of PO_LINE_RULES, and it
+      includes all 19 rules.
+    - Rule 9 (tax logic) compared the Tax Master's "Category" string against
+      "CGST+SGST" / "CGST/SGST" / "LOCAL". The actual master data
+      (TAX code Master - Working.xlsx) uses "SGST+CGST" (opposite order) and
+      never contains "LOCAL" - so the exact-string comparison always failed
+      and every Gujarat-vendor line was marked Not Verified regardless of
+      whether its tax code was actually correct. Comparison is now done on a
+      normalized (whitespace/case/order independent) token set, and
+      non-GST-regime categories (VAT, CST, Excise, "No GST", "Input Tax",
+      "Out of GST", "Composit Scheme", GTA, ST, Works Contracts - all present
+      in the real master) are treated as Not Applicable instead of being
+      forced through a GST-only pass/fail test.
+    - Rule 15 (rate approval) looked for the literal substring "DWS-APPROVED"
+      / "DWS-AAPPROVED" in "Our Ref.". That literal string does not occur
+      anywhere in the real POAUDIT extracts; the actual data encodes the same
+      intent as "APPROVEDRATE", "ApprovedRate", "RATEAPPROVAL",
+      "APPROVE RATE", "APPROVED RAT" etc. The tag match is now normalized
+      (uppercased, whitespace/hyphen stripped) and matches any of these
+      known rate-approval tag variants, so the rule actually evaluates
+      instead of falling through to Not Applicable on every row.
 
 Usage:
     python audit_engine.py --poaudit POAUDIT_x.xlsx --cnd POAUDITCND_x.xlsx --rc POAUDITRC_x.xlsx --out audit_results.xlsx
@@ -60,6 +86,61 @@ VALID_PURCHASE_GROUPS = {
 # were NOT confirmed by the client at the time of writing. See Assumptions sheet.
 PR_RELEASED_VALUES = {"2"}          # ASSUMPTION - confirm with client
 RC_RELEASED_VALUES = {"R"}          # ASSUMPTION - confirm with client
+
+# --- Rule 9 support: normalized GST-category classification -----------------
+# Real values observed in "TAX code Master - Working.xlsx" -> Category column
+# include things like "SGST+CGST", "SGST+CGST + TCS", "IGST", "IGST+ TCS",
+# "VAT, ED", "CST, ED", "Works Contracts", "GTA", "ST", "No GST",
+# "Input Tax", "Out of Gst", "Composit Scheme", etc. Only the GST-regime
+# in-state / out-of-state categories are meaningful for this rule; everything
+# else (VAT/CST/Excise/Works-Contract/exempt/etc.) predates or sits outside
+# plain GST and should not be forced through an IGST-vs-SGST+CGST test.
+def _normalize_category_tokens(category_raw):
+    """Return a canonical, order/space/case-independent token for a Tax
+    Master 'Category' value, e.g. 'SGST + CGST', 'sgst+cgst', 'CGST+SGST'
+    all normalize to the same token."""
+    c = (category_raw or "").upper()
+    c = c.replace(" ", "")
+    # Strip trailing modifiers like "+TCS" - they don't change whether the
+    # code is an in-state or out-of-state GST code.
+    c = re.sub(r"\+TCS$", "", c)
+    parts = sorted(p for p in c.split("+") if p)
+    return "+".join(parts)
+
+
+GST_LOCAL_TOKENS = {_normalize_category_tokens("SGST+CGST"), _normalize_category_tokens("CGST+SGST")}
+GST_IGST_TOKENS = {_normalize_category_tokens("IGST")}
+# Categories that exist in the master but are not GST in/out-of-state codes
+# at all (older VAT/CST/Excise regime, exempt, works-contract, etc.) - rule 9
+# does not apply to these.
+GST_NOT_APPLICABLE_TOKENS = {
+    _normalize_category_tokens(x)
+    for x in [
+        "VAT", "VAT,ED", "VAT,EXCISE", "VAT,ST", "VAT,TCS,ED",
+        "CST", "CST,ED", "CST,EXCISE", "CST,ST", "CST EXEMPTED",
+        "ED", "EXCISE", "ST", "ST (WORKS CONTRACT)",
+        "WORKS CONTRACTS", "NGP WORKS CONTRACTS",
+        "GTA", "GTA EXEMPTION",
+        "NO GST", "GST EXEMPTED", "GST EXEMPTED+TCS", "OUT OF GST",
+        "INPUT TAX", "OUTPUT TAX", "COMPOSIT SCHEME", "SEZ", "REG",
+        "NGP", "NGP,ED", "NGP,ST", "NGP RD,ED",
+    ]
+}
+
+# --- Rule 15 support: normalized rate-approval tag matching ------------------
+# The rule sheet describes the tag as "DWS-APPROVED"; the real "Our Ref."
+# data instead contains free-text variants of "approved rate" / "rate
+# approval" with inconsistent spacing/casing. Matching is done against a
+# normalized (uppercased, spaces/hyphens stripped) form of the cell.
+RATE_APPROVAL_TAG_TOKENS = {
+    "APPROVEDRATE", "APPROVERATE", "RATEAPPROVAL", "APPROVEDRAT", "DWSAPPROVED", "DWSAAPPROVED",
+}
+
+
+def _is_rate_approval_tag(our_ref_raw):
+    normalized = re.sub(r"[\s\-]", "", (our_ref_raw or "").upper())
+    return any(token in normalized for token in RATE_APPROVAL_TAG_TOKENS)
+
 
 ASSUMPTIONS = []
 
@@ -424,6 +505,21 @@ def rule_08_rc_consistency(row, ctx):
 
 
 def rule_09_tax_logic(row, ctx):
+    """
+    FIXED: previously compared the tax master's Category string against
+    "CGST+SGST" / "CGST/SGST" / "LOCAL" - none of which occur in the real
+    master data (which uses "SGST+CGST", opposite token order, and no
+    "LOCAL" value at all). That made every in-state (Gujarat) line fail
+    regardless of whether the tax code was actually correct.
+
+    Now: normalize both sides (case/space/order-independent, "+TCS" suffix
+    stripped) and compare against known GST-local / GST-IGST token sets.
+    Categories that are not GST in/out-of-state codes at all (VAT, CST,
+    Excise, Works Contracts, GTA, exempt codes, etc. - all present in the
+    real master) are Not Applicable, since this rule is specifically about
+    the IGST-vs-SGST+CGST in-state/out-of-state distinction and doesn't
+    apply to pre-GST or exempt tax regimes.
+    """
     vendor_state = s(row, "Vendor State").upper()
     tax_code = s(row, "Tax code")
 
@@ -436,19 +532,27 @@ def rule_09_tax_logic(row, ctx):
     if not tax:
         return MANUAL, f"Tax Code {tax_code} not found in Tax Master"
 
-    gst_type = tax["category"]
+    category_token = _normalize_category_tokens(tax["category"])
 
-    if vendor_state == "GUJARAT" or vendor_state == "GJ":
-        if gst_type in ("CGST+SGST", "CGST/SGST", "LOCAL"):
-            return VERIFIED, f"Local vendor. Tax code {tax_code} is {gst_type}."
-        return NOT_VERIFIED, f"Vendor is in Gujarat but Tax Code {tax_code} is {gst_type}."
+    if category_token in GST_NOT_APPLICABLE_TOKENS:
+        return NA, f"Tax Code {tax_code} category '{tax['category']}' is not a GST in-state/out-of-state code (VAT/CST/exempt/etc.)"
 
-    else:
-        if gst_type == "IGST":
-            return VERIFIED, f"Outside Gujarat. Tax code {tax_code} is IGST."
-        return NOT_VERIFIED, f"Vendor is outside Gujarat but Tax Code {tax_code} is {gst_type}."
-    
-      
+    is_gujarat = vendor_state in ("GUJARAT", GUJARAT_STATE_CODE)
+
+    if is_gujarat:
+        if category_token in GST_LOCAL_TOKENS:
+            return VERIFIED, f"Local (Gujarat) vendor. Tax code {tax_code} is {tax['category']} (in-state)."
+        if category_token in GST_IGST_TOKENS:
+            return NOT_VERIFIED, f"Vendor is in Gujarat but Tax Code {tax_code} is {tax['category']} (IGST, out-of-state)."
+        return MANUAL, f"Vendor is in Gujarat; Tax Code {tax_code} category '{tax['category']}' does not clearly map to in-state/out-of-state GST - needs manual review."
+
+    if category_token in GST_IGST_TOKENS:
+        return VERIFIED, f"Outside Gujarat. Tax code {tax_code} is {tax['category']} (IGST)."
+    if category_token in GST_LOCAL_TOKENS:
+        return NOT_VERIFIED, f"Vendor is outside Gujarat but Tax Code {tax_code} is {tax['category']} (in-state, expected IGST)."
+    return MANUAL, f"Vendor is outside Gujarat; Tax Code {tax_code} category '{tax['category']}' does not clearly map to in-state/out-of-state GST - needs manual review."
+
+
 def rule_10_vendor_material_tax_consistency(row, ctx):
     vendor = s(row, "Vendor Code")
     material = s(row, "Material Code")
@@ -521,14 +625,23 @@ def rule_14_exw_fca_no_freight(row, ctx):
 
 
 def rule_15_rate_approval(row, ctx):
-    our_ref = s(row, "Our Ref.").upper()
-    # Reverting to NA. If the tag is missing, it skips the check instead of failing it.
-    if "DWS-APPROVED" not in our_ref and "DWS-AAPPROVED" not in our_ref:
-        return NA, "'DWS-APPROVED' tag not found in Our Ref."
-        
-    if any(code in our_ref for code in DWS_APPROVERS):
+    """
+    FIXED: previously required the literal substring "DWS-APPROVED" /
+    "DWS-AAPPROVED" in "Our Ref." - a string that does not appear anywhere
+    in the real POAUDIT extracts, so this rule was Not Applicable on 100%
+    of rows. The real data expresses the same "rate approved" tag as
+    "APPROVEDRATE" / "RATEAPPROVAL" / "APPROVE RATE" / minor variants.
+    Matching is now done on a normalized (uppercased, space/hyphen-stripped)
+    value against the known tag variants (see _is_rate_approval_tag).
+    """
+    our_ref = s(row, "Our Ref.")
+    if not _is_rate_approval_tag(our_ref):
+        return NA, "No rate-approval tag found in Our Ref."
+
+    our_ref_upper = our_ref.upper()
+    if any(code in our_ref_upper for code in DWS_APPROVERS):
         return VERIFIED, "Approval initials found in Our Ref."
-    return NOT_VERIFIED, "DWS-APPROVED tag present but no recognised approver initials found"
+    return NOT_VERIFIED, "Rate-approval tag present but no recognised approver initials (KKB/SRS/PJP/DAULAT/NHV/CVS) found"
 
 
 def rule_16_service_po_item_category(row, ctx):
@@ -570,15 +683,21 @@ def rule_19_rc_overlap(row, ctx):
     rc_no = s(row, "RC no.")
     if not rc_no:
         return NA, "No RC assigned to this line"
-    
+
     vendor = s(row, "Vendor Code")
     material = s(row, "Material Code")
-    
+
     overlaps = ctx.get("rc_overlaps", {}).get((vendor, material, rc_no))
     if overlaps:
         return NOT_VERIFIED, f"RC {rc_no} overlaps with other RC(s): {overlaps}"
     return VERIFIED, "No overlapping RC validity found"
 
+
+# ---------------------------------------------------------------------------
+# The single, authoritative list of PO-line rules. (Previously this was
+# defined three times in this module; the last definition silently dropped
+# rule 19 from every result set. There is now exactly one definition.)
+# ---------------------------------------------------------------------------
 PO_LINE_RULES = [
     (1, "Release Verification (PR released before PO)", rule_01_release_verification),
     (2, "PR assigned to each PO line", rule_02_pr_assigned),
@@ -600,49 +719,6 @@ PO_LINE_RULES = [
     (18, "Multiple POs to same vendor on same day flagged", rule_18_multiple_po_same_day),
     (19, "RC Overlap Validation", rule_19_rc_overlap),
 ]
-PO_LINE_RULES = [
-    (1, "Release Verification (PR released before PO)", rule_01_release_verification),
-    (2, "PR assigned to each PO line", rule_02_pr_assigned),
-    (3, "PR Creation date within 6 months of PO", rule_03_pr_within_6_months),
-    (4, "PR date precedes PO date", rule_04_pr_precedes_po),
-    (5, "Delivery date after PR date", rule_05_delivery_after_pr),
-    (6, "PO qty vs PR qty (tolerance)", rule_06_quantity_control),
-    (7, "RC released", rule_07_rc_released),
-    (8, "RC assigned consistently across same-material lines", rule_08_rc_consistency),
-    (9, "IGST only for non-Gujarat vendors", rule_09_tax_logic),
-    (10, "Vendor-Material tax code consistency", rule_10_vendor_material_tax_consistency),
-    (11, "MSME payment term <=45 days (Z102)", rule_11_msme_payment_term),
-    (12, "General payment term >=21 days", rule_12_general_payment_term),
-    (13, "EYW inco-term requires freight condition", rule_13_eyw_freight_required),
-    (14, "EXW/FCA must not have freight condition", rule_14_exw_fca_no_freight),
-    (15, "Rate approval by authorised approver", rule_15_rate_approval),
-    (16, "Service PO (ZSER) uses Item Cat D + Acct Assignment K", rule_16_service_po_item_category),
-    (17, "ZLRM must not use Item Cat D + Acct Assignment K", rule_17_zlrm_no_service_category),
-    (18, "Multiple POs to same vendor on same day flagged", rule_18_multiple_po_same_day),
-    (19, "RC Overlap Validation", rule_19_rc_overlap),
-]
-
-PO_LINE_RULES = [
-    (1, "Release Verification (PR released before PO)", rule_01_release_verification),
-    (2, "PR assigned to each PO line", rule_02_pr_assigned),
-    (3, "PR Creation date within 6 months of PO", rule_03_pr_within_6_months),
-    (4, "PR date precedes PO date", rule_04_pr_precedes_po),
-    (5, "Delivery date after PR date", rule_05_delivery_after_pr),
-    (6, "PO qty vs PR qty (tolerance)", rule_06_quantity_control),
-    (7, "RC released", rule_07_rc_released),
-    (8, "RC assigned consistently across same-material lines", rule_08_rc_consistency),
-    (9, "IGST only for non-Gujarat vendors", rule_09_tax_logic),
-    (10, "Vendor-Material tax code consistency", rule_10_vendor_material_tax_consistency),
-    (11, "MSME payment term <=45 days (Z102)", rule_11_msme_payment_term),
-    (12, "General payment term >=21 days", rule_12_general_payment_term),
-    (13, "EYW inco-term requires freight condition", rule_13_eyw_freight_required),
-    (14, "EXW/FCA must not have freight condition", rule_14_exw_fca_no_freight),
-    (15, "Rate approval by authorised approver", rule_15_rate_approval),
-    (16, "Service PO (ZSER) uses Item Cat D + Acct Assignment K", rule_16_service_po_item_category),
-    (17, "ZLRM must not use Item Cat D + Acct Assignment K", rule_17_zlrm_no_service_category),
-    (18, "Multiple POs to same vendor on same day flagged", rule_18_multiple_po_same_day),
-]
-
 
 
 # ---------------------------------------------------------------------------
@@ -710,7 +786,7 @@ def build_context(po_rows, cnd_by_po, rc_rows):
                 "from": valid_from,
                 "to": valid_to
             })
-            
+
     for (vendor, material), rcs in by_vendor_material.items():
         for i, rc_a in enumerate(rcs):
             overlaps = []
@@ -763,6 +839,11 @@ def build_addpo_records(po_rows, ctx):
     Build one JSON record per PO line item, in the exact shape addpo.js
     expects (same field names as prisma/schema.prisma's AuditResult model).
     Feed the output straight into: node addpo.js <this_file>.json
+
+    Now also emits `po_line_item` (the raw PO line-item number, e.g. "10",
+    "20") as its own field, in addition to `po_material_number`
+    ("{po_number}-{line_item}"), so the frontend can display a clean,
+    disambiguating column instead of parsing the combined key itself.
     """
     records = []
     for row in po_rows:
@@ -783,6 +864,7 @@ def build_addpo_records(po_rows, ctx):
         record = {
             "type": "PO",
             "po_number": po_number,
+            "po_line_item": line_item,
             "po_material_number": f"{po_number}-{line_item}",
             "po_type": s(row, "PO Type"),
             "po_status": po_status,
