@@ -29,11 +29,60 @@ import {
   BucketTooltip,
 } from "./components/tooltips";
 
-// --- NEW MODERN THEME COLORS ---
-const SEVERITY_COLORS = { Critical: "#ef4444", High: "#f97316", Medium: "#eab308", Low: "#94a3b8" };
-const BAR_COLOR = "#6366f1"; // Sleek Indigo
-const VERIFIED_COLOR = "#10b981"; // Emerald Green
-const NOT_VERIFIED_COLOR = "#f43f5e"; // Rose Red
+// --- REFINED DASHBOARD PALETTE ---
+// A cohesive slate/indigo base with a teal (verified) + rose (risk) pair
+// that reads clearly at a glance and holds together across every chart,
+// rather than each chart reaching for its own accent.
+const SEVERITY_COLORS = { Critical: "#dc2626", High: "#ea580c", Medium: "#ca8a04", Low: "#64748b" };
+const BAR_COLOR = "#4f46e5"; // Indigo — primary/neutral series
+const VERIFIED_COLOR = "#0d9488"; // Teal — compliant
+const NOT_VERIFIED_COLOR = "#e11d48"; // Rose — exception
+const GRID_COLOR = "#eef2f7"; // Softer, quieter grid line
+
+// Gradient ids shared by every bar/line chart below, defined once per chart
+// via <defs> so bars read as a considered surface rather than a flat fill.
+const ChartGradients = () => (
+  <defs>
+    <linearGradient id="gradVerified" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stopColor="#14b8a6" stopOpacity={1} />
+      <stop offset="100%" stopColor="#0d9488" stopOpacity={0.85} />
+    </linearGradient>
+    <linearGradient id="gradNotVerified" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stopColor="#fb7185" stopOpacity={1} />
+      <stop offset="100%" stopColor="#e11d48" stopOpacity={0.9} />
+    </linearGradient>
+    <linearGradient id="gradPrimary" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stopColor="#818cf8" stopOpacity={1} />
+      <stop offset="100%" stopColor="#4f46e5" stopOpacity={0.9} />
+    </linearGradient>
+    <linearGradient id="gradLine" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stopColor="#4f46e5" />
+      <stop offset="100%" stopColor="#7c3aed" />
+    </linearGradient>
+  </defs>
+);
+
+// Shared label-shortening helpers so long names/codes never collide on a
+// crowded x-axis. Full value always remains available in the tooltip.
+const truncateLabel = (str, max = 14) => {
+  if (!str) return str;
+  const s = String(str);
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+};
+
+// PO numbers are long numeric strings — showing the trailing digits (the
+// part that actually varies/identifies the PO) is more scannable than a
+// truncated prefix, which tends to look identical across many POs.
+const shortenPoNumber = (v, tail = 6) => {
+  if (!v) return v;
+  const s = String(v);
+  return s.length > tail ? `…${s.slice(-tail)}` : s;
+};
+
+const formatMonthLabel = (m) => {
+  const parsed = moment(m, "YYYY-MM");
+  return parsed.isValid() ? parsed.format("MMM 'YY") : m;
+};
 
 const InfoTip = ({ text, placement = "top" }) => {
   if (!text) return null;
@@ -46,7 +95,7 @@ const InfoTip = ({ text, placement = "top" }) => {
         cursor: "help", 
         verticalAlign: "text-bottom", 
         transition: 'color 0.2s',
-        '&:hover': { color: '#6366f1' } 
+        '&:hover': { color: '#4f46e5' } 
       }} />
     </MuiTooltip>
   );
@@ -90,7 +139,7 @@ const KpiCard = ({ label, value, sublabel, loading, onClick, info }) => {
           '&:hover': {
             transform: 'translateY(-6px)',
             boxShadow: '0 14px 28px rgba(0,0,0,0.08)',
-            borderColor: alpha('#6366f1', 0.3)
+            borderColor: alpha('#4f46e5', 0.3)
           }
         })
       }}
@@ -123,6 +172,44 @@ const ChartPanel = ({ title, hint, children, height = 320, info }) => (
   </Paper>
 );
 
+// Upgraded Tooltip for Compliance Charts (Fancy shadows, rounded corners)
+const ComplianceTooltip = ({ active, payload, labelKey, labelFormatter }) => {
+  if (!active || !payload || !payload.length) return null;
+  const d = payload[0]?.payload;
+  if (!d) return null;
+  return (
+    <Box
+      sx={{
+        bgcolor: "#fff",
+        border: "1px solid",
+        borderColor: "grey.100",
+        borderRadius: 3,
+        boxShadow: "0 10px 15px -3px rgba(0,0,0,0.1)",
+        p: 2,
+        minWidth: 180,
+      }}
+    >
+      <Typography variant="body2" sx={{ fontWeight: 800, mb: 1, color: '#1e293b' }}>
+        {labelFormatter ? labelFormatter(d) : d[labelKey]}
+      </Typography>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+        <Typography variant="caption" sx={{ color: VERIFIED_COLOR, fontWeight: 700 }}>Verified:</Typography>
+        <Typography variant="caption" sx={{ color: '#1e293b', fontWeight: 700 }}>{d.verified}</Typography>
+      </Box>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+        <Typography variant="caption" sx={{ color: NOT_VERIFIED_COLOR, fontWeight: 700 }}>Not Verified:</Typography>
+        <Typography variant="caption" sx={{ color: '#1e293b', fontWeight: 700 }}>{d.notVerified}</Typography>
+      </Box>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 1, pt: 1, borderTop: '1px solid', borderColor: 'grey.100' }}>
+        <Typography variant="caption" sx={{ color: "#64748b", fontWeight: 700 }}>Compliance:</Typography>
+        <Typography variant="caption" sx={{ color: '#1e293b', fontWeight: 800 }}>
+          {d.compliancePct != null ? `${d.compliancePct}%` : "N/A"}
+        </Typography>
+      </Box>
+    </Box>
+  );
+};
+
 const isCancel = (err) => err?.code === "ERR_CANCELED" || err?.name === "CanceledError";
 const payloadOf = (d) => d?.payload ?? d ?? {};
 
@@ -148,6 +235,14 @@ const joinLineItems = (r) => {
       : r.lineItems.join(", ");
   }
   return r.distinctLineItems ? `${r.distinctLineItems} line item(s)` : "—";
+};
+
+const formatKpiValue = (value) => {
+  if (value == null) return "—";
+  return new Intl.NumberFormat('en-US', {
+    notation: "compact",
+    maximumFractionDigits: 1 // Changes 12.54M to 12.5M
+  }).format(value);
 };
 
 const PoWiseExceptionsTable = ({ rows, loading, onRowAction }) => {
@@ -227,7 +322,7 @@ const PoWiseExceptionsTable = ({ rows, loading, onRowAction }) => {
       <Box sx={{ p: 3, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 2 }}>
         <Typography variant="h6" sx={{ fontWeight: 800, color: '#1e293b', display: "flex", alignItems: "center" }}>
           PO-Wise Exceptions 
-          <Chip size="small" label={`${rows.length} POs`} sx={{ ml: 2, fontWeight: 700, bgcolor: alpha('#6366f1', 0.1), color: '#6366f1' }} />
+          <Chip size="small" label={`${rows.length} POs`} sx={{ ml: 2, fontWeight: 700, bgcolor: alpha('#4f46e5', 0.1), color: '#4f46e5' }} />
           <InfoTip text="Click ANY row to open its PO Data & Results — in a new tab or right here in a preview." />
         </Typography>
         <TextField
@@ -282,7 +377,7 @@ const PoWiseExceptionsTable = ({ rows, loading, onRowAction }) => {
                     cursor: "pointer", 
                     '&:last-child td': { border: 0 },
                     transition: 'background-color 0.2s',
-                    '&:hover': { bgcolor: alpha('#6366f1', 0.04) }
+                    '&:hover': { bgcolor: alpha('#4f46e5', 0.04) }
                   }} 
                   onClick={(e) => openRowMenu(e, r)}
                 >
@@ -312,7 +407,7 @@ const PoWiseExceptionsTable = ({ rows, loading, onRowAction }) => {
                       <span>{r.paymentTermDescription || r.paymentTerm || "—"}</span>
                     </MuiTooltip>
                   </TableCell>
-                  <TableCell sx={{ fontWeight: 700, color: r.exceptionLineCount > 0 ? '#ef4444' : 'inherit' }}>
+                  <TableCell sx={{ fontWeight: 700, color: r.exceptionLineCount > 0 ? '#dc2626' : 'inherit' }}>
                     {r.exceptionLineCount}
                   </TableCell>
                   <TableCell sx={{ whiteSpace: 'nowrap', fontWeight: 500, color: '#1e293b' }}>
@@ -444,6 +539,9 @@ const ExecutiveDashboard = () => {
     (charts.exceptionBySeverity || []).forEach((d) => lines.push(`Exceptions by Severity,${d.severity},${d.count},${d.pct}%`));
     (charts.plantWiseExceptions || []).forEach((d) => lines.push(`Plant-Wise Exceptions,${csvEscape(d.plantName || d.key)},${d.value},valueExposure=${d.valueExposure}`));
     (charts.vendorWiseTopExceptions || []).forEach((d) => lines.push(`Vendor-Wise Exceptions,${csvEscape(d.vendorName || d.name || d.key)},${d.value},valueExposure=${d.valueExposure}`));
+    (charts.plantWiseCompliance || []).forEach((d) => lines.push(`Plant-Wise Compliance,${csvEscape(d.plantName || d.plant)},${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`));
+    (charts.vendorWiseCompliance || []).forEach((d) => lines.push(`Vendor-Wise Compliance,${csvEscape(d.vendorName || d.vendorCode)},${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`));
+    (charts.poNumberWiseCompliance || []).forEach((d) => lines.push(`PO-Wise Compliance,${csvEscape(d.poNumber)},${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`));
     (charts.monthlyExceptionTrend || []).forEach((d) => lines.push(`Monthly Exception Trend,${d.month},${d.count},valueExposure=${d.valueExposure}`));
     const blob = new Blob([lines.join("\n")], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
@@ -461,7 +559,7 @@ const ExecutiveDashboard = () => {
           <Typography variant="h3" sx={{ 
             fontWeight: 900, 
             letterSpacing: -1, 
-            background: 'linear-gradient(45deg, #2563eb, #7c3aed)', 
+            background: 'linear-gradient(45deg, #4338ca, #7c3aed)', 
             WebkitBackgroundClip: 'text', 
             WebkitTextFillColor: 'transparent',
             mb: 1.5 
@@ -485,8 +583,8 @@ const ExecutiveDashboard = () => {
               fontWeight: 800, 
               borderRadius: 2, 
               px: 1,
-              bgcolor: kpis.overallComplianceScore >= 80 ? alpha('#10b981', 0.1) : kpis.overallComplianceScore >= 50 ? alpha('#eab308', 0.1) : alpha('#ef4444', 0.1),
-              color: kpis.overallComplianceScore >= 80 ? '#10b981' : kpis.overallComplianceScore >= 50 ? '#eab308' : '#ef4444'
+              bgcolor: kpis.overallComplianceScore >= 80 ? alpha('#0d9488', 0.1) : kpis.overallComplianceScore >= 50 ? alpha('#ca8a04', 0.1) : alpha('#dc2626', 0.1),
+              color: kpis.overallComplianceScore >= 80 ? '#0d9488' : kpis.overallComplianceScore >= 50 ? '#ca8a04' : '#dc2626'
             }}
           />
           <Box sx={{ width: '1px', height: 24, bgcolor: 'divider' }} />
@@ -499,8 +597,8 @@ const ExecutiveDashboard = () => {
           </MuiTooltip>
           <MuiTooltip title="Refresh">
             <Box component="span" sx={{ display: "inline-flex", cursor: loading ? "not-allowed" : "pointer" }}>
-              <IconButton onClick={() => fetchSummary(filters)} disabled={loading} sx={{ bgcolor: alpha('#6366f1', 0.1), '&:hover': { bgcolor: alpha('#6366f1', 0.2) } }}>
-                <RefreshRoundedIcon fontSize="small" sx={{ color: '#6366f1' }} />
+              <IconButton onClick={() => fetchSummary(filters)} disabled={loading} sx={{ bgcolor: alpha('#4f46e5', 0.1), '&:hover': { bgcolor: alpha('#4f46e5', 0.2) } }}>
+                <RefreshRoundedIcon fontSize="small" sx={{ color: '#4f46e5' }} />
               </IconButton>
             </Box>
           </MuiTooltip>
@@ -537,9 +635,16 @@ const ExecutiveDashboard = () => {
         <Grid item xs={6} sm={4} md={2.4}>
           <KpiCard label="Hold PO Count" value={kpis.holdPOCount ?? "—"} sublabel="Click to drill in" loading={loading} info={kpiDefs.holdPOCount} onClick={kpis.holdPOCount ? () => openDrilldown("hold", true, "Hold POs") : undefined} />
         </Grid>
-        <Grid item xs={6} sm={4} md={2.4}>
-          <KpiCard label="Exception Exposure" value={kpis.exceptionValueExposure != null ? `$${kpis.exceptionValueExposure.toLocaleString()}` : "—"} sublabel="Click to drill in" loading={loading} info={kpiDefs.exceptionValueExposure} onClick={kpis.exceptionValueExposure ? () => openDrilldown("anyException", true, "Lines Contributing to Exception Value Exposure") : undefined} />
-        </Grid>
+<Grid item xs={6} sm={4} md={2.4}>
+  <KpiCard 
+    label="Exception Exposure" 
+    value={formatKpiValue(kpis.exceptionValueExposure)} 
+    sublabel="Click to drill in" 
+    loading={loading} 
+    info={kpiDefs.exceptionValueExposure} 
+    onClick={kpis.exceptionValueExposure ? () => openDrilldown("anyException", true, "Lines Contributing to Exception Value Exposure") : undefined} 
+  />
+</Grid>
         <Grid item xs={6} sm={4} md={2.4}>
           <KpiCard label="Verified Checks" value={kpis.verifiedCount ?? "—"} sublabel="Click to drill in" loading={loading} info={kpiDefs.verifiedCount} onClick={kpis.verifiedCount ? () => openDrilldown("verifiedAny", true, "Lines with at Least One Verified Checkpoint", { statusFilter: "verified" }) : undefined} />
         </Grid>
@@ -564,10 +669,11 @@ const ExecutiveDashboard = () => {
             {loading ? <Skeleton variant="rounded" height="100%" sx={{ borderRadius: 2 }} /> : (
               <ResponsiveContainer width="100%" height="95%">
                 <BarChart data={charts.controlWiseCompliance || []} margin={{ top: 20 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <ChartGradients />
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={GRID_COLOR} />
                   <XAxis dataKey="pointNo" tickFormatter={(v) => `#${v}`} interval={0} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12, fontWeight: 500 }} />
                   <YAxis domain={[0, 100]} unit="%" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12, fontWeight: 500 }} />
-                  <Tooltip content={<ControlWiseTooltip />} cursor={{ fill: alpha('#6366f1', 0.05) }} />
+                  <Tooltip content={<ControlWiseTooltip />} cursor={{ fill: alpha('#4f46e5', 0.05) }} />
                   <Bar
                     dataKey="compliancePct"
                     radius={[6, 6, 0, 0]}
@@ -608,7 +714,7 @@ const ExecutiveDashboard = () => {
                     }}
                   >
                     {(charts.exceptionBySeverity || []).map((entry) => (
-                      <Cell key={entry.severity} fill={SEVERITY_COLORS[entry.severity] || "#94a3b8"} />
+                      <Cell key={entry.severity} fill={SEVERITY_COLORS[entry.severity] || "#64748b"} />
                     ))}
                   </Pie>
                   <Tooltip content={<SeverityTooltip />} />
@@ -623,18 +729,19 @@ const ExecutiveDashboard = () => {
           <ChartPanel title="PO Type-Wise Compliance" hint="Click a bar to drill in" info={chartDefs.poTypeWiseCompliance}>
             {loading ? <Skeleton variant="rounded" height="100%" sx={{ borderRadius: 2 }} /> : (
               <ResponsiveContainer>
-                <BarChart data={charts.poTypeWiseCompliance || []} margin={{ top: 10 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                <BarChart data={charts.poTypeWiseCompliance || []} margin={{ top: 10, bottom: 30, right: 20 }}>
+                  <ChartGradients />
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={GRID_COLOR} />
                   <XAxis dataKey="poType" tickFormatter={(v) => {
                     const row = (charts.poTypeWiseCompliance || []).find((c) => c.poType === v);
-                    return row?.poTypeName || v;
-                  }} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12, fontWeight: 500 }} />
+                    return truncateLabel(row?.poTypeName || v, 14);
+                  }} angle={-30} textAnchor="end" interval={0} height={70} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12, fontWeight: 500 }} tickMargin={8} />
                   <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12, fontWeight: 500 }} />
-                  <Tooltip content={<PoTypeTooltip />} cursor={{ fill: alpha('#6366f1', 0.05) }} />
+                  <Tooltip content={<PoTypeTooltip />} cursor={{ fill: alpha('#4f46e5', 0.05) }} />
                   <Legend iconType="circle" wrapperStyle={{ paddingTop: 10, fontSize: '14px', fontWeight: 600 }} />
-                  <Bar dataKey="verified" stackId="a" fill={VERIFIED_COLOR} name="Verified" cursor="pointer"
+                  <Bar dataKey="verified" stackId="a" fill="url(#gradVerified)" name="Verified" cursor="pointer"
                     onClick={(d) => { const p = payloadOf(d); openDrilldown("poType", p.poType, `PO Type: ${p.poTypeName || p.poType} - Verified lines`, { statusFilter: "verified" }); }} />
-                  <Bar dataKey="notVerified" stackId="a" fill={NOT_VERIFIED_COLOR} name="Not Verified" radius={[6, 6, 0, 0]} cursor="pointer"
+                  <Bar dataKey="notVerified" stackId="a" fill="url(#gradNotVerified)" name="Not Verified" radius={[6, 6, 0, 0]} cursor="pointer"
                     onClick={(d) => { const p = payloadOf(d); openDrilldown("poType", p.poType, `PO Type: ${p.poTypeName || p.poType} - Not-Verified lines`, { statusFilter: "notVerified" }); }} />
                 </BarChart>
               </ResponsiveContainer>
@@ -647,14 +754,15 @@ const ExecutiveDashboard = () => {
             {loading ? <Skeleton variant="rounded" height="100%" sx={{ borderRadius: 2 }} /> : (
               <ResponsiveContainer>
                 <LineChart data={charts.monthlyExceptionTrend || []} margin={{ top: 20, right: 20 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12, fontWeight: 500 }} />
+                  <ChartGradients />
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={GRID_COLOR} />
+                  <XAxis dataKey="month" tickFormatter={formatMonthLabel} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12, fontWeight: 500 }} />
                   <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12, fontWeight: 500 }} />
                   <Tooltip content={<MonthlyTooltip />} />
                   <Line
                     type="monotone"
                     dataKey="count"
-                    stroke={BAR_COLOR}
+                    stroke="url(#gradLine)"
                     strokeWidth={4}
                     dot={(props) => (
                       <circle
@@ -662,16 +770,135 @@ const ExecutiveDashboard = () => {
                         cx={props.cx}
                         cy={props.cy}
                         r={6}
-                        fill={BAR_COLOR}
+                        fill="#4f46e5"
                         stroke="#ffffff"
                         strokeWidth={3}
                         style={{ cursor: "pointer", filter: 'drop-shadow(0px 4px 6px rgba(0, 0, 0, 0.1))' }}
                         onClick={() => openDrilldown("month", props.payload.month, `Exceptions in ${moment(props.payload.month, "YYYY-MM").format("MMMM YYYY")}`)}
                       />
                     )}
-                    activeDot={{ r: 9, strokeWidth: 0 }}
+                    activeDot={{ r: 9, strokeWidth: 0, fill: "#7c3aed" }}
                   />
                 </LineChart>
+              </ResponsiveContainer>
+            )}
+          </ChartPanel>
+        </Grid>
+
+        {/* Plant-Wise Compliance (fixed x-axis crowding: rotated + truncated labels) */}
+        <Grid item xs={12} md={6}>
+          <ChartPanel
+            title="Plant-Wise Compliance"
+            hint="% verified per plant. Click a segment to drill in."
+            info="Shows verified vs. not-verified checkpoint counts for every plant, so you can see which locations need the most attention."
+          >
+            {loading ? <Skeleton variant="rounded" height="100%" sx={{ borderRadius: 2 }} /> : (
+              <ResponsiveContainer>
+                <BarChart data={charts.plantWiseCompliance || []} margin={{ top: 10, bottom: 40, right: 20 }}>
+                  <ChartGradients />
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={GRID_COLOR} />
+                  <XAxis
+                    dataKey="plant"
+                    tickFormatter={(v) => {
+                      const row = (charts.plantWiseCompliance || []).find((c) => c.plant === v);
+                      return truncateLabel(row?.plantName || v, 14);
+                    }}
+                    angle={-45}
+                    textAnchor="end"
+                    interval={0}
+                    height={85}
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: '#64748b', fontSize: 12, fontWeight: 500 }}
+                    tickMargin={10}
+                  />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12, fontWeight: 500 }} />
+                  <Tooltip content={<ComplianceTooltip labelFormatter={(d) => d.plantName || d.plant} />} cursor={{ fill: alpha('#4f46e5', 0.05) }} />
+                  <Legend iconType="circle" wrapperStyle={{ paddingTop: 10, fontSize: '14px', fontWeight: 600 }} />
+                  <Bar dataKey="verified" stackId="a" fill="url(#gradVerified)" name="Verified" cursor="pointer"
+                    onClick={(d) => { const p = payloadOf(d); openDrilldown("plant", p.plant, `Plant: ${p.plantName || p.plant} - Verified lines`, { statusFilter: "verified" }); }} />
+                  <Bar dataKey="notVerified" stackId="a" fill="url(#gradNotVerified)" name="Not Verified" radius={[6, 6, 0, 0]} cursor="pointer"
+                    onClick={(d) => { const p = payloadOf(d); openDrilldown("plant", p.plant, `Plant: ${p.plantName || p.plant} - Not-Verified lines`, { statusFilter: "notVerified" }); }} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </ChartPanel>
+        </Grid>
+
+        {/* Vendor-Wise Compliance (tighter truncation to match plant/PO charts) */}
+        <Grid item xs={12} md={6}>
+          <ChartPanel
+            title="Vendor-Wise Compliance"
+            hint="Top 15 vendors by not-verified count. Click a segment to drill in."
+            info="Shows verified vs. not-verified checkpoint counts for the 15 vendors contributing the most compliance exceptions."
+          >
+            {loading ? <Skeleton variant="rounded" height="100%" sx={{ borderRadius: 2 }} /> : (
+              <ResponsiveContainer>
+                <BarChart data={charts.vendorWiseCompliance || []} margin={{ top: 10, bottom: 50, right: 20 }}>
+                  <ChartGradients />
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={GRID_COLOR} />
+                  <XAxis
+                    dataKey="vendorCode"
+                    tickFormatter={(v) => {
+                      const row = (charts.vendorWiseCompliance || []).find((c) => c.vendorCode === v);
+                      return truncateLabel(row?.vendorName || v, 14);
+                    }}
+                    angle={-45}
+                    textAnchor="end"
+                    interval={0}
+                    height={100}
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: '#64748b', fontSize: 12, fontWeight: 500 }}
+                    tickMargin={10}
+                  />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12, fontWeight: 500 }} />
+                  <Tooltip content={<ComplianceTooltip labelFormatter={(d) => d.vendorName || d.vendorCode} />} cursor={{ fill: alpha('#4f46e5', 0.05) }} />
+                  <Legend iconType="circle" wrapperStyle={{ paddingTop: 10, fontSize: '14px', fontWeight: 600 }} />
+                  <Bar dataKey="verified" stackId="a" fill="url(#gradVerified)" name="Verified" cursor="pointer"
+                    onClick={(d) => { const p = payloadOf(d); openDrilldown("vendor", p.vendorCode, `Vendor: ${p.vendorName || p.vendorCode} - Verified lines`, { statusFilter: "verified" }); }} />
+                  <Bar dataKey="notVerified" stackId="a" fill="url(#gradNotVerified)" name="Not Verified" radius={[6, 6, 0, 0]} cursor="pointer"
+                    onClick={(d) => { const p = payloadOf(d); openDrilldown("vendor", p.vendorCode, `Vendor: ${p.vendorName || p.vendorCode} - Not-Verified lines`, { statusFilter: "notVerified" }); }} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </ChartPanel>
+        </Grid>
+
+        {/* PO-Wise Compliance — this was the most congested axis (full PO
+            numbers, rotated, no truncation). Now shows just the trailing
+            digits, which is both shorter and more distinguishing between
+            adjacent POs; full number still shows in the tooltip. */}
+        <Grid item xs={12}>
+          <ChartPanel
+            title="PO-Wise Compliance"
+            hint="Top 15 POs by not-verified count. Labels show the last 6 digits of each PO — hover a bar for the full number. Click a segment to drill in."
+            info="Shows verified vs. not-verified checkpoint counts for the 15 individual POs contributing the most compliance exceptions."
+            height={380}
+          >
+            {loading ? <Skeleton variant="rounded" height="100%" sx={{ borderRadius: 2 }} /> : (
+              <ResponsiveContainer>
+                <BarChart data={charts.poNumberWiseCompliance || []} margin={{ top: 10, bottom: 30, right: 20 }}>
+                  <ChartGradients />
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={GRID_COLOR} />
+                  <XAxis
+                    dataKey="poNumber"
+                    tickFormatter={(v) => shortenPoNumber(v, 6)}
+                    interval={0}
+                    height={45}
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: '#64748b', fontSize: 12, fontWeight: 500 }}
+                    tickMargin={10}
+                  />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12, fontWeight: 500 }} />
+                  <Tooltip content={<ComplianceTooltip labelKey="poNumber" />} cursor={{ fill: alpha('#4f46e5', 0.05) }} />
+                  <Legend iconType="circle" wrapperStyle={{ paddingTop: 10, fontSize: '14px', fontWeight: 600 }} />
+                  <Bar dataKey="verified" stackId="a" fill="url(#gradVerified)" name="Verified" cursor="pointer"
+                    onClick={(d) => { const p = payloadOf(d); openDrilldown("poNumber", p.poNumber, `PO ${p.poNumber} - Verified lines`, { statusFilter: "verified" }); }} />
+                  <Bar dataKey="notVerified" stackId="a" fill="url(#gradNotVerified)" name="Not Verified" radius={[6, 6, 0, 0]} cursor="pointer"
+                    onClick={(d) => { const p = payloadOf(d); openDrilldown("poNumber", p.poNumber, `PO ${p.poNumber} - Not-Verified lines`, { statusFilter: "notVerified" }); }} />
+                </BarChart>
               </ResponsiveContainer>
             )}
           </ChartPanel>

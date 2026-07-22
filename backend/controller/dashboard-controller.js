@@ -9,7 +9,7 @@ import {
 } from "../utility/severity.js";
 import {
   getVendorName,
-  getVendorInfo, // Added VendorInfo import to retrieve GSTIN
+  getVendorInfo,
   getPlantName,
   getPurchaseGroupName,
   getPaymentTermDescription,
@@ -156,6 +156,17 @@ function richBucketToJson(key, bucket) {
   };
 }
 
+// Compliance % helper shared by every "-wise compliance" chart below
+// (control-wise, PO-type-wise, purchasing-group-wise, and now plant-wise,
+// vendor-wise, PO-number-wise). na/manual points are excluded from the
+// denominator, same as every other compliance chart already on this
+// dashboard, so all of these charts stay apples-to-apples comparable.
+function compliancePctOf(v) {
+  return v.verified + v.notVerified > 0
+    ? Number(((v.verified / (v.verified + v.notVerified)) * 100).toFixed(1))
+    : null;
+}
+
 export const getExecutiveSummary = async (req, res) => {
   try {
     await ensureSeverityLoaded();
@@ -193,6 +204,16 @@ export const getExecutiveSummary = async (req, res) => {
     const byPoNumber = {};
     const monthlyExceptions = {};
 
+    // NEW: verified/notVerified counters keyed by plant / vendor / PO
+    // number, for the new "-wise Compliance" charts. Unlike byPlant/
+    // byVendor/byPoNumber above (which only ever fill on an exception, for
+    // the exception-count charts), these accumulate on EVERY point so a
+    // proper verified-vs-notVerified % can be computed per plant/vendor/PO,
+    // exactly like controlWise / byPurchaseGroup / byPoType already do.
+    const byPlantCompliance = {};
+    const byVendorCompliance = {};
+    const byPoNumberCompliance = {};
+
     const holdPoNumbers = new Set();
     const holdAgeingBuckets = {
       "Not yet due": { count: 0, pos: new Set() },
@@ -213,6 +234,22 @@ export const getExecutiveSummary = async (req, res) => {
           holdAgeingBuckets[bucket].pos.add(row.po_number);
         }
       }
+
+      const plantKey = row.plant || "Unassigned";
+      const vendorKey = row.vendor_code || "Unassigned";
+      const poNumKey = row.po_number || "Unassigned";
+      byPlantCompliance[plantKey] = byPlantCompliance[plantKey] || {
+        verified: 0,
+        notVerified: 0,
+      };
+      byVendorCompliance[vendorKey] = byVendorCompliance[vendorKey] || {
+        verified: 0,
+        notVerified: 0,
+      };
+      byPoNumberCompliance[poNumKey] = byPoNumberCompliance[poNumKey] || {
+        verified: 0,
+        notVerified: 0,
+      };
 
       let lineHasException = false;
       for (const point of row.results || []) {
@@ -242,12 +279,18 @@ export const getExecutiveSummary = async (req, res) => {
           controlWise[pointNo].verified++;
           byPurchaseGroup[row.purchase_group || "Unassigned"].verified++;
           byPoType[row.po_type || "Unknown"].verified++;
+          byPlantCompliance[plantKey].verified++;
+          byVendorCompliance[vendorKey].verified++;
+          byPoNumberCompliance[poNumKey].verified++;
         } else {
           notVerifiedCount++;
           lineHasException = true;
           controlWise[pointNo].notVerified++;
           byPurchaseGroup[row.purchase_group || "Unassigned"].notVerified++;
           byPoType[row.po_type || "Unknown"].notVerified++;
+          byPlantCompliance[plantKey].notVerified++;
+          byVendorCompliance[vendorKey].notVerified++;
+          byPoNumberCompliance[poNumKey].notVerified++;
 
           const poKey = row.po_number || "Unassigned";
           byPoNumber[poKey] = byPoNumber[poKey] || newRichBucket();
@@ -277,7 +320,7 @@ export const getExecutiveSummary = async (req, res) => {
           gstins: new Set(),
           valueExposure: 0,
           vendorCode: row.vendor_code || null,
-          vendorName: row.nameOfVendor || vendor?.name || null, // fallback attached here
+          vendorName: row.nameOfVendor || vendor?.name || null,
           poType: row.po_type || null,
           plant: row.plant || null,
           purchaseGroup: row.purchase_group || null,
@@ -307,13 +350,13 @@ export const getExecutiveSummary = async (req, res) => {
         if (!byPo[poKey].paymentTerm && row.payment_term)
           byPo[poKey].paymentTerm = row.payment_term;
 
-        const plantKey = row.plant || "Unassigned";
-        byPlant[plantKey] = byPlant[plantKey] || newRichBucket();
-        fillRichBucket(byPlant[plantKey], row);
+        const plantExcKey = row.plant || "Unassigned";
+        byPlant[plantExcKey] = byPlant[plantExcKey] || newRichBucket();
+        fillRichBucket(byPlant[plantExcKey], row);
 
-        const vendorKey = row.vendor_code || "Unassigned";
-        byVendor[vendorKey] = byVendor[vendorKey] || newRichBucket();
-        fillRichBucket(byVendor[vendorKey], row);
+        const vendorExcKey = row.vendor_code || "Unassigned";
+        byVendor[vendorExcKey] = byVendor[vendorExcKey] || newRichBucket();
+        fillRichBucket(byVendor[vendorExcKey], row);
 
         if (row.po_created_date) {
           const monthKey = new Date(row.po_created_date)
@@ -329,15 +372,10 @@ export const getExecutiveSummary = async (req, res) => {
       }
     }
 
-    const complianceScore =
-      verifiedCount + notVerifiedCount > 0
-        ? Number(
-            (
-              (verifiedCount / (verifiedCount + notVerifiedCount)) *
-              100
-            ).toFixed(1),
-          )
-        : null;
+    const complianceScore = compliancePctOf({
+      verified: verifiedCount,
+      notVerified: notVerifiedCount,
+    });
 
     const topN = (obj, n = 10) =>
       Object.entries(obj)
@@ -368,6 +406,49 @@ export const getExecutiveSummary = async (req, res) => {
         valueExposure: Number(v.valueExposure.toFixed(2)),
       }));
 
+    // NEW CHART: Plant-Wise Compliance. Returns every plant (there are
+    // relatively few), worst compliance first, so the dashboard reads
+    // top-to-bottom as "which plants need attention".
+    const plantWiseCompliance = Object.entries(byPlantCompliance)
+      .map(([plant, v]) => ({
+        plant,
+        plantName: getPlantName(plant),
+        verified: v.verified,
+        notVerified: v.notVerified,
+        compliancePct: compliancePctOf(v),
+      }))
+      .sort((a, b) => (a.compliancePct ?? 101) - (b.compliancePct ?? 101));
+
+    // NEW CHART: Vendor-Wise Compliance. Vendor cardinality can be large, so
+    // this is capped to the 15 vendors with the most not-verified lines
+    // (i.e. the vendors contributing the most compliance risk).
+    const vendorWiseCompliance = Object.entries(byVendorCompliance)
+      .map(([vendorCode, v]) => {
+        const vendor = getVendorInfo(vendorCode);
+        return {
+          vendorCode,
+          vendorName: vendor?.name || getVendorName(vendorCode),
+          verified: v.verified,
+          notVerified: v.notVerified,
+          compliancePct: compliancePctOf(v),
+        };
+      })
+      .sort((a, b) => b.notVerified - a.notVerified)
+      .slice(0, 15);
+
+    // NEW CHART: PO-Number-Wise Compliance. Same idea — PO cardinality is
+    // the largest of the three, so capped to the 15 worst-offending POs by
+    // not-verified line count.
+    const poNumberWiseCompliance = Object.entries(byPoNumberCompliance)
+      .map(([poNumber, v]) => ({
+        poNumber,
+        verified: v.verified,
+        notVerified: v.notVerified,
+        compliancePct: compliancePctOf(v),
+      }))
+      .sort((a, b) => b.notVerified - a.notVerified)
+      .slice(0, 15);
+
     res.status(200).json({
       filtersApplied: req.body || {},
       validPurchaseGroups: PURCHASE_GROUPS,
@@ -396,14 +477,7 @@ export const getExecutiveSummary = async (req, res) => {
             title:
               POINT_DEFINITIONS_BY_NO[pointNo]?.title || pointLabel(pointNo),
             summary: POINT_DEFINITIONS_BY_NO[pointNo]?.summary || "",
-            compliancePct:
-              v.verified + v.notVerified > 0
-                ? Number(
-                    ((v.verified / (v.verified + v.notVerified)) * 100).toFixed(
-                      1,
-                    ),
-                  )
-                : 0,
+            compliancePct: compliancePctOf(v),
             verified: v.verified,
             notVerified: v.notVerified,
           }))
@@ -426,14 +500,7 @@ export const getExecutiveSummary = async (req, res) => {
           ([group, v]) => ({
             purchaseGroup: group,
             purchaseGroupName: getPurchaseGroupName(group),
-            compliancePct:
-              v.verified + v.notVerified > 0
-                ? Number(
-                    ((v.verified / (v.verified + v.notVerified)) * 100).toFixed(
-                      1,
-                    ),
-                  )
-                : 0,
+            compliancePct: compliancePctOf(v),
             verified: v.verified,
             notVerified: v.notVerified,
           }),
@@ -449,15 +516,12 @@ export const getExecutiveSummary = async (req, res) => {
           poTypeName: getPoTypeName(poType),
           verified: v.verified,
           notVerified: v.notVerified,
-          compliancePct:
-            v.verified + v.notVerified > 0
-              ? Number(
-                  ((v.verified / (v.verified + v.notVerified)) * 100).toFixed(
-                    1,
-                  ),
-                )
-              : null,
+          compliancePct: compliancePctOf(v),
         })),
+        // NEW
+        plantWiseCompliance,
+        vendorWiseCompliance,
+        poNumberWiseCompliance,
         monthlyExceptionTrend: Object.entries(monthlyExceptions)
           .sort((a, b) => (a[0] < b[0] ? -1 : 1))
           .map(([month, v]) => ({
@@ -574,14 +638,27 @@ export const getExecutiveDrilldown = async (req, res) => {
     const matchesDimension = (row) => {
       switch (dimension) {
         case "plant":
-          return (row.plant || "Unassigned") === value && rowHasException(row);
+          // FIX: previously this ALWAYS required rowHasException(row), so
+          // clicking the "Verified" segment of the new Plant-Wise
+          // Compliance chart (statusFilter: "verified") returned zero rows.
+          // When a statusFilter is supplied, let matchesStatusFilter below
+          // do the verified/notVerified/na/manual split instead; only fall
+          // back to "exceptions only" when no statusFilter was given, which
+          // preserves the old behavior for any existing exception-only
+          // callers (e.g. plantWiseExceptions).
+          return (
+            (row.plant || "Unassigned") === value &&
+            (statusFilter ? true : rowHasException(row))
+          );
         case "poNumber":
           return (
-            (row.po_number || "Unassigned") === value && rowHasException(row)
+            (row.po_number || "Unassigned") === value &&
+            (statusFilter ? true : rowHasException(row))
           );
         case "vendor":
           return (
-            (row.vendor_code || "Unassigned") === value && rowHasException(row)
+            (row.vendor_code || "Unassigned") === value &&
+            (statusFilter ? true : rowHasException(row))
           );
         case "purchaseGroup":
           return (row.purchase_group || "Unassigned") === value;
@@ -651,7 +728,6 @@ export const getExecutiveDrilldown = async (req, res) => {
           : {}),
       }));
 
-      // Added fallback retrieval for Drilldown JSON return
       const vendor = getVendorInfo(r.vendor_code);
 
       return {
