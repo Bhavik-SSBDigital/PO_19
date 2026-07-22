@@ -93,12 +93,24 @@ const lineItemOf = (row) => {
 
 const withExceptionPoints = (row) => ({
   ...row,
-  // Unique, human-readable identifier so the SAME po_number appearing
-  // multiple times (multiple line items) is never ambiguous in a table.
   lineItemKey:
     row.po_material_number || `${row.po_number}-${lineItemOf(row) ?? row.id}`,
   lineItem: lineItemOf(row),
-  exceptionPoints: exceptionPointsOf(row),
+  results: withPointReference(row.results), // <-- ADD THIS LINE
+  exceptionPoints: exceptionPointsOf(row).map((ep) => ({
+    ...ep,
+    ...(POINT_DEFINITIONS_BY_NO[String(ep.pointNo)]
+      ? {
+          title: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].title,
+          logic: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].logic,
+        }
+      : {}),
+  })),
+  vendorName: row.nameOfVendor || getVendorName(row.vendor_code),
+  plantName: getPlantName(row.plant),
+  poTypeName: getPoTypeName(row.po_type),
+  purchaseGroupName: getPurchaseGroupName(row.purchase_group),
+  paymentTermDescription: getPaymentTermDescription(row.payment_term),
 });
 
 export const get_po_audit_results = async (req, res) => {

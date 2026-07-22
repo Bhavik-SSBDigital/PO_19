@@ -1,73 +1,65 @@
 import * as React from "react";
+import { Box, Typography, alpha } from "@mui/material";
+import AssignmentRoundedIcon from "@mui/icons-material/AssignmentRounded";
 
-import { Menu, MenuItem, Button } from "@mui/material";
-import { useDispatch, useSelector } from "react-redux";
-import UnfoldMoreRoundedIcon from "@mui/icons-material/UnfoldMoreRounded";
-import { dataViewType } from "store/reducers/menu";
 export default function ModuleMenu() {
-  const dispatch = useDispatch();
-  const [anchorEl, setAnchorEl] = React.useState(null);
-  const open = Boolean(anchorEl);
-  const { dataViewType: module } = useSelector((state) => state.menu);
-
-  const allowedModules = JSON.parse(localStorage.getItem("allowedModules"));
-  const moduleTypes =
-    localStorage.getItem("role") === "isAuditor"
-      ? allowedModules
-      : ["PJV", "PO", "BPV", "NONPO"];
-
-  const handleClick = (event) => {
-    setAnchorEl(event.currentTarget);
-  };
-  const handleClose = () => {
-    setAnchorEl(null);
-  };
-
   return (
-    <div>
-      <Button
-        id="basic-button"
-        aria-controls={open ? "basic-menu" : undefined}
-        aria-haspopup="true"
-        // fullWidth
-        aria-expanded={open ? "true" : undefined}
-        onClick={handleClick}
+    <Box
+      sx={{
+        display: "flex",
+        alignItems: "center",
+        gap: 1.5,
+        mx: 2,
+        px: 2,
+        py: 1.5,
+        bgcolor: alpha("#6366f1", 0.06), // Soft indigo background
+        borderRadius: 3,
+        border: "1px solid",
+        borderColor: alpha("#6366f1", 0.15),
+        boxShadow: 'inset 0 2px 4px 0 rgba(255,255,255,0.3)',
+      }}
+    >
+      <Box
         sx={{
-          fontWeight: 700,
-          bgcolor: "#abb7fe",
-          color: "black",
-          width: "92%",
-          px: 2,
-          mx: "10px",
-          "&:hover": { bgcolor: "#abb7fe" },
-          borderRadius: "14px",
-          justifyContent: "space-between",
-          border: "2px solid #dee1f7ff",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          bgcolor: "#6366f1", // Solid indigo for the icon box
+          color: "white",
+          borderRadius: 2,
+          p: 0.75,
+          boxShadow: '0 4px 10px -2px rgba(99, 102, 241, 0.4)',
         }}
-        endIcon={<UnfoldMoreRoundedIcon />}
       >
-        {module === "NONPO" ? "Non-PO" : module}
-      </Button>
-      <Menu
-        id="basic-menu"
-        anchorEl={anchorEl}
-        open={open}
-        onClose={handleClose}
-        slotProps={{ list: { "aria-labelledby": "basic-button" } }}
-      >
-        {moduleTypes.map((mod) => (
-          <MenuItem
-            key={mod}
-            sx={{ minWidth: "220px" }}
-            onClick={() => {
-              dispatch(dataViewType({ dataViewType: mod }));
-              handleClose();
-            }}
-          >
-            {mod === "NONPO" ? "Non-PO" : mod}
-          </MenuItem>
-        ))}
-      </Menu>
-    </div>
+        <AssignmentRoundedIcon fontSize="small" />
+      </Box>
+      <Box>
+        <Typography 
+          variant="caption" 
+          sx={{ 
+            color: "#64748b", 
+            fontWeight: 700, 
+            display: "block", 
+            lineHeight: 1,
+            letterSpacing: 0.5,
+            textTransform: 'uppercase'
+          }}
+        >
+          Active Module
+        </Typography>
+        <Typography 
+          variant="body2" 
+          sx={{ 
+            color: "#1e293b", 
+            fontWeight: 800, 
+            mt: 0.5, 
+            lineHeight: 1,
+            letterSpacing: -0.2
+          }}
+        >
+          PO Workspace
+        </Typography>
+      </Box>
+    </Box>
   );
 }

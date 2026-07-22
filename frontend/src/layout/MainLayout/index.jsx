@@ -84,7 +84,7 @@ const MainLayout = () => {
       window.removeEventListener("storage", syncActivity);
       clearInterval(interval);
     };
-  }, []);
+  }, [navigate]);
   // ----------------------------- //
   // END MULTI-TAB IDLE LOGIC     //
   // ----------------------------- //
@@ -99,18 +99,19 @@ const MainLayout = () => {
   useEffect(() => {
     setOpen(!matchDownLG);
     dispatch(openDrawer({ drawerOpen: !matchDownLG }));
-  }, [matchDownLG]);
+  }, [matchDownLG, dispatch]);
 
   useEffect(() => {
     if (open !== drawerOpen) setOpen(drawerOpen);
-  }, [drawerOpen]);
+  }, [drawerOpen, open]);
 
   return (
     <Box
       sx={{
         display: "flex",
         width: "100%",
-        backgroundColor: "#f6f8fc",
+        // UPGRADED THEME: Premium Slate-50 background perfectly complements the clean white sidebar
+        backgroundColor: "#f8fafc", 
         minHeight: "100vh",
       }}
     >
@@ -122,8 +123,9 @@ const MainLayout = () => {
         sx={{
           width: "100%",
           flexGrow: 1,
-          p: { xs: 2, sm: 3 },
+          p: { xs: 2, sm: 3, md: 4 }, // Slightly increased padding on larger screens for better breathing room
           overflow: "auto",
+          transition: "padding 0.2s ease-in-out" // Smooth transition if drawer toggles
         }}
       >
         <Toolbar />

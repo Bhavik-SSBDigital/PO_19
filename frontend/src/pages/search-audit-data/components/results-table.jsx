@@ -121,6 +121,21 @@ export const VerificationChip = ({ result }) => {
   );
 };
 
+const getSeverityColor = (severity) => {
+  switch (severity?.toLowerCase()) {
+    case "critical":
+      return "error";
+    case "high":
+      return "warning";
+    case "medium":
+      return "info";
+    case "low":
+      return "success";
+    default:
+      return "default";
+  }
+};
+
 // ==============================|| SEARCH AUDIT DATA ||============================== //
 
 const AuditResults = ({ searchData }) => {
@@ -129,107 +144,84 @@ const AuditResults = ({ searchData }) => {
     return null;
   }
 
-  // Helper function to color-code severity
-  const getSeverityColor = (severity) => {
-    switch (severity?.toLowerCase()) {
-      case "critical": return "error";
-      case "high": return "warning";
-      case "medium": return "info";
-      case "low": return "success";
-      default: return "default";
-    }
-  };
-
   return (
     <Box sx={{ mt: 3, mb: 2, px: 2 }}>
       <Typography variant="h5" sx={{ mb: 1.5, fontWeight: 700 }}>
         Audit Check Results
       </Typography>
-      
+
       <TableContainer component={Paper} variant="outlined">
         <Table size="small">
           <TableHead sx={{ bgcolor: "#f5f5f5" }}>
             <TableRow>
-              <TableCell sx={{ fontWeight: 600, width: '5%' }}>Pt #</TableCell>
-              <TableCell sx={{ fontWeight: 600, width: '25%' }}>Title & Summary</TableCell>
-              <TableCell sx={{ fontWeight: 600, width: '30%' }}>Logic</TableCell>
-              <TableCell sx={{ fontWeight: 600, width: '10%' }}>Severity</TableCell>
-              <TableCell sx={{ fontWeight: 600, width: '10%' }}>Status</TableCell>
-              <TableCell sx={{ fontWeight: 600, width: '20%' }}>Remarks</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "5%" }}>Pt #</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "25%" }}>
+                Title & Summary
+              </TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "27%" }}>Logic</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "8%" }}>Severity</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "13%" }}>Status</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "22%" }}>Remarks</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
-            {searchData.results.map((row, index) => {
-              // Determine status text and color
-              let statusText = "Not Verified";
-              let statusColor = "error";
+            {searchData.results.map((row, index) => (
+              <TableRow key={row.pointNo ?? index} hover>
+                <TableCell sx={{ verticalAlign: "top", fontWeight: 700 }}>
+                  {row.pointNo}
+                </TableCell>
 
-              if (row.not_applicable) {
-                statusText = "N/A";
-                statusColor = "default";
-              } else if (row.verified) {
-                statusText = "Verified";
-                statusColor = "success";
-              }
-
-              return (
-                <TableRow key={index} hover>
-                  <TableCell>{row.pointNo}</TableCell>
-                  
-                  <TableCell>
-                    <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-                      {row.title}
-                    </Typography>
-                    {/* Note: Mapping "summary", not "description" based on your JSON */}
-                    <Typography variant="body2" color="textSecondary" sx={{ mt: 0.5 }}>
+                <TableCell sx={{ verticalAlign: "top" }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                    {row.title || `Point ${row.pointNo}`}
+                  </Typography>
+                  {row.summary && (
+                    <Typography
+                      variant="body2"
+                      color="textSecondary"
+                      sx={{ mt: 0.5 }}
+                    >
                       {row.summary}
                     </Typography>
-                  </TableCell>
-                  
-                  <TableCell>
-                    <Typography variant="body2">
-                      {row.logic || "N/A"}
-                    </Typography>
-                  </TableCell>
-                  
-                  <TableCell>
-                    {row.severity && (
-                      <Chip 
-                        label={row.severity} 
-                        size="small" 
-                        color={getSeverityColor(row.severity)} 
-                        variant="outlined"
-                      />
-                    )}
-                  </TableCell>
-                  
-                  <TableCell>
-                    <Chip 
-                      label={statusText} 
-                      size="small" 
-                      color={statusColor} 
-                      sx={{ fontWeight: 600 }}
+                  )}
+                </TableCell>
+
+                <TableCell sx={{ verticalAlign: "top" }}>
+                  <Typography variant="body2">{row.logic || "N/A"}</Typography>
+                </TableCell>
+
+                <TableCell sx={{ verticalAlign: "top" }}>
+                  {row.severity && (
+                    <Chip
+                      label={row.severity}
+                      size="small"
+                      color={getSeverityColor(row.severity)}
+                      variant="outlined"
                     />
-                  </TableCell>
-                  
-                  <TableCell>
-                    {row.remarks && row.remarks.length > 0 ? (
-                      <ul style={{ margin: 0, paddingLeft: '20px' }}>
-                        {row.remarks.map((remark, rIdx) => (
-                          <li key={rIdx}>
-                            <Typography variant="body2">{remark}</Typography>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <Typography variant="body2" color="textSecondary">
-                        None
-                      </Typography>
-                    )}
-                  </TableCell>
-                </TableRow>
-              );
-            })}
+                  )}
+                </TableCell>
+
+                <TableCell sx={{ verticalAlign: "top" }}>
+                  <VerificationChip result={row} />
+                </TableCell>
+
+                <TableCell sx={{ verticalAlign: "top" }}>
+                  {row.remarks && row.remarks.length > 0 ? (
+                    <ul style={{ margin: 0, paddingLeft: "20px" }}>
+                      {row.remarks.map((remark, rIdx) => (
+                        <li key={rIdx}>
+                          <Typography variant="body2">{remark}</Typography>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <Typography variant="body2" color="textSecondary">
+                      None
+                    </Typography>
+                  )}
+                </TableCell>
+              </TableRow>
+            ))}
           </TableBody>
         </Table>
       </TableContainer>

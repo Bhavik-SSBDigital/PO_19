@@ -1,11 +1,16 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Dialog, DialogTitle, DialogContent, IconButton, Table, TableHead, TableRow,
   TableCell, TableBody, TableContainer, Paper, Chip, Box, Typography,
-  Pagination, Skeleton, Tooltip as MuiTooltip,
+  Pagination, Skeleton, Tooltip as MuiTooltip, Menu, MenuItem,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
+import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
+import VisibilityRoundedIcon from "@mui/icons-material/VisibilityRounded";
 import { post } from "utils/axiosApi";
+import PoDetailsPreviewDialog from "./PoDetailsPreviewDialog";
+import { buildSearchUrl } from "utils/po-link-utils";
 
 const SEVERITY_COLORS = { Critical: "#c0392b", High: "#e67e22", Medium: "#f1c40f", Low: "#95a5a6" };
 const PAGE_SIZE = 25;
@@ -15,10 +20,18 @@ const PAGE_SIZE = 25;
 // previously being rendered here as "PO HOLD" and the client does not want
 // that column anywhere in the app's drilldown tables.
 const DrilldownDialog = ({ drilldown, appliedFilters, onClose }) => {
+  const navigate = useNavigate();
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
+
+  // Row-level "Open in New Tab" / "View Details Here" facility - same one
+  // the Executive Dashboard's PO-Wise Exceptions table has, now on every
+  // drilldown table too, not only PO-Wise Exceptions.
+  const [menuAnchor, setMenuAnchor] = useState(null);
+  const [menuRow, setMenuRow] = useState(null);
+  const [poPreview, setPoPreview] = useState(null);
 
   useEffect(() => {
     if (!drilldown) return;
@@ -56,12 +69,43 @@ const DrilldownDialog = ({ drilldown, appliedFilters, onClose }) => {
 
   const pageCount = Math.max(Math.ceil(total / PAGE_SIZE), 1);
 
+  const openRowMenu = (event, row) => {
+    setMenuAnchor(event.currentTarget);
+    setMenuRow(row);
+  };
+  const closeRowMenu = () => {
+    setMenuAnchor(null);
+    setMenuRow(null);
+  };
+
+  const handleRowAction = (row, mode) => {
+    if (!row) return;
+    if (mode === "newtab") {
+      window.open(buildSearchUrl(row.po_number, row.lineItem), "_blank", "noopener,noreferrer");
+    } else {
+      setPoPreview({ poNumber: row.po_number, lineItem: row.lineItem });
+    }
+  };
+
+  const openFullSearchPage = (preview, newTab) => {
+    if (!preview) return;
+    const url = buildSearchUrl(preview.poNumber, preview.lineItem);
+    if (newTab) {
+      window.open(url, "_blank", "noopener,noreferrer");
+    } else {
+      navigate(url);
+    }
+    setPoPreview(null);
+  };
+
   return (
     <Dialog open={!!drilldown} onClose={onClose} maxWidth="xl" fullWidth>
       <DialogTitle sx={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <Box>
           <Typography variant="h6">{drilldown?.title}</Typography>
-          <Typography variant="caption" color="text.secondary">{total} PO line(s)</Typography>
+          <Typography variant="caption" color="text.secondary">
+            {total} PO line(s) — click any row to open its Audit Data &amp; Results
+          </Typography>
         </Box>
         <IconButton onClick={onClose}><CloseIcon /></IconButton>
       </DialogTitle>
@@ -75,9 +119,12 @@ const DrilldownDialog = ({ drilldown, appliedFilters, onClose }) => {
                 <TableRow>
                   <TableCell>PO Number</TableCell>
                   <TableCell>Line Item</TableCell>
+                  <TableCell>PR Number</TableCell>
                   <TableCell>Vendor</TableCell>
+                  <TableCell>GSTIN</TableCell>
                   <TableCell>Plant</TableCell>
                   <TableCell>PO Type</TableCell>
+                  <TableCell>Tax Code</TableCell>
                   <TableCell>Purchasing Group</TableCell>
                   <TableCell>Payment Term</TableCell>
                   <TableCell>Material</TableCell>
@@ -87,12 +134,20 @@ const DrilldownDialog = ({ drilldown, appliedFilters, onClose }) => {
               </TableHead>
               <TableBody>
                 {rows.map((r) => (
-                  <TableRow key={r.id} hover>
+                  <TableRow
+                    key={r.id}
+                    hover
+                    sx={{ cursor: "pointer" }}
+                    onClick={(e) => openRowMenu(e, r)}
+                  >
                     <TableCell>{r.po_number || "—"}</TableCell>
                     <TableCell>{r.lineItem || "—"}</TableCell>
+                    <TableCell>{r.purchase_req || "—"}</TableCell>
                     <TableCell>{r.vendorName || r.vendorCode || "—"}</TableCell>
+                    <TableCell>{r.vendorGstin || "—"}</TableCell>
                     <TableCell>{r.plantName || r.plant || "—"}</TableCell>
                     <TableCell>{r.poTypeName || r.poType || "—"}</TableCell>
+                    <TableCell>{r.taxCode || "—"}</TableCell>
                     <TableCell>{r.purchaseGroupName || r.purchaseGroup || "—"}</TableCell>
                     <TableCell>{r.paymentTermDescription || r.paymentTerm || "—"}</TableCell>
                     <TableCell>
@@ -125,7 +180,7 @@ const DrilldownDialog = ({ drilldown, appliedFilters, onClose }) => {
                 ))}
                 {rows.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={10} align="center">No matching PO lines.</TableCell>
+                    <TableCell colSpan={13} align="center">No matching PO lines.</TableCell>
                   </TableRow>
                 )}
               </TableBody>
@@ -136,6 +191,23 @@ const DrilldownDialog = ({ drilldown, appliedFilters, onClose }) => {
           <Pagination count={pageCount} page={page} onChange={(_, v) => setPage(v)} color="primary" />
         </Box>
       </DialogContent>
+
+      <Menu anchorEl={menuAnchor} open={Boolean(menuAnchor)} onClose={closeRowMenu}>
+        <MenuItem onClick={() => { handleRowAction(menuRow, "newtab"); closeRowMenu(); }}>
+          <OpenInNewRoundedIcon fontSize="small" sx={{ mr: 1.25, color: "text.secondary" }} />
+          Open in New Tab
+        </MenuItem>
+        <MenuItem onClick={() => { handleRowAction(menuRow, "modal"); closeRowMenu(); }}>
+          <VisibilityRoundedIcon fontSize="small" sx={{ mr: 1.25, color: "text.secondary" }} />
+          View Details Here
+        </MenuItem>
+      </Menu>
+
+      <PoDetailsPreviewDialog
+        preview={poPreview}
+        onClose={() => setPoPreview(null)}
+        onOpenFullPage={openFullSearchPage}
+      />
     </Dialog>
   );
 };

@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import {
   Box,
   Button,
+  Chip,
   CircularProgress,
   Dialog,
+  DialogActions,
   DialogContent,
   DialogTitle,
   IconButton,
@@ -25,6 +27,8 @@ import moment from "moment";
 import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
+import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
+import VisibilityRoundedIcon from "@mui/icons-material/VisibilityRounded";
 
 import { get, post } from "utils/axiosApi";
 import { toast } from "react-toastify";
@@ -333,6 +337,222 @@ const columnMappings = {
   ],
 };
 
+// Fields hidden from the generic PO preview modal (noise / already shown in the title).
+const PREVIEW_EXCLUDE_KEYS = new Set(["_id", "__v", "processDocuments", "multipleMatches"]);
+
+const humanizeKey = (k) =>
+  k
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/_/g, " ")
+    .replace(/^./, (c) => c.toUpperCase());
+
+const buildPoSearchUrl = (poNumber, lineItem, fiscalYear) => {
+  const params = new URLSearchParams();
+  if (poNumber) params.set("PONo", poNumber);
+  if (lineItem) params.set("poLineItem", lineItem);
+  if (fiscalYear) params.set("year", fiscalYear);
+  return `/search-data?${params.toString()}`;
+};
+
+// Fields whose values should render as a colored status chip (audit-result
+// style: Verified / Not Verified / N/A / Manual Review) instead of plain text.
+const isTaggableKey = (key) => /status|verified|complian|result|remark/i.test(key);
+
+const TAG_STYLES = [
+  { test: /^(true|yes|verified|compliant|passed?|ok)$/i, bg: "#dcfce7", color: "#15803d" },
+  { test: /^(false|no|not[\s_-]?verified|exception|failed?|non[\s_-]?compliant)$/i, bg: "#fee2e2", color: "#b91c1c" },
+  { test: /^(n\/?a|not[\s_-]?applicable)$/i, bg: "#f1f5f9", color: "#475569" },
+  { test: /^(manual([\s_-]?review)?|pending)$/i, bg: "#fef9c3", color: "#a16207" },
+];
+
+const renderTagOrValue = (key, value) => {
+  if (typeof value === "boolean") {
+    return (
+      <Chip
+        size="small"
+        label={value ? "Verified" : "Not Verified"}
+        sx={{ bgcolor: value ? "#dcfce7" : "#fee2e2", color: value ? "#15803d" : "#b91c1c", fontWeight: 700 }}
+      />
+    );
+  }
+  if (isTaggableKey(key) && typeof value === "string") {
+    const match = TAG_STYLES.find((m) => m.test.test(value.trim()));
+    if (match) {
+      return <Chip size="small" label={value} sx={{ bgcolor: match.bg, color: match.color, fontWeight: 700 }} />;
+    }
+  }
+  return (
+    <Typography variant="body2" sx={{ fontWeight: 600, wordBreak: "break-word" }}>
+      {String(value)}
+    </Typography>
+  );
+};
+
+/**
+ * Quick, generic preview of a PO's audit details/results fetched straight
+ * from the same endpoint the full Search Audit Data page uses. Lets the
+ * user peek at a row without leaving this table.
+ */
+const PoRowPreviewDialog = ({ preview, onClose, onOpenFullPage }) => {
+  const [loading, setLoading] = useState(false);
+  const [details, setDetails] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!preview) {
+      setDetails(null);
+      setError("");
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      setError("");
+      setDetails(null);
+      try {
+        const res = await post("/getPOAuditResult", {
+          po_number: preview.poNumber,
+          po_line_item: preview.lineItem || undefined,
+          fiscalYear: preview.fiscalYear || undefined,
+        });
+        if (cancelled) return;
+        if (res?.multipleMatches) {
+          setError("This PO has multiple line items. Open the full search page to choose one.");
+        } else {
+          setDetails(res);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err?.response?.data?.message || err?.message || "Failed to load PO details");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [preview]);
+
+  const scalarEntries = useMemo(() => {
+    if (!details) return [];
+    return Object.entries(details).filter(
+      ([k, v]) => !PREVIEW_EXCLUDE_KEYS.has(k) && v !== null && v !== undefined && typeof v !== "object"
+    );
+  }, [details]);
+
+  const tableFields = useMemo(() => {
+    if (!details) return [];
+    return Object.entries(details).filter(
+      ([k, v]) => !PREVIEW_EXCLUDE_KEYS.has(k) && Array.isArray(v) && v.length && typeof v[0] === "object"
+    );
+  }, [details]);
+
+  return (
+    <Dialog open={!!preview} onClose={onClose} maxWidth="md" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
+      <DialogTitle sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <Box>
+          <Typography variant="h6" sx={{ fontWeight: 800 }}>
+            PO {preview?.poNumber}
+            {preview?.lineItem ? ` — Line ${preview.lineItem}` : ""}
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            Quick preview of audit data &amp; results
+          </Typography>
+        </Box>
+        <IconButton onClick={onClose} size="small">
+          <CloseRoundedIcon />
+        </IconButton>
+      </DialogTitle>
+      <DialogContent dividers>
+        {loading && (
+          <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
+            <CircularProgress size={28} />
+          </Box>
+        )}
+        {!loading && error && (
+          <Typography color="error" sx={{ py: 2 }}>
+            {error}
+          </Typography>
+        )}
+        {!loading && !error && details && (
+          <Box>
+            <Box
+              sx={{
+                display: "grid",
+                gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)" },
+                gap: 2,
+                mb: 3,
+              }}
+            >
+              {scalarEntries.map(([k, v]) => (
+                <Box key={k}>
+                  <Typography variant="caption" sx={{ color: "text.secondary", fontWeight: 700, display: "block", mb: 0.5 }}>
+                    {humanizeKey(k)}
+                  </Typography>
+                  {renderTagOrValue(k, v)}
+                </Box>
+              ))}
+              {scalarEntries.length === 0 && (
+                <Typography color="text.secondary">No summary fields returned.</Typography>
+              )}
+            </Box>
+
+            {tableFields.map(([k, rows]) => (
+              <Box key={k} sx={{ mb: 3 }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
+                  {humanizeKey(k)}
+                </Typography>
+                <TableContainer component={Paper} variant="outlined">
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        {Object.keys(rows[0]).map((col) => (
+                          <TableCell key={col} sx={{ fontWeight: 700 }}>
+                            {humanizeKey(col)}
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {rows.map((row, idx) => (
+                        <TableRow key={idx}>
+                          {Object.keys(rows[0]).map((col) => (
+                            <TableCell key={col}>
+                              {row[col] !== null && typeof row[col] === "object"
+                                ? JSON.stringify(row[col])
+                                : renderTagOrValue(col, row[col] ?? "—")}
+                            </TableCell>
+                          ))}
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </Box>
+            ))}
+          </Box>
+        )}
+        {!loading && !error && !details && (
+          <Typography color="text.secondary" sx={{ py: 4, textAlign: "center" }}>
+            No details found for this PO.
+          </Typography>
+        )}
+      </DialogContent>
+      <DialogActions sx={{ p: 2 }}>
+        <Button onClick={onClose}>Close</Button>
+        <Button variant="outlined" startIcon={<OpenInNewRoundedIcon />} onClick={() => onOpenFullPage(preview, true)}>
+          Open in New Tab
+        </Button>
+        <Button variant="contained" onClick={() => onOpenFullPage(preview, false)}>
+          Go to Full Search Page
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+};
+
 const TableAuditorView = ({ type, tableData = [], loading, comp }) => {
   const navigate = useNavigate();
   const username = localStorage.getItem("username");
@@ -346,6 +566,12 @@ const TableAuditorView = ({ type, tableData = [], loading, comp }) => {
 
   const [columns, setColumns] = useState([]);
   const [visibilitySettings, setVisibilitySettings] = useState({});
+
+  // Row-click "open in new tab vs view here" menu — only meaningful for PO
+  // rows, since that's the type with a PO number + line item to prefill.
+  const [rowMenuAnchor, setRowMenuAnchor] = useState(null);
+  const [rowMenuRow, setRowMenuRow] = useState(null);
+  const [poPreview, setPoPreview] = useState(null);
 
   // Fetch visibility settings based on type
   useEffect(() => {
@@ -373,11 +599,6 @@ const TableAuditorView = ({ type, tableData = [], loading, comp }) => {
   }, [visibilitySettings, type, comp]);
 
   const handleNavigate = (row) => {
-    // const url = {
-    //   PJV: `/search-data?documentNo=${row.documentNumber}&year=${row.fiscalYear}`,
-    //   PO: `/search-data?PONo=${row.po_material_number}`,
-    //   BPV: `/search-data?paymentDocumentNumber=${row.documentNumber}&year=${row.fiscalYear}`,
-    // }[type];
     const url = (() => {
       switch (type) {
         case "BPV":
@@ -387,14 +608,50 @@ const TableAuditorView = ({ type, tableData = [], loading, comp }) => {
         case "NONPO":
           return `/search-data?year=${row.fiscalYear}&documentNo=${row.documentNumber}`;
         case "PO":
-          return `/search-data?year=${row.fiscalYear}&PONo=${
-            row.po_number || row.documentNumber
-          }`;
+          return buildPoSearchUrl(
+            row.po_number || row.documentNumber,
+            row.po_material_number,
+            row.fiscalYear
+          );
         default:
           return "#";
       }
     })();
     navigate(url);
+  };
+
+  const openRowMenu = (event, row) => {
+    if (type !== "PO") return; // only PO rows have a line item to prefill
+    event.stopPropagation();
+    setRowMenuAnchor(event.currentTarget);
+    setRowMenuRow(row);
+  };
+
+  const closeRowMenu = () => {
+    setRowMenuAnchor(null);
+    setRowMenuRow(null);
+  };
+
+  const handleRowAction = (row, mode) => {
+    if (!row) return;
+    const poNumber = row.po_number || row.documentNumber;
+    const lineItem = row.po_material_number;
+    if (mode === "newtab") {
+      window.open(buildPoSearchUrl(poNumber, lineItem, row.fiscalYear), "_blank", "noopener,noreferrer");
+    } else {
+      setPoPreview({ poNumber, lineItem, fiscalYear: row.fiscalYear });
+    }
+  };
+
+  const openFullSearchPage = (preview, newTab) => {
+    if (!preview) return;
+    const url = buildPoSearchUrl(preview.poNumber, preview.lineItem, preview.fiscalYear);
+    if (newTab) {
+      window.open(url, "_blank", "noopener,noreferrer");
+    } else {
+      navigate(url);
+    }
+    setPoPreview(null);
   };
 
   if (loading) return <TableSkeleton />;
@@ -428,7 +685,12 @@ const TableAuditorView = ({ type, tableData = [], loading, comp }) => {
           <TableBody>
             {tableData?.length ? (
               tableData.map((row, index) => (
-                <TableRow key={index}>
+                <TableRow
+                  key={index}
+                  hover={type === "PO"}
+                  sx={type === "PO" ? { cursor: "pointer" } : undefined}
+                  onClick={(e) => openRowMenu(e, row)}
+                >
                   <TableCell>{1 + index}</TableCell>
                   {columns.map((col) => (
                     <TableCell key={col.key}>
@@ -436,7 +698,7 @@ const TableAuditorView = ({ type, tableData = [], loading, comp }) => {
                     </TableCell>
                   ))}
                   {type === "PJV" && (
-                    <TableCell>
+                    <TableCell onClick={(e) => e.stopPropagation()}>
                       <Button
                         onClick={() =>
                           setViewDocument({
@@ -451,7 +713,7 @@ const TableAuditorView = ({ type, tableData = [], loading, comp }) => {
                     </TableCell>
                   )}
                   {type === "NONPO" && (
-                    <TableCell>
+                    <TableCell onClick={(e) => e.stopPropagation()}>
                       <Button
                         onClick={() =>
                           setViewDocument({
@@ -465,7 +727,7 @@ const TableAuditorView = ({ type, tableData = [], loading, comp }) => {
                       </Button>
                     </TableCell>
                   )}
-                  <TableCell>
+                  <TableCell onClick={(e) => e.stopPropagation()}>
                     {username === row.assignedTo ? (
                       <SearchResultLink
                         number={row.documentNumber}
@@ -522,6 +784,31 @@ const TableAuditorView = ({ type, tableData = [], loading, comp }) => {
           </TableBody>
         </Table>
       </TableContainer>
+
+      {/* New-tab vs inline-preview choice for PO rows */}
+      <Menu anchorEl={rowMenuAnchor} open={Boolean(rowMenuAnchor)} onClose={closeRowMenu}>
+        <MenuItem
+          onClick={() => {
+            handleRowAction(rowMenuRow, "newtab");
+            closeRowMenu();
+          }}
+        >
+          <OpenInNewRoundedIcon fontSize="small" sx={{ mr: 1.25, color: "text.secondary" }} />
+          Open in New Tab
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            handleRowAction(rowMenuRow, "modal");
+            closeRowMenu();
+          }}
+        >
+          <VisibilityRoundedIcon fontSize="small" sx={{ mr: 1.25, color: "text.secondary" }} />
+          View Details Here
+        </MenuItem>
+      </Menu>
+
+      <PoRowPreviewDialog preview={poPreview} onClose={() => setPoPreview(null)} onOpenFullPage={openFullSearchPage} />
+
       <Dialog
         open={!!viewDocument.isOpen}
         fullWidth

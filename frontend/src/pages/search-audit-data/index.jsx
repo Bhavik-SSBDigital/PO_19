@@ -27,6 +27,7 @@ import {
   Dialog,
   DialogTitle,
   DialogContent,
+  Chip,
 } from "@mui/material";
 import { toast } from "react-toastify";
 import { useSelector } from "react-redux";
@@ -51,12 +52,12 @@ const SearchAuditData = () => {
   const role = localStorage.getItem("role");
   const [searchParams] = useSearchParams();
   const { dataViewType } = useSelector((state) => state.menu);
-  
+
   const [searchLoading, setSearchLoading] = useState(false);
   const [viewDocUrl, setViewDocUrl] = useState(null);
   const [searchData, setSearchData] = useState();
-  
-  // NEW: State to handle multiple line items
+
+  // State for multiple line items modal
   const [multipleMatches, setMultipleMatches] = useState(null);
 
   const [searchInputs, setSearchInputs] = useState({
@@ -65,36 +66,38 @@ const SearchAuditData = () => {
     fiscalYear: "",
     grrNumber: "",
     PONumber: "",
-    poLineItem: "", // NEW
+    poLineItem: "",
     poMaterialNumber: "",
   });
-  
+
   const [pomaterialNoOptions, setPOMaterialNoOptions] = useState([]);
 
-  const handleSearch = async ({
-    documentNumber = "",
-    paymentDocumentNumber = "",
-    fiscalYear = "",
-    grrNumber = "",
-    PONumber = "",
-    poLineItem = "",
-    poMaterialNumber = "",
-  }) => {
+  const handleSearch = async (inputs) => {
+    const {
+      documentNumber,
+      paymentDocumentNumber,
+      fiscalYear,
+      grrNumber,
+      PONumber,
+      poLineItem,
+      poMaterialNumber,
+    } = inputs;
+
     if (
-      !documentNumber.trim() &&
-      !grrNumber.trim() &&
-      !poMaterialNumber.trim() &&
-      !PONumber.trim() &&
-      !paymentDocumentNumber.trim()
+      !documentNumber?.trim() &&
+      !grrNumber?.trim() &&
+      !poMaterialNumber?.trim() &&
+      !PONumber?.trim() &&
+      !paymentDocumentNumber?.trim()
     ) {
       toast.info("Provide details to search");
       return;
     }
-    if (documentNumber.trim() && !fiscalYear) {
+    if (documentNumber?.trim() && !fiscalYear) {
       toast.info("Please select year");
       return;
     }
-    
+
     setSearchLoading(true);
     const endpoint = {
       PJV: "get_audit_result",
@@ -103,54 +106,38 @@ const SearchAuditData = () => {
       BPV: "getBPVAuditResult",
     }[dataViewType];
 
-    let payload =
-      dataViewType === "PJV"
-        ? {
-            search_key: grrNumber ? "GRR_NO" : "Document_No",
-            search_value: grrNumber ? grrNumber.trim() : documentNumber.trim(),
-            fiscalYear,
-          }
-        : {};
-    payload =
-      dataViewType === "PO"
-        ? { 
-            po_number: PONumber.trim(), 
-            fiscalYear,
-            po_line_item: poLineItem.trim(),
-            poMaterialNumber: poMaterialNumber.trim()
-          }
-        : payload;
-    payload =
-      dataViewType === "BPV"
-        ? {
-            documentNumber: paymentDocumentNumber.trim() || documentNumber.trim(),
-            paymentDocumentNumber: paymentDocumentNumber.trim() || documentNumber.trim(),
-            fiscalYear,
-          }
-        : payload;
-    payload =
-      dataViewType === "NONPO"
-        ? {
-            search_key: grrNumber ? "GRR_NO" : "Document_No",
-            search_value: grrNumber ? grrNumber.trim() : documentNumber.trim(),
-            fiscalYear,
-          }
-        : payload;
+    let payload = {};
+    if (dataViewType === "PO") {
+      payload = {
+        po_number: PONumber?.trim(),
+        fiscalYear,
+        po_line_item: poLineItem?.trim(),
+        poMaterialNumber: poMaterialNumber?.trim(),
+      };
+    } else if (dataViewType === "BPV") {
+      payload = {
+        documentNumber: paymentDocumentNumber?.trim() || documentNumber?.trim(),
+        paymentDocumentNumber: paymentDocumentNumber?.trim() || documentNumber?.trim(),
+        fiscalYear,
+      };
+    } else {
+      payload = {
+        search_key: grrNumber ? "GRR_NO" : "Document_No",
+        search_value: grrNumber?.trim() || documentNumber?.trim(),
+        fiscalYear,
+      };
+    }
 
     try {
       const res = await post(`/${endpoint}`, payload);
-      console.log("FULL RESPONSE:", res);
-      console.log("AUDIT RESULT:", res);
-      
-      // If backend returns multiple matches, open the selector dialog
+
       if (res.multipleMatches) {
-        setMultipleMatches(res.results);
+        setMultipleMatches(res.results); // Open Modal
         setSearchData(null);
       } else {
-        // Direct hit - single record
         setSearchData(res);
         setMultipleMatches(null);
-        sessionStorage.setItem("searchInput-audit", JSON.stringify(searchInputs));
+        sessionStorage.setItem("searchInput-audit", JSON.stringify(inputs));
         window.scrollTo({ top: 520, left: 0, behavior: "smooth" });
       }
     } catch (error) {
@@ -169,17 +156,20 @@ const SearchAuditData = () => {
     const documentNo = searchParams.get("documentNo")?.trim();
     const year = searchParams.get("year")?.trim();
     const PONoParams = searchParams.get("PONo")?.trim();
+    // Line item passed from other tables/pages (e.g. the Executive Dashboard's
+    // PO-Wise Exceptions table) so the search page arrives fully pre-filled.
+    const poLineItemParams = searchParams.get("poLineItem")?.trim();
     const poMaterialNo = searchParams.get("poMaterialNo")?.trim();
     const paymentDocumentNumber = searchParams.get("paymentDocumentNumber");
     const storedInput = sessionStorage.getItem("searchInput-audit");
     const searchInput = storedInput ? JSON.parse(storedInput) : null;
 
-    if (documentNo || poMaterialNo || PONoParams || paymentDocumentNumber) {
+    if (documentNo || poMaterialNo || PONoParams || poLineItemParams || paymentDocumentNumber) {
       const inputs = {
         documentNumber: documentNo || "",
         fiscalYear: year || "",
         PONumber: PONoParams || "",
-        poLineItem: "",
+        poLineItem: poLineItemParams || "",
         poMaterialNumber: poMaterialNo || "",
         paymentDocumentNumber: paymentDocumentNumber || "",
       };
@@ -227,42 +217,36 @@ const SearchAuditData = () => {
 
   return (
     <ViewDocumentProvider>
-      <Box>
+      <Box sx={{ maxWidth: "xl", mx: "auto", p: 2 }}>
         <Button
           onClick={() => navigate(-1)}
           size="small"
-          sx={{
-            height: 25,
-            fontSize: "16px",
-            fontWeight: 700,
-            borderRadius: "12px",
-            mb: 2,
-          }}
+          sx={{ mb: 2, fontWeight: 700 }}
           startIcon={<KeyboardBackspaceRoundedIcon />}
         >
           Back
         </Button>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 2, mb: 2 }}>
-          <Typography variant="h4" sx={{ fontWeight: 700 }}>
-            Audit Data, Report, and Results
-          </Typography>
-        </Box>
+        <Typography variant="h4" sx={{ fontWeight: 800, mb: 3 }}>
+          Audit Data, Report, and Results
+        </Typography>
 
         {role !== "isAuditor" && (
           <Card
+            elevation={0}
             sx={{
-              mt: 1,
-              p: 2,
-              boxShadow: 0,
-              borderRadius: "10px",
-              border: "1px solid #e5e5e5",
+              p: 3,
+              borderRadius: 3,
+              border: "1px solid",
+              borderColor: "divider",
+              mb: 3,
             }}
           >
             <Typography
-              variant="h4"
+              variant="h5"
               sx={{
                 textAlign: "center",
-                pb: 1,
+                pb: 2,
+                mb: 2,
                 borderBottom: "1px solid #e5e5e5",
                 fontWeight: 700,
               }}
@@ -378,79 +362,76 @@ const SearchAuditData = () => {
                 </Box>
               )}
               {dataViewType === "PO" && (
-                <>
-                  <Box sx={{ maxWidth: "400px", width: "100%" }}>
-                    <InputLabel fullWidth>PO Number :</InputLabel>
-                    <TextField
-                      disabled={searchLoading}
-                      placeholder="Enter PO Number"
-                      name="PONumber"
-                      value={searchInputs.PONumber}
-                      fullWidth
-                      onChange={(e) => {
-                        setSearchInputs({
-                          ...searchInputs,
-                          PONumber: e.target.value,
-                          poMaterialNumber: "",
-                        });
-                      }}
-                      InputProps={{
-                        endAdornment: (
-                          <InputAdornment position="end">
-                            <IconButton
-                              onClick={getPOMaterialNosList}
-                              disabled={searchLoading}
-                            >
-                              <SearchRoundedIcon />
-                            </IconButton>
-                          </InputAdornment>
-                        ),
-                      }}
-                    />
-                    
-                    {/* NEW: Line Item Field */}
-                    <InputLabel sx={{ width: "100%", mt: "10px" }}>Line Item (Optional) :</InputLabel>
-                    <TextField
-                      disabled={searchLoading}
-                      placeholder="e.g., 10"
-                      name="poLineItem"
-                      value={searchInputs.poLineItem}
-                      fullWidth
-                      onChange={(e) => {
-                        setSearchInputs({
-                          ...searchInputs,
-                          poLineItem: e.target.value,
-                          poMaterialNumber: "",
-                        });
-                      }}
-                    />
-
-                    <InputLabel sx={{ width: "100%", mt: "10px" }}>
-                      Fiscal Year :
-                    </InputLabel>
-                    <Select
-                      value={searchInputs.fiscalYear}
-                      disabled={searchLoading}
-                      name="fiscalYear"
-                      placeholder="Select Fiscal Year"
-                      fullWidth
-                      displayEmpty
-                      onChange={(e) => {
-                        setSearchInputs({
-                          ...searchInputs,
-                          fiscalYear: e.target.value,
-                        });
-                      }}
-                    >
-                      <MenuItem value="">Select Fiscal Year</MenuItem>
-                      {getLastFiveYears().map((year) => (
-                        <MenuItem key={year} value={year}>
-                          {year}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </Box>
-                </>
+                <Box sx={{ maxWidth: "400px", width: "100%" }}>
+                  <InputLabel fullWidth>PO Number :</InputLabel>
+                  <TextField
+                    disabled={searchLoading}
+                    placeholder="Enter PO Number"
+                    name="PONumber"
+                    value={searchInputs.PONumber}
+                    fullWidth
+                    onChange={(e) => {
+                      setSearchInputs({
+                        ...searchInputs,
+                        PONumber: e.target.value,
+                        poMaterialNumber: "",
+                      });
+                    }}
+                    InputProps={{
+                      endAdornment: (
+                        <InputAdornment position="end">
+                          <IconButton
+                            onClick={getPOMaterialNosList}
+                            disabled={searchLoading}
+                          >
+                            <SearchRoundedIcon />
+                          </IconButton>
+                        </InputAdornment>
+                      ),
+                    }}
+                  />
+                  <InputLabel sx={{ width: "100%", mt: "10px" }}>
+                    Line Item (Optional) :
+                  </InputLabel>
+                  <TextField
+                    disabled={searchLoading}
+                    placeholder="e.g., 10"
+                    name="poLineItem"
+                    value={searchInputs.poLineItem}
+                    fullWidth
+                    onChange={(e) => {
+                      setSearchInputs({
+                        ...searchInputs,
+                        poLineItem: e.target.value,
+                        poMaterialNumber: "",
+                      });
+                    }}
+                  />
+                  <InputLabel sx={{ width: "100%", mt: "10px" }}>
+                    Fiscal Year :
+                  </InputLabel>
+                  <Select
+                    value={searchInputs.fiscalYear}
+                    disabled={searchLoading}
+                    name="fiscalYear"
+                    placeholder="Select Fiscal Year"
+                    fullWidth
+                    displayEmpty
+                    onChange={(e) => {
+                      setSearchInputs({
+                        ...searchInputs,
+                        fiscalYear: e.target.value,
+                      });
+                    }}
+                  >
+                    <MenuItem value="">Select Fiscal Year</MenuItem>
+                    {getLastFiveYears().map((year) => (
+                      <MenuItem key={year} value={year}>
+                        {year}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </Box>
               )}
               {dataViewType === "BPV" && (
                 <Box sx={{ maxWidth: "400px", width: "100%" }}>
@@ -499,10 +480,14 @@ const SearchAuditData = () => {
                 variant="contained"
                 onClick={() => handleSearch(searchInputs)}
                 disabled={searchLoading}
-                sx={{ width: "400px", mt: "15px" }}
+                sx={{ width: "400px", mt: 3, boxShadow: "none" }}
                 startIcon={!searchLoading ? <SearchRoundedIcon /> : null}
               >
-                {searchLoading ? <CircularProgress size={20} /> : "Search"}
+                {searchLoading ? (
+                  <CircularProgress size={20} color="inherit" />
+                ) : (
+                  "Search"
+                )}
               </Button>
             </Stack>
           </Card>
@@ -550,8 +535,7 @@ const SearchAuditData = () => {
                             <TableRow key={idx}>
                               <TableCell>{doc.name || "N/A"}</TableCell>
                               <TableCell>
-                                {doc.signatures &&
-                                doc.signatures.length > 0 ? (
+                                {doc.signatures && doc.signatures.length > 0 ? (
                                   <List dense disablePadding>
                                     {doc.signatures.map((sig, sIdx) => (
                                       <ListItem
@@ -616,8 +600,9 @@ const SearchAuditData = () => {
                                       if (isPdf) {
                                         setViewDocUrl(fileUrl);
                                       } else {
-                                        const link =
-                                          document.createElement("a");
+                                        const link = document.createElement(
+                                          "a"
+                                        );
                                         link.href = fileUrl;
                                         link.setAttribute(
                                           "download",
@@ -659,48 +644,108 @@ const SearchAuditData = () => {
           </Card>
         )}
 
-        {/* NEW: Multiple Line Item Selector Dialog */}
-        <Dialog 
-          open={!!multipleMatches} 
-          onClose={() => setMultipleMatches(null)} 
-          maxWidth="md" 
+        <Dialog
+          open={!!multipleMatches}
+          onClose={() => setMultipleMatches(null)}
+          maxWidth="lg"
           fullWidth
+          PaperProps={{ sx: { borderRadius: 3 } }}
         >
-          <DialogTitle sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", bgcolor: "#f5f5f5", py: 1.5 }}>
-            <Typography variant="h5" fontWeight={700}>Select Line Item</Typography>
-            <IconButton onClick={() => setMultipleMatches(null)} size="small">
+          <DialogTitle
+            sx={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              bgcolor: "grey.50",
+              borderBottom: "1px solid",
+              borderColor: "divider",
+            }}
+          >
+            <Box>
+              <Typography variant="h5" fontWeight={800}>
+                Select Line Item
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                This PO has multiple items. Select one to view its audit.
+              </Typography>
+            </Box>
+            <IconButton onClick={() => setMultipleMatches(null)}>
               <CloseIcon />
             </IconButton>
           </DialogTitle>
           <DialogContent sx={{ p: 0 }}>
             <TableContainer>
-              <Table stickyHeader size="small">
+              <Table stickyHeader>
                 <TableHead>
                   <TableRow>
-                    <TableCell sx={{ fontWeight: 600 }}>PO Number</TableCell>
-                    <TableCell sx={{ fontWeight: 600 }}>Line Item</TableCell>
-                    <TableCell sx={{ fontWeight: 600 }}>Material</TableCell>
-                    <TableCell sx={{ fontWeight: 600 }}>Plant</TableCell>
-                    <TableCell sx={{ fontWeight: 600 }}>Action</TableCell>
+                    <TableCell
+                      sx={{ fontWeight: 700, bgcolor: "background.paper" }}
+                    >
+                      PO Number
+                    </TableCell>
+                    <TableCell
+                      sx={{ fontWeight: 700, bgcolor: "background.paper" }}
+                    >
+                      Line Item
+                    </TableCell>
+                    <TableCell
+                      sx={{ fontWeight: 700, bgcolor: "background.paper" }}
+                    >
+                      Material
+                    </TableCell>
+                    <TableCell
+                      sx={{ fontWeight: 700, bgcolor: "background.paper" }}
+                    >
+                      Plant
+                    </TableCell>
+                    <TableCell
+                      sx={{ fontWeight: 700, bgcolor: "background.paper" }}
+                    >
+                      Action
+                    </TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {multipleMatches?.map((item) => (
-                    <TableRow key={item.id} hover>
-                      <TableCell>{item.po_number}</TableCell>
-                      <TableCell>
-                        <Typography fontWeight={700} color="primary">
-                          {item.po_line_item}
-                        </Typography>
+                    <TableRow
+                      key={item.id}
+                      hover
+                      sx={{ "&:last-child td": { border: 0 } }}
+                    >
+                      <TableCell sx={{ fontWeight: 600 }}>
+                        {item.po_number}
                       </TableCell>
                       <TableCell>
-                        <Typography variant="body2" fontWeight={600}>{item.material_code}</Typography>
-                        <Typography variant="caption" color="textSecondary">
+                        <Chip
+                          size="small"
+                          label={item.po_line_item}
+                          color="primary"
+                          variant="outlined"
+                          sx={{ fontWeight: 700 }}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2" fontWeight={700}>
+                          {item.material_code}
+                        </Typography>
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{
+                            display: "block",
+                            maxWidth: 200,
+                            textOverflow: "ellipsis",
+                            overflow: "hidden",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
                           {item.material_disc || "N/A"}
                         </Typography>
                       </TableCell>
                       <TableCell>
-                        <Typography variant="body2">{item.plantName || item.plant}</Typography>
+                        <Typography variant="body2">
+                          {item.plantName || item.plant}
+                        </Typography>
                       </TableCell>
                       <TableCell>
                         <Button
@@ -709,20 +754,18 @@ const SearchAuditData = () => {
                           disableElevation
                           startIcon={<VisibilityIcon />}
                           onClick={() => {
-                            setMultipleMatches(null); // Close dialog
-                            
-                            // Re-trigger search for exact Material Number match
-                            const exactPayload = { 
-                              ...searchInputs, 
-                              poMaterialNumber: item.po_material_number, 
+                            setMultipleMatches(null);
+                            const exactPayload = {
+                              ...searchInputs,
+                              poMaterialNumber: item.po_material_number,
                               PONumber: item.po_number,
-                              poLineItem: item.po_line_item
+                              poLineItem: item.po_line_item,
                             };
                             setSearchInputs(exactPayload);
                             handleSearch(exactPayload);
                           }}
                         >
-                          View
+                          View Audit
                         </Button>
                       </TableCell>
                     </TableRow>
@@ -751,9 +794,7 @@ const SearchAuditData = () => {
               <CloseIcon />
             </IconButton>
           </DialogTitle>
-          <DialogContent
-            sx={{ height: "80vh", p: 0, overflow: "hidden" }}
-          >
+          <DialogContent sx={{ height: "80vh", p: 0, overflow: "hidden" }}>
             {viewDocUrl && (
               <iframe
                 src={viewDocUrl}
@@ -769,4 +810,5 @@ const SearchAuditData = () => {
     </ViewDocumentProvider>
   );
 };
+
 export default SearchAuditData;

@@ -13,6 +13,7 @@ import {
   getPurchaseGroupName,
   getPaymentTermDescription,
   getPoTypeName,
+  getVendorInfo,
 } from "../utility/master-data.js";
 import {
   POINT_DEFINITIONS_BY_NO,
@@ -98,6 +99,8 @@ const ROW_SELECT = {
   net_value: true,
   payment_term: true,
   results: true,
+  tax_code: true,
+  GSTInOfVendor: true,
 };
 
 // Bucket helper shared by plant/vendor/PO-number groupings so every one of
@@ -265,10 +268,18 @@ export const getExecutiveSummary = async (req, res) => {
         exceptionValueExposure += parseNum(row.net_value);
 
         const poKey = row.po_number || "Unassigned";
+
+        // Grab Vendor Master data for GSTIN fallback
+        const vendor = getVendorInfo(row.vendor_code);
+        const gstin = row.GSTInOfVendor || vendor?.gstin || "";
+
         byPo[poKey] = byPo[poKey] || {
           count: 0,
           pos: new Set(),
           lineItems: new Set(),
+          prs: new Set(),
+          taxCodes: new Set(),
+          gstins: new Set(),
           valueExposure: 0,
           vendorCode: row.vendor_code || null,
           vendorName: row.nameOfVendor || null,
@@ -277,10 +288,15 @@ export const getExecutiveSummary = async (req, res) => {
           purchaseGroup: row.purchase_group || null,
           paymentTerm: row.payment_term || null,
         };
+
         byPo[poKey].count += 1;
         byPo[poKey].pos.add(row.po_number);
         byPo[poKey].lineItems.add(uniqueKeyOf(row));
         if (lineItemOf(row)) byPo[poKey].lineItems.add(lineItemOf(row));
+        if (row.purchase_req) byPo[poKey].prs.add(row.purchase_req);
+        if (row.tax_code) byPo[poKey].taxCodes.add(row.tax_code);
+        if (gstin) byPo[poKey].gstins.add(gstin);
+
         byPo[poKey].valueExposure += parseNum(row.net_value);
         if (!byPo[poKey].vendorName && row.nameOfVendor)
           byPo[poKey].vendorName = row.nameOfVendor;
@@ -349,6 +365,9 @@ export const getExecutiveSummary = async (req, res) => {
         exceptionLineCount: v.count,
         distinctLineItems: v.lineItems.size,
         lineItems: [...v.lineItems].sort(),
+        purchase_req: [...v.prs].join(", "),
+        taxCode: [...v.taxCodes].join(", "),
+        vendorGstin: [...v.gstins].join(", "),
         valueExposure: Number(v.valueExposure.toFixed(2)),
       }));
 
@@ -635,22 +654,19 @@ export const getExecutiveDrilldown = async (req, res) => {
           : {}),
       }));
 
-      // NOTE: po_status is intentionally NOT surfaced as a display field
-      // here - it's raw SAP data (e.g. "H") that frontend code has been
-      // relabeling as "PO HOLD" and showing as a "Status" column, which the
-      // client does not want anywhere in the drilldown tables. Every
-      // consumer of this endpoint should render from the fields below and
-      // drop any "Status" column from its table markup.
       return {
         id: r.id,
         po_number: r.po_number,
         lineItem: lineItemOf(r),
         lineItemKey: uniqueKeyOf(r),
+        purchase_req: r.purchase_req,
         material_code: r.material_code,
         material_disc: r.material_disc,
         net_value: r.net_value,
         vendorCode: r.vendor_code,
         vendorName: r.nameOfVendor || getVendorName(r.vendor_code),
+        vendorGstin: r.GSTInOfVendor,
+        taxCode: r.tax_code,
         plant: r.plant,
         plantName: getPlantName(r.plant),
         poType: r.po_type,

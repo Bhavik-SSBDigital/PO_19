@@ -37,7 +37,22 @@ import { post } from "utils/axiosApi";
 import { useViewDocument } from "../contexts";
 import DocumentView from "./document-view";
 import { AutoSplit, SplitBox } from "../../../components/SplitLayout";
-import { VerificationChip } from "./results-table"; // ← only new import
+import { VerificationChip } from "./results-table";
+
+const getSeverityColor = (severity) => {
+  switch (severity?.toLowerCase()) {
+    case "critical":
+      return "error";
+    case "high":
+      return "warning";
+    case "medium":
+      return "info";
+    case "low":
+      return "success";
+    default:
+      return "default";
+  }
+};
 
 // ==============================|| Audit Result Review ||============================== //
 
@@ -178,11 +193,17 @@ const AuditResultReview = ({ searchData }) => {
               <Table stickyHeader size="small">
                 <TableHead sx={{ bgcolor: "#f9f9f9" }}>
                   <TableRow>
-                    <TableCell sx={{ minWidth: { sm: "80px" } }}>
-                      Point No
+                    <TableCell sx={{ minWidth: { sm: "60px" } }}>
+                      Pt #
                     </TableCell>
-                    <TableCell sx={{ minWidth: { sm: "150px" } }}>
-                      Description
+                    <TableCell sx={{ minWidth: { sm: "220px" } }}>
+                      Title &amp; Summary
+                    </TableCell>
+                    <TableCell sx={{ minWidth: { sm: "240px" } }}>
+                      Logic
+                    </TableCell>
+                    <TableCell sx={{ minWidth: { sm: "90px" } }}>
+                      Severity
                     </TableCell>
                     <TableCell>System Remarks</TableCell>
                     <TableCell>System Verification</TableCell>
@@ -195,12 +216,36 @@ const AuditResultReview = ({ searchData }) => {
                     ?.map((result) => {
                       return (
                         <TableRow key={+result.pointNo}>
-                          <TableCell align="center">{result.pointNo}</TableCell>
-                          <TableCell>
-                            {result.description ? result.description : "-"}
+                          <TableCell align="center" sx={{ verticalAlign: "top", fontWeight: 700 }}>
+                            {result.pointNo}
                           </TableCell>
-                          <TableCell>
-                            <ul>
+                          <TableCell sx={{ verticalAlign: "top" }}>
+                            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                              {result.title || `Point ${result.pointNo}`}
+                            </Typography>
+                            {result.summary && (
+                              <Typography variant="body2" color="textSecondary" sx={{ mt: 0.5 }}>
+                                {result.summary}
+                              </Typography>
+                            )}
+                          </TableCell>
+                          <TableCell sx={{ verticalAlign: "top" }}>
+                            <Typography variant="body2">
+                              {result.logic || "N/A"}
+                            </Typography>
+                          </TableCell>
+                          <TableCell sx={{ verticalAlign: "top" }}>
+                            {result.severity && (
+                              <Chip
+                                label={result.severity}
+                                size="small"
+                                color={getSeverityColor(result.severity)}
+                                variant="outlined"
+                              />
+                            )}
+                          </TableCell>
+                          <TableCell sx={{ verticalAlign: "top" }}>
+                            <ul style={{ margin: 0, paddingLeft: "20px" }}>
                               {result?.remarks?.length
                                 ? result.remarks?.map((list, idx) => (
                                     <li key={idx + list}>{list}</li>
@@ -208,11 +253,10 @@ const AuditResultReview = ({ searchData }) => {
                                 : "-"}
                             </ul>
                           </TableCell>
-                          <TableCell>
-                            {/* ── ONLY THIS CHIP BLOCK CHANGED ── */}
+                          <TableCell sx={{ verticalAlign: "top" }}>
                             <VerificationChip result={result} />
                           </TableCell>
-                          <TableCell>
+                          <TableCell sx={{ verticalAlign: "top" }}>
                             {searchData?.workflowDetails?.currentStatus ===
                             "completed" ? (
                               <Button
@@ -350,7 +394,7 @@ const AuditResultReview = ({ searchData }) => {
                     })}
                   {!searchData?.results?.length && (
                     <TableRow>
-                      <TableCell colSpan={5} align="center">
+                      <TableCell colSpan={7} align="center">
                         No Data
                       </TableCell>
                     </TableRow>
@@ -565,7 +609,6 @@ const AuditResultReview = ({ searchData }) => {
                             (list, idx) => <li key={idx + list}>{list}</li>
                           )
                         : "-"}
-                      {/* {open?.systemResult?.systemRemarks} */}
                     </TableCell>
                     <TableCell>
                       {item.manualRemarks?.length
@@ -573,7 +616,6 @@ const AuditResultReview = ({ searchData }) => {
                             <li key={idx + list}>{list}</li>
                           ))
                         : "-"}
-                      {/* {item.manualRemarks} */}
                     </TableCell>
                     <TableCell>
                       {moment(item.timestamp).format("DD-MM-YYYY HH:MM A")}

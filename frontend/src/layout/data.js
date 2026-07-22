@@ -8,6 +8,7 @@ import AssignmentTurnedInRoundedIcon from "@mui/icons-material/AssignmentTurnedI
 import ManageAccountsOutlinedIcon from "@mui/icons-material/ManageAccountsOutlined";
 import PlaylistAddCheckRoundedIcon from "@mui/icons-material/PlaylistAddCheckRounded";
 import AdminPanelSettingsOutlinedIcon from "@mui/icons-material/AdminPanelSettingsOutlined";
+
 // icons
 const icons = {
   SpeedRoundedIcon,
@@ -49,22 +50,6 @@ const adminNavItems = [
     breadcrumbs: false,
   },
   {
-    id: "check-invoice-item-executor",
-    title: "Check Invoice item",
-    type: "item",
-    url: "/invoice-list",
-    icon: icons.PlaylistAddCheckRoundedIcon,
-    breadcrumbs: false,
-  },
-  {
-    id: "issue-tracker",
-    title: "Issue-Tracker",
-    type: "item",
-    url: "/issue-tracker",
-    icon: icons.ErrorOutlineRoundedIcon,
-    breadcrumbs: false,
-  },
-  {
     id: "risk-categorization",
     title: "Risk-Categorization",
     type: "item",
@@ -72,15 +57,8 @@ const adminNavItems = [
     icon: icons.LowPriorityRoundedIcon,
     breadcrumbs: false,
   },
-  {
-    id: "visibility-settings",
-    title: "Visibility-Settings",
-    type: "item",
-    url: "/visibility-settings",
-    icon: icons.LightModeRoundedIcon,
-    breadcrumbs: false,
-  },
 ];
+
 const headNavItems = [
   {
     id: "custom-dashboard",
@@ -98,23 +76,6 @@ const headNavItems = [
     icon: icons.ManageSearchRoundedIcon,
     breadcrumbs: false,
   },
-
-  {
-    id: "check-invoice-item",
-    title: "Check Invoice item",
-    type: "item",
-    url: "/invoice-list",
-    icon: icons.PlaylistAddCheckRoundedIcon,
-    breadcrumbs: false,
-  },
-  {
-    id: "issue-tracker",
-    title: "Issue-Tracker",
-    type: "item",
-    url: "/issue-tracker",
-    icon: icons.ErrorOutlineRoundedIcon,
-    breadcrumbs: false,
-  },
   {
     id: "risk-categorization",
     title: "Risk-Categorization",
@@ -123,15 +84,8 @@ const headNavItems = [
     icon: icons.LowPriorityRoundedIcon,
     breadcrumbs: false,
   },
-  {
-    id: "visibility-settings",
-    title: "Visibility-Settings",
-    type: "item",
-    url: "/visibility-settings",
-    icon: icons.LightModeRoundedIcon,
-    breadcrumbs: false,
-  },
 ];
+
 const executorNavItems = [
   {
     id: "custom-dashboard",
@@ -149,7 +103,6 @@ const executorNavItems = [
     icon: icons.ManageSearchRoundedIcon,
     breadcrumbs: false,
   },
-
   {
     id: "risk-categorization",
     title: "Risk-Categorization",
@@ -158,31 +111,8 @@ const executorNavItems = [
     icon: icons.LowPriorityRoundedIcon,
     breadcrumbs: false,
   },
-  {
-    id: "check-invoice-item-executor",
-    title: "Check Invoice item",
-    type: "item",
-    url: "/invoice-list",
-    icon: icons.PlaylistAddCheckRoundedIcon,
-    breadcrumbs: false,
-  },
-  {
-    id: "issue-tracker",
-    title: "Issue-Tracker",
-    type: "item",
-    url: "/issue-tracker",
-    icon: icons.ErrorOutlineRoundedIcon,
-    breadcrumbs: false,
-  },
-  {
-    id: "visibility-settings",
-    title: "Visibility-Settings",
-    type: "item",
-    url: "/visibility-settings",
-    icon: icons.LightModeRoundedIcon,
-    breadcrumbs: false,
-  },
 ];
+
 const ssbdNavItems = [
   {
     id: "custom-dashboard",
@@ -190,14 +120,6 @@ const ssbdNavItems = [
     type: "item",
     url: "/",
     icon: icons.SpeedRoundedIcon,
-    breadcrumbs: false,
-  },
-  {
-    id: "issue-tracker",
-    title: "Issue-Tracker",
-    type: "item",
-    url: "/issue-tracker",
-    icon: icons.ErrorOutlineRoundedIcon,
     breadcrumbs: false,
   },
   {
@@ -209,14 +131,6 @@ const ssbdNavItems = [
     breadcrumbs: false,
   },
   {
-    id: "invoice-list",
-    title: "Check Invoice item",
-    type: "item",
-    url: "/invoice-list",
-    icon: icons.PlaylistAddCheckRoundedIcon,
-    breadcrumbs: false,
-  },
-  {
     id: "risk-categorization",
     title: "Risk-Categorization",
     type: "item",
@@ -225,30 +139,14 @@ const ssbdNavItems = [
     breadcrumbs: false,
   },
 ];
+
 const auditorNavItems = [
-  // ADD THIS OBJECT
   {
     id: "custom-dashboard",
     title: "Dashboard",
     type: "item",
     url: "/",
     icon: icons.SpeedRoundedIcon,
-    breadcrumbs: false,
-  },
-  {
-    id: "check-invoice-item",
-    title: "Check Invoice item",
-    type: "item",
-    url: "/check-invoice-item",
-    icon: icons.PlaylistAddCheckRoundedIcon,
-    breadcrumbs: false,
-  },
-  {
-    id: "issue-tracker",
-    title: "Issue-Tracker",
-    type: "item",
-    url: "/issue-tracker",
-    icon: icons.ErrorOutlineRoundedIcon,
     breadcrumbs: false,
   },
 ];

@@ -1,5 +1,6 @@
 import { prisma } from "../lib/prisma.js";
 import {
+  SEVERITY_LEVELS,
   severityOf,
   classifyPoint,
   exceptionPointsOf,
@@ -131,8 +132,8 @@ const uniqueKeyOf = (row) =>
 
 // Attaches full audit-point reference (title/summary/logic + current
 // severity) to EVERY point in a result set, not only the failing ones - so
-// a full 19-point breakdown (po-audit-result-dialog) can show "what does
-// this point check?" regardless of whether it passed.
+// a full 19-point breakdown can show "what does this point check?"
+// regardless of whether it passed.
 function withPointReference(results) {
   return (results || []).map((p) => ({
     ...p,
@@ -153,15 +154,18 @@ function withPointReference(results) {
 // "PO HOLD" - strip that column from any table consuming this.
 const withExceptionPoints = (row) => ({
   ...row,
-  lineItemKey: uniqueKeyOf(row),
+  lineItemKey:
+    row.po_material_number || `${row.po_number}-${lineItemOf(row) ?? row.id}`,
   lineItem: lineItemOf(row),
+  // FIX: results now carry title/summary/logic/severity for every one of
+  // the 19 points (not just the failing ones) — this is what every
+  // frontend table (search page, dashboard drilldown, auditor review) reads.
   results: withPointReference(row.results),
   exceptionPoints: exceptionPointsOf(row).map((ep) => ({
     ...ep,
     ...(POINT_DEFINITIONS_BY_NO[String(ep.pointNo)]
       ? {
           title: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].title,
-          summary: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].summary,
           logic: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].logic,
         }
       : {}),
@@ -241,7 +245,7 @@ export const get_po_audit_result = async (req, res) => {
         .json({ message: "id, poMaterialNumber, or po_number is required" });
     }
 
-    // 1. Direct hit: If we have an exact ID, Material Number, or PO + Line Item
+    // 1. Exact Match (ID, Material Num, or PO + Line Item)
     if (id || poMaterialNumber || (po_number && po_line_item)) {
       const where = { type: "PO" };
       if (id) where.id = id;
@@ -256,37 +260,30 @@ export const get_po_audit_result = async (req, res) => {
         where,
         include: RESULT_INCLUDE,
       });
+      if (result) return res.status(200).json(withExceptionPoints(result));
 
-      if (result) {
-        return res.status(200).json(withExceptionPoints(result));
-      }
-
-      // If user typed a specific line item but it doesn't exist
-      if (po_line_item) {
+      if (po_line_item)
         return res.status(404).json({
           message: `Line item ${po_line_item} not found for PO ${po_number}`,
         });
-      }
     }
 
-    // 2. Broad search: Only PO Number is provided
+    // 2. Broad Search (Just PO Number)
     const where = { type: "PO", po_number };
     if (fiscalYear) where.fiscalYear = fiscalYear;
 
     const matches = await prisma.auditResult.findMany({
       where,
       include: RESULT_INCLUDE,
-      orderBy: { po_line_item: "asc" }, // Order chronologically by line item
+      orderBy: { po_line_item: "asc" },
     });
 
     if (matches.length === 0)
       return res.status(404).json({ message: "PO audit result not found" });
-
-    // If only 1 line item exists in the PO, just return it directly (skip the selection step)
     if (matches.length === 1)
       return res.status(200).json(withExceptionPoints(matches[0]));
 
-    // If multiple line items exist, return a lightweight array to populate the frontend selection table
+    // Multiple Matches found - Return array for Frontend Popup Modal
     return res.status(200).json({
       multipleMatches: true,
       total: matches.length,

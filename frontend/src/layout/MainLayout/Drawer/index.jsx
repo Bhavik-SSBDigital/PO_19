@@ -3,14 +3,14 @@ import { useEffect, useMemo } from "react";
 
 // material-ui
 import { useTheme } from "@mui/material/styles";
-import { Box, Divider, Drawer, useMediaQuery } from "@mui/material";
+import { Box, Drawer, useMediaQuery } from "@mui/material";
 
 // project import
 import DrawerHeader from "./DrawerHeader";
 import DrawerContent from "./DrawerContent";
 import MiniDrawerStyled from "./MiniDrawerStyled";
 import { drawerWidth } from "config";
-import { useDispatch, useSelector } from "react-redux";
+import { useDispatch } from "react-redux";
 import { dataViewType } from "../../../store/reducers/menu";
 
 // ==============================|| MAIN LAYOUT - DRAWER ||============================== //
@@ -21,20 +21,17 @@ const MainDrawer = ({ open, handleDrawerToggle, window }) => {
 
   const container =
     window !== undefined ? () => window().document.body : undefined;
-  const role = localStorage.getItem("role") === "isAuditor";
-  const allowedModules = JSON.parse(localStorage.getItem("allowedModules"));
 
   const dispatch = useDispatch();
 
   useEffect(() => {
+    // Since there is only one module now, just enforce "PO" directly
     dispatch(
       dataViewType({
-        dataViewType:
-          localStorage.getItem("dataViewType") ||
-          (role ? allowedModules[0] || "" : "PJV"),
+        dataViewType: "PO",
       })
     );
-  }, []);
+  }, [dispatch]);
 
   // header content
   const drawerContent = useMemo(() => <DrawerContent />, []);
@@ -50,16 +47,18 @@ const MainDrawer = ({ open, handleDrawerToggle, window }) => {
         <MiniDrawerStyled
           sx={{
             "& .MuiDrawer-paper": {
-              backgroundColor: "#2e3780",
+              // FORCE WHITE BACKGROUND - Kills the blue
+              backgroundColor: "#ffffff",
+              borderRight: "1px solid #f1f5f9",
             },
           }}
           variant="permanent"
           open={open}
         >
           {drawerHeader}
-          <Divider
-            sx={{ my: "13px", borderWidth: 1.5, borderColor: "#fff5f5a8" }}
-          />
+          
+          {/* Removed the Divider with margins that was exposing the background gap */}
+          
           {drawerContent}
         </MiniDrawerStyled>
       ) : (
@@ -74,15 +73,15 @@ const MainDrawer = ({ open, handleDrawerToggle, window }) => {
             "& .MuiDrawer-paper": {
               width: drawerWidth,
               boxShadow: "none",
-              backgroundColor: "#2e3780",
+              // FORCE WHITE BACKGROUND ON MOBILE TOO
+              backgroundColor: "#ffffff",
+              borderRight: "1px solid #f1f5f9",
             },
           }}
         >
           {open && drawerHeader}
 
-          <Divider
-            sx={{ borderColor: theme.palette.divider, my: 2, borderWidth: 1.5 }}
-          />
+          {/* Removed the Divider here as well */}
 
           {open && drawerContent}
         </Drawer>

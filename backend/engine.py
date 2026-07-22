@@ -386,11 +386,12 @@ def rule_01_release_verification(row, ctx):
     if po_type in {"ZSER", "ZJVW", "ZJWV"}:
         return NA, f"Not applicable for PO type {po_type}"
     if not purchase_req:
-        return NA, "Purchase Req is blank"
+        return NOT_VERIFIED, "Purchase Req is blank"
     rel_ind = s(row, "PR Release Ind")
     if rel_ind == "2":
         return VERIFIED, "PR is released"
     return NOT_VERIFIED, f"PR Release Ind = '{rel_ind}' not in released set"
+
 
 def rule_02_pr_assigned(row, ctx):
     purchase_req = s(row, "Purchase Req")
