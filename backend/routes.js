@@ -1,5 +1,10 @@
 import express from "express";
-import { login, signup, logout } from "./controller/user-controller.js";
+import {
+  login,
+  signup,
+  logout,
+  getRoles,
+} from "./controller/user-controller.js";
 import {
   get_po_audit_results,
   get_po_audit_result,
@@ -30,6 +35,8 @@ router.post("/getPOAuditResult", get_po_audit_result);
 
 // --- Dashboard (Executive P2P Compliance Control Tower) ---
 router.post("/reports/executive-summary", getExecutiveSummary);
+
+router.get("/getRoles", getRoles);
 router.post("/reports/filter-options", getFilterOptions);
 router.post("/reports/executive-drilldown", getExecutiveDrilldown);
 // New: audit-point reference (all 19 points' descriptions) + KPI/chart

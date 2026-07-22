@@ -18,7 +18,8 @@ import { prisma } from "../lib/prisma.js";
 
 export const signup = async (req, res) => {
   try {
-    const { username, email, password, firstName, lastName, roleName } = req.body;
+    const { username, email, password, firstName, lastName, roleName } =
+      req.body;
 
     const existing = await prisma.user.findFirst({ where: { username } });
     if (existing) {
@@ -46,6 +47,23 @@ export const signup = async (req, res) => {
   } catch (error) {
     console.error("Error in signup:", error);
     return res.status(500).json({ message: "Failed to create user" });
+  }
+};
+
+// Add this to your existing controller file
+
+export const getRoles = async (req, res) => {
+  try {
+    const roles = await prisma.role.findMany({
+      orderBy: {
+        name: "asc", // Optional: orders the roles alphabetically
+      },
+    });
+
+    return res.status(200).json(roles);
+  } catch (error) {
+    console.error("Error fetching roles:", error);
+    return res.status(500).json({ message: "Failed to fetch roles" });
   }
 };
 
