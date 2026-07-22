@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import moment from "moment";
 import {
   Box, Button, CircularProgress, Dialog, DialogActions, DialogContent,
   DialogTitle, Grid, IconButton, Paper, Table, TableBody, TableCell,
-  TableContainer, TableHead, TableRow, Typography, Chip,
+  TableContainer, TableHead, TableRow, Typography, Chip, Divider,
 } from "@mui/material";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
@@ -12,9 +13,51 @@ import { post } from "utils/axiosApi";
 
 // "results" and "exceptionPoints" are rendered by the dedicated block below,
 // not the generic array-of-objects dumper — so exclude both here.
+//
+// Everything in PO_SUMMARY_RAW_KEYS is ALSO excluded from the generic dump
+// below: those raw/duplicate fields (vendor_code, nameOfVendor,
+// GSTInOfVendor, plant, po_type, purchase_group, payment_term, tax_code,
+// plus their already-enriched vendorName/vendorGstin/plantName/... twins)
+// are shown exactly once, in the curated PoSummaryHeader instead. Before
+// this change they were ALSO showing up as separate, unlabeled tiles in the
+// generic grid below — so a blank raw "GSTInOfVendor" tile sat right next
+// to the correct enriched "vendorGstin" tile, which is what made GST look
+// wrong/inconsistent in this dialog specifically.
+const PO_SUMMARY_RAW_KEYS = new Set([
+  "vendor_code", "vendorCode", "nameOfVendor", "vendorName",
+  "GSTInOfVendor", "vendorGstin",
+  "plant", "plantName",
+  "po_type", "poType", "poTypeName", "poTypeIsAssumption",
+  "purchase_group", "purchaseGroup", "purchaseGroupName",
+  "payment_term", "paymentTerm", "paymentTermDescription",
+  "tax_code", "taxCode",
+  "purchase_req",
+  "po_number", "poNumber", "lineItem", "po_line_item", "lineItemKey", "po_material_number",
+]);
+
 const PREVIEW_EXCLUDE_KEYS = new Set([
   "_id", "__v", "processDocuments", "multipleMatches", "results", "exceptionPoints",
+  ...PO_SUMMARY_RAW_KEYS,
 ]);
+
+// Ordered, de-duplicated PO summary fields — same set shown on the search
+// page's PoSummaryHeader, tried through every field-name alias the backend
+// has used across controller versions so it degrades gracefully instead of
+// ever showing a stale/blank tile.
+const PO_SUMMARY_FIELDS = [
+  ["PO Number", (d) => d.po_number || d.poNumber],
+  ["Line Item", (d) => d.lineItem || d.po_line_item],
+  ["Vendor Code", (d) => d.vendorCode || d.vendor_code],
+  ["Vendor", (d) => d.vendorName || d.nameOfVendor],
+  ["GSTIN", (d) => d.vendorGstin || d.GSTInOfVendor],
+  ["Plant", (d) => d.plantName || d.plant],
+  ["PO Type", (d) => d.poTypeName || d.po_type],
+  ["Purchasing Group", (d) => d.purchaseGroupName || d.purchase_group],
+  ["Payment Term", (d) => d.paymentTermDescription || d.payment_term],
+  ["Tax Code", (d) => d.taxCode || d.tax_code],
+  ["PR Number", (d) => d.purchase_req],
+  ["Net Value", (d) => d.net_value],
+];
 
 const humanizeKey = (k) =>
   k.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
@@ -28,6 +71,25 @@ const TAG_STYLES = [
   { test: /^(manual([\s_-]?review)?|pending)$/i, bg: "#fef9c3", color: "#a16207" },
 ];
 
+const isDateString = (key, value) => {
+  if (typeof value !== "string") return false;
+  const isDateKey = /date|at|on$/i.test(key);
+  const isIsoFormat = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(value);
+  if (isDateKey || isIsoFormat) {
+    return moment(value, moment.ISO_8601, true).isValid() || !isNaN(Date.parse(value));
+  }
+  return false;
+};
+
+const formatDateValue = (value) => {
+  const m = moment(value);
+  if (!m.isValid()) return String(value);
+  if (typeof value === "string" && value.length > 10 && !value.endsWith("00:00:00.000Z") && !value.endsWith("00:00:00")) {
+    return m.format("DD-MM-YYYY HH:mm");
+  }
+  return m.format("DD-MM-YYYY");
+};
+
 const renderTagOrValue = (key, value) => {
   if (typeof value === "boolean") {
     return (
@@ -40,6 +102,13 @@ const renderTagOrValue = (key, value) => {
     if (match) {
       return <Chip size="small" label={value} sx={{ bgcolor: match.bg, color: match.color, fontWeight: 700 }} />;
     }
+  }
+  if (isDateString(key, value)) {
+    return (
+      <Typography variant="body2" sx={{ fontWeight: 600, wordBreak: "break-word" }}>
+        {formatDateValue(value)}
+      </Typography>
+    );
   }
   return (
     <Typography variant="body2" sx={{ fontWeight: 600, wordBreak: "break-word" }}>
@@ -82,6 +151,37 @@ const VerificationChip = ({ result }) => {
     return <Chip icon={<TaskAltRoundedIcon style={{ fontSize: "13px" }} />} size="small" label="Verified" color="success" sx={{ borderRadius: "20px", fontSize: "12px", fontWeight: "700" }} />;
   }
   return <Chip icon={<TaskAltRoundedIcon style={{ fontSize: "13px" }} />} size="small" label="Not Verified" color="error" sx={{ borderRadius: "20px", fontSize: "12px", fontWeight: "700" }} />;
+};
+
+// Curated, always-in-the-same-order PO summary strip. Renders exactly once
+// per field (no raw/enriched duplicates) so Vendor and GSTIN are
+// unambiguous — this is what replaces the old "dump every scalar field"
+// behavior for these particular fields.
+const PoSummaryHeader = ({ details }) => {
+  if (!details) return null;
+  return (
+    <Box sx={{ mb: 3 }}>
+      <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1.5, color: "text.secondary" }}>
+        PO Summary
+      </Typography>
+      <Grid container spacing={2}>
+        {PO_SUMMARY_FIELDS.map(([label, getValue]) => {
+          const value = getValue(details);
+          return (
+            <Grid item xs={6} sm={4} key={label}>
+              <Typography variant="caption" sx={{ color: "text.secondary", fontWeight: 700, display: "block", mb: 0.5 }}>
+                {label}
+              </Typography>
+              <Typography variant="body2" sx={{ fontWeight: 600, wordBreak: "break-word" }}>
+                {value === null || value === undefined || value === "" ? "—" : String(value)}
+              </Typography>
+            </Grid>
+          );
+        })}
+      </Grid>
+      <Divider sx={{ mt: 2.5 }} />
+    </Box>
+  );
 };
 
 /**
@@ -132,6 +232,9 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage }) => {
     };
   }, [preview]);
 
+  // Everything EXCEPT the curated PO_SUMMARY_RAW_KEYS (those are rendered
+  // once, unambiguously, by PoSummaryHeader above). This is what stops the
+  // duplicate/blank "second GST tile" problem.
   const scalarEntries = useMemo(() => {
     if (!details) return [];
     return Object.entries(details).filter(
@@ -175,21 +278,25 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage }) => {
         )}
         {!loading && !error && details && (
           <Box>
-            <Grid container spacing={2} sx={{ mb: 3 }}>
-              {scalarEntries.map(([k, v]) => (
-                <Grid item xs={6} sm={4} key={k}>
-                  <Typography variant="caption" sx={{ color: "text.secondary", fontWeight: 700, display: "block", mb: 0.5 }}>
-                    {humanizeKey(k)}
-                  </Typography>
-                  {renderTagOrValue(k, v)}
+            <PoSummaryHeader details={details} />
+
+            {scalarEntries.length > 0 && (
+              <Box sx={{ mb: 3 }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1.5, color: "text.secondary" }}>
+                  Other Fields
+                </Typography>
+                <Grid container spacing={2}>
+                  {scalarEntries.map(([k, v]) => (
+                    <Grid item xs={6} sm={4} key={k}>
+                      <Typography variant="caption" sx={{ color: "text.secondary", fontWeight: 700, display: "block", mb: 0.5 }}>
+                        {humanizeKey(k)}
+                      </Typography>
+                      {renderTagOrValue(k, v)}
+                    </Grid>
+                  ))}
                 </Grid>
-              ))}
-              {scalarEntries.length === 0 && (
-                <Grid item xs={12}>
-                  <Typography color="text.secondary">No summary fields returned.</Typography>
-                </Grid>
-              )}
-            </Grid>
+              </Box>
+            )}
 
             {Array.isArray(details.results) && details.results.length > 0 && (
               <Box sx={{ mb: 3 }}>

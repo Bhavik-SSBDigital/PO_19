@@ -8,6 +8,7 @@ import {
 } from "../utility/severity.js";
 import {
   getVendorName,
+  getVendorInfo, // Added VendorInfo import to retrieve GSTIN here too
   getPlantName,
   getPurchaseGroupName,
   getPaymentTermDescription,
@@ -117,6 +118,8 @@ const ROW_SELECT = {
   net_value: true,
   payment_term: true,
   results: true,
+  tax_code: true,
+  GSTInOfVendor: true, // Explicitly select to avoid undefined
 };
 
 const lineItemOf = (row) => {
@@ -130,10 +133,6 @@ const lineItemOf = (row) => {
 const uniqueKeyOf = (row) =>
   row.po_material_number || `${row.po_number}-${lineItemOf(row) ?? row.id}`;
 
-// Attaches full audit-point reference (title/summary/logic + current
-// severity) to EVERY point in a result set, not only the failing ones - so
-// a full 19-point breakdown can show "what does this point check?"
-// regardless of whether it passed.
 function withPointReference(results) {
   return (results || []).map((p) => ({
     ...p,
@@ -148,34 +147,34 @@ function withPointReference(results) {
   }));
 }
 
-// Enriches a row for frontend display. `po_status` is deliberately kept as
-// raw data (some screens need it to compute the Hold badge/ageing) but it
-// must never be rendered as a bare "Status" column showing values like
-// "PO HOLD" - strip that column from any table consuming this.
-const withExceptionPoints = (row) => ({
-  ...row,
-  lineItemKey:
-    row.po_material_number || `${row.po_number}-${lineItemOf(row) ?? row.id}`,
-  lineItem: lineItemOf(row),
-  // FIX: results now carry title/summary/logic/severity for every one of
-  // the 19 points (not just the failing ones) — this is what every
-  // frontend table (search page, dashboard drilldown, auditor review) reads.
-  results: withPointReference(row.results),
-  exceptionPoints: exceptionPointsOf(row).map((ep) => ({
-    ...ep,
-    ...(POINT_DEFINITIONS_BY_NO[String(ep.pointNo)]
-      ? {
-          title: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].title,
-          logic: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].logic,
-        }
-      : {}),
-  })),
-  vendorName: row.nameOfVendor || getVendorName(row.vendor_code),
-  plantName: getPlantName(row.plant),
-  poTypeName: getPoTypeName(row.po_type),
-  purchaseGroupName: getPurchaseGroupName(row.purchase_group),
-  paymentTermDescription: getPaymentTermDescription(row.payment_term),
-});
+const withExceptionPoints = (row) => {
+  const vendor = getVendorInfo(row.vendor_code); // Look up vendor master info explicitly
+
+  return {
+    ...row,
+    lineItemKey:
+      row.po_material_number || `${row.po_number}-${lineItemOf(row) ?? row.id}`,
+    lineItem: lineItemOf(row),
+    results: withPointReference(row.results),
+    exceptionPoints: exceptionPointsOf(row).map((ep) => ({
+      ...ep,
+      ...(POINT_DEFINITIONS_BY_NO[String(ep.pointNo)]
+        ? {
+            title: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].title,
+            logic: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].logic,
+          }
+        : {}),
+    })),
+    // Fallback correctly applied for PO Search/Preview payloads
+    vendorName:
+      row.nameOfVendor || vendor?.name || getVendorName(row.vendor_code),
+    vendorGstin: row.GSTInOfVendor || vendor?.gstin || "",
+    plantName: getPlantName(row.plant),
+    poTypeName: getPoTypeName(row.po_type),
+    purchaseGroupName: getPurchaseGroupName(row.purchase_group),
+    paymentTermDescription: getPaymentTermDescription(row.payment_term),
+  };
+};
 
 export const get_po_audit_results = async (req, res) => {
   try {
@@ -287,21 +286,26 @@ export const get_po_audit_result = async (req, res) => {
     return res.status(200).json({
       multipleMatches: true,
       total: matches.length,
-      results: matches.map((r) => ({
-        id: r.id,
-        po_number: r.po_number,
-        po_line_item: lineItemOf(r),
-        po_material_number: r.po_material_number,
-        material_code: r.material_code,
-        material_disc: r.material_disc,
-        plant: r.plant,
-        plantName: getPlantName(r.plant),
-        vendorName: r.nameOfVendor || getVendorName(r.vendor_code),
-        poTypeName: getPoTypeName(r.po_type),
-        purchaseGroupName: getPurchaseGroupName(r.purchase_group),
-        net_value: r.net_value,
-        fiscalYear: r.fiscalYear,
-      })),
+      results: matches.map((r) => {
+        const vendor = getVendorInfo(r.vendor_code); // Make sure picker gets name fallback
+        return {
+          id: r.id,
+          po_number: r.po_number,
+          po_line_item: lineItemOf(r),
+          po_material_number: r.po_material_number,
+          material_code: r.material_code,
+          material_disc: r.material_disc,
+          plant: r.plant,
+          plantName: getPlantName(r.plant),
+          vendorName:
+            r.nameOfVendor || vendor?.name || getVendorName(r.vendor_code),
+          vendorGstin: r.GSTInOfVendor || vendor?.gstin || "",
+          poTypeName: getPoTypeName(r.po_type),
+          purchaseGroupName: getPurchaseGroupName(r.purchase_group),
+          net_value: r.net_value,
+          fiscalYear: r.fiscalYear,
+        };
+      }),
     });
   } catch (error) {
     console.error("Error in get_po_audit_result:", error);

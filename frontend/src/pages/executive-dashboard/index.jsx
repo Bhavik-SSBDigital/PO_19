@@ -228,7 +228,7 @@ const PoWiseExceptionsTable = ({ rows, loading, onRowAction }) => {
         <Typography variant="h6" sx={{ fontWeight: 800, color: '#1e293b', display: "flex", alignItems: "center" }}>
           PO-Wise Exceptions 
           <Chip size="small" label={`${rows.length} POs`} sx={{ ml: 2, fontWeight: 700, bgcolor: alpha('#6366f1', 0.1), color: '#6366f1' }} />
-          <InfoTip text="Click ANY row to open its Audit Data & Results — in a new tab or right here in a preview." />
+          <InfoTip text="Click ANY row to open its PO Data & Results — in a new tab or right here in a preview." />
         </Typography>
         <TextField
           size="small"
@@ -469,7 +469,7 @@ const ExecutiveDashboard = () => {
             Executive P2P Compliance Control Tower
           </Typography>
           <Typography variant="body1" sx={{ display: "block", maxWidth: 800, lineHeight: 1.6, color: '#64748b' }}>
-            Tracks how many of the 19 audit checkpoints each PO line passes. Hover the <InfoOutlinedIcon sx={{ fontSize: 16, verticalAlign: "text-bottom" }} /> icon
+            Tracks how many of the 19 checkpoints each PO line passes. Hover the <InfoOutlinedIcon sx={{ fontSize: 16, verticalAlign: "text-bottom" }} /> icon
             on any card or chart below for what that specific metric means. Criticality of each checkpoint is managed on the Risk Categorization Master page.
           </Typography>
           {lastUpdated && (

@@ -1,6 +1,6 @@
 // Shared by every table that lists PO lines (Executive Dashboard's PO-Wise
 // Exceptions table AND the Drilldown dialog), so "open in new tab" always
-// points to the same Search Audit Data route, prefilled the same way.
+// points to the same Search PO Data route, prefilled the same way.
 export const buildSearchUrl = (poNumber, lineItem) =>
   `/search-data?PONo=${encodeURIComponent(poNumber)}${
     lineItem ? `&poLineItem=${encodeURIComponent(lineItem)}` : ""

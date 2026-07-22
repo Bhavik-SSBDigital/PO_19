@@ -104,7 +104,7 @@ const DrilldownDialog = ({ drilldown, appliedFilters, onClose }) => {
         <Box>
           <Typography variant="h6">{drilldown?.title}</Typography>
           <Typography variant="caption" color="text.secondary">
-            {total} PO line(s) — click any row to open its Audit Data &amp; Results
+            {total} PO line(s) — click any row to open its PO Data &amp; Results
           </Typography>
         </Box>
         <IconButton onClick={onClose}><CloseIcon /></IconButton>

@@ -365,6 +365,25 @@ const TAG_STYLES = [
   { test: /^(manual([\s_-]?review)?|pending)$/i, bg: "#fef9c3", color: "#a16207" },
 ];
 
+const isDateString = (key, value) => {
+  if (typeof value !== "string") return false;
+  const isDateKey = /date|at|on$/i.test(key);
+  const isIsoFormat = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(value);
+  if (isDateKey || isIsoFormat) {
+    return moment(value, moment.ISO_8601, true).isValid() || !isNaN(Date.parse(value));
+  }
+  return false;
+};
+
+const formatDateValue = (value) => {
+  const m = moment(value);
+  if (!m.isValid()) return String(value);
+  if (typeof value === "string" && value.length > 10 && !value.endsWith("00:00:00.000Z") && !value.endsWith("00:00:00")) {
+    return m.format("DD-MM-YYYY HH:mm");
+  }
+  return m.format("DD-MM-YYYY");
+};
+
 const renderTagOrValue = (key, value) => {
   if (typeof value === "boolean") {
     return (
@@ -381,6 +400,13 @@ const renderTagOrValue = (key, value) => {
       return <Chip size="small" label={value} sx={{ bgcolor: match.bg, color: match.color, fontWeight: 700 }} />;
     }
   }
+  if (isDateString(key, value)) {
+    return (
+      <Typography variant="body2" sx={{ fontWeight: 600, wordBreak: "break-word" }}>
+        {formatDateValue(value)}
+      </Typography>
+    );
+  }
   return (
     <Typography variant="body2" sx={{ fontWeight: 600, wordBreak: "break-word" }}>
       {String(value)}
@@ -390,7 +416,7 @@ const renderTagOrValue = (key, value) => {
 
 /**
  * Quick, generic preview of a PO's audit details/results fetched straight
- * from the same endpoint the full Search Audit Data page uses. Lets the
+ * from the same endpoint the full Search PO Data page uses. Lets the
  * user peek at a row without leaving this table.
  */
 const PoRowPreviewDialog = ({ preview, onClose, onOpenFullPage }) => {

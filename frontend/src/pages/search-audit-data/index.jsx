@@ -28,6 +28,7 @@ import {
   DialogTitle,
   DialogContent,
   Chip,
+  Grid,
 } from "@mui/material";
 import { toast } from "react-toastify";
 import { useSelector } from "react-redux";
@@ -45,6 +46,67 @@ import AuditResultReview from "./components/audit-result-review";
 const getLastFiveYears = () => {
   const currentYear = new Date().getFullYear();
   return Array.from({ length: 5 }, (_, index) => currentYear - index);
+};
+
+// Shared "PO summary" strip — shows the same enrichment fields (vendor name,
+// GSTIN, plant, PO type, purchasing group, payment term, etc.) that the
+// Executive Dashboard's "View Details Here" preview dialog already shows.
+// Falls back through every alias the backend might return for a given
+// field, since different controllers/versions have named these slightly
+// differently over time (vendorGstin vs GSTInOfVendor, plantName vs plant,
+// etc.) — this way the strip degrades gracefully instead of showing blanks.
+const PO_SUMMARY_FIELDS = [
+  ["PO Number", (d) => d.po_number],
+  ["Line Item", (d) => d.lineItem || d.po_line_item],
+  ["Vendor Code", (d) => d.vendorCode || d.vendor_code],
+  ["Vendor", (d) => d.vendorName],
+  ["GSTIN", (d) => d.vendorGstin || d.GSTInOfVendor],
+  ["Plant", (d) => d.plantName || d.plant],
+  ["PO Type", (d) => d.poTypeName || d.po_type],
+  ["Purchasing Group", (d) => d.purchaseGroupName || d.purchase_group],
+  ["Payment Term", (d) => d.paymentTermDescription || d.payment_term],
+  ["Tax Code", (d) => d.taxCode || d.tax_code],
+  ["PR Number", (d) => d.purchase_req],
+  ["Net Value", (d) => d.net_value],
+];
+
+const PoSummaryHeader = ({ data }) => {
+  if (!data) return null;
+  return (
+    <Box sx={{ px: 2, pt: 2, pb: 1 }}>
+      <Typography
+        variant="subtitle2"
+        sx={{ fontWeight: 700, mb: 1.5, color: "text.secondary" }}
+      >
+        PO Summary
+      </Typography>
+      <Grid container spacing={2}>
+        {PO_SUMMARY_FIELDS.map(([label, getValue]) => {
+          const value = getValue(data);
+          return (
+            <Grid item xs={6} sm={4} md={3} key={label}>
+              <Typography
+                variant="caption"
+                sx={{
+                  color: "text.secondary",
+                  fontWeight: 700,
+                  display: "block",
+                }}
+              >
+                {label}
+              </Typography>
+              <Typography variant="body2" sx={{ fontWeight: 600, wordBreak: "break-word" }}>
+                {value === null || value === undefined || value === ""
+                  ? "—"
+                  : String(value)}
+              </Typography>
+            </Grid>
+          );
+        })}
+      </Grid>
+      <Divider sx={{ mt: 2 }} />
+    </Box>
+  );
 };
 
 const SearchAuditData = () => {
@@ -227,7 +289,7 @@ const SearchAuditData = () => {
           Back
         </Button>
         <Typography variant="h4" sx={{ fontWeight: 800, mb: 3 }}>
-          Audit Data, Report, and Results
+          PO Data, Report, and Results
         </Typography>
 
         {role !== "isAuditor" && (
@@ -503,6 +565,12 @@ const SearchAuditData = () => {
               border: "1px solid #e5e5e5",
             }}
           >
+            {/* PO summary strip: vendor name, GSTIN, plant, PO type,
+                purchasing group, payment term — same fields the dashboard's
+                "View Details Here" preview already shows, now visible here
+                too so this page isn't missing detail by comparison. */}
+            {dataViewType === "PO" && <PoSummaryHeader data={searchData} />}
+
             <AuditDetails auditDetails={searchData} />
             {dataViewType === "PO" &&
               searchData?.processDocuments &&
@@ -696,6 +764,16 @@ const SearchAuditData = () => {
                     <TableCell
                       sx={{ fontWeight: 700, bgcolor: "background.paper" }}
                     >
+                      Vendor
+                    </TableCell>
+                    <TableCell
+                      sx={{ fontWeight: 700, bgcolor: "background.paper" }}
+                    >
+                      GSTIN
+                    </TableCell>
+                    <TableCell
+                      sx={{ fontWeight: 700, bgcolor: "background.paper" }}
+                    >
                       Plant
                     </TableCell>
                     <TableCell
@@ -740,6 +818,16 @@ const SearchAuditData = () => {
                           }}
                         >
                           {item.material_disc || "N/A"}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2">
+                          {item.vendorName || item.vendor_code || "—"}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2">
+                          {item.vendorGstin || item.GSTInOfVendor || "—"}
                         </Typography>
                       </TableCell>
                       <TableCell>

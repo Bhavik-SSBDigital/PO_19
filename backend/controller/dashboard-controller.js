@@ -9,11 +9,11 @@ import {
 } from "../utility/severity.js";
 import {
   getVendorName,
+  getVendorInfo, // Added VendorInfo import to retrieve GSTIN
   getPlantName,
   getPurchaseGroupName,
   getPaymentTermDescription,
   getPoTypeName,
-  getVendorInfo,
 } from "../utility/master-data.js";
 import {
   POINT_DEFINITIONS_BY_NO,
@@ -103,10 +103,6 @@ const ROW_SELECT = {
   GSTInOfVendor: true,
 };
 
-// Bucket helper shared by plant/vendor/PO-number groupings so every one of
-// them ends up with the same enrichment PO-Wise Exceptions already has:
-// vendor/plant/PO-type/purchasing-group names + the actual line item
-// numbers involved (never just a bare code/PO number).
 function newRichBucket() {
   return {
     count: 0,
@@ -269,7 +265,6 @@ export const getExecutiveSummary = async (req, res) => {
 
         const poKey = row.po_number || "Unassigned";
 
-        // Grab Vendor Master data for GSTIN fallback
         const vendor = getVendorInfo(row.vendor_code);
         const gstin = row.GSTInOfVendor || vendor?.gstin || "";
 
@@ -282,7 +277,7 @@ export const getExecutiveSummary = async (req, res) => {
           gstins: new Set(),
           valueExposure: 0,
           vendorCode: row.vendor_code || null,
-          vendorName: row.nameOfVendor || null,
+          vendorName: row.nameOfVendor || vendor?.name || null, // fallback attached here
           poType: row.po_type || null,
           plant: row.plant || null,
           purchaseGroup: row.purchase_group || null,
@@ -291,15 +286,17 @@ export const getExecutiveSummary = async (req, res) => {
 
         byPo[poKey].count += 1;
         byPo[poKey].pos.add(row.po_number);
-        byPo[poKey].lineItems.add(uniqueKeyOf(row));
-        if (lineItemOf(row)) byPo[poKey].lineItems.add(lineItemOf(row));
+        const lineItem = lineItemOf(row);
+        if (lineItem) {
+          byPo[poKey].lineItems.add(lineItem);
+        }
         if (row.purchase_req) byPo[poKey].prs.add(row.purchase_req);
         if (row.tax_code) byPo[poKey].taxCodes.add(row.tax_code);
         if (gstin) byPo[poKey].gstins.add(gstin);
 
         byPo[poKey].valueExposure += parseNum(row.net_value);
-        if (!byPo[poKey].vendorName && row.nameOfVendor)
-          byPo[poKey].vendorName = row.nameOfVendor;
+        if (!byPo[poKey].vendorName && (row.nameOfVendor || vendor?.name))
+          byPo[poKey].vendorName = row.nameOfVendor || vendor?.name;
         if (!byPo[poKey].vendorCode && row.vendor_code)
           byPo[poKey].vendorCode = row.vendor_code;
         if (!byPo[poKey].poType && row.po_type)
@@ -654,6 +651,9 @@ export const getExecutiveDrilldown = async (req, res) => {
           : {}),
       }));
 
+      // Added fallback retrieval for Drilldown JSON return
+      const vendor = getVendorInfo(r.vendor_code);
+
       return {
         id: r.id,
         po_number: r.po_number,
@@ -664,8 +664,9 @@ export const getExecutiveDrilldown = async (req, res) => {
         material_disc: r.material_disc,
         net_value: r.net_value,
         vendorCode: r.vendor_code,
-        vendorName: r.nameOfVendor || getVendorName(r.vendor_code),
-        vendorGstin: r.GSTInOfVendor,
+        vendorName:
+          r.nameOfVendor || vendor?.name || getVendorName(r.vendor_code),
+        vendorGstin: r.GSTInOfVendor || vendor?.gstin || "",
         taxCode: r.tax_code,
         plant: r.plant,
         plantName: getPlantName(r.plant),
