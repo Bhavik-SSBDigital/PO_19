@@ -67,8 +67,7 @@ const ChangePassword = () => {
     try {
       const response = await post("/changePassword", { ...inputs, username });
       toast.success(response.message || "Password changed successfully");
-      logout();
-      navigate("/login");
+      await logout(navigate);
     } catch (error) {
       toast.error(
         error?.response?.data?.message ||

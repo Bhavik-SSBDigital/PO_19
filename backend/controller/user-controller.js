@@ -204,6 +204,65 @@ export const get_users = async (req, res) => {
   }
 };
 
+export const changePassword = async (req, res) => {
+  try {
+    const { username, currentPassword, newPassword, confirmPassword } =
+      req.body;
+
+    if (!username || !currentPassword || !newPassword || !confirmPassword) {
+      return res.status(400).json({
+        message: "All fields are required",
+      });
+    }
+
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({
+        message: "New password and confirm password do not match",
+      });
+    }
+
+    const user = await prisma.user.findFirst({
+      where: {
+        username,
+      },
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
+
+    if (!isMatch) {
+      return res.status(400).json({
+        message: "Current password is incorrect",
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    await prisma.user.update({
+      where: {
+        id: user.id,
+      },
+      data: {
+        password: hashedPassword,
+      },
+    });
+
+    return res.status(200).json({
+      message: "Password changed successfully",
+    });
+  } catch (error) {
+    console.error("Error changing password:", error);
+    return res.status(500).json({
+      message: "Failed to change password",
+    });
+  }
+};
+
 export const getRoles = async (req, res) => {
   try {
     const roles = await prisma.role.findMany({

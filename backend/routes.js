@@ -11,6 +11,7 @@ import {
   getRoles,
   get_users,
   deleteUser,
+  changePassword,
 } from "./controller/user-controller.js";
 
 import { requireAnyOf, requireAuth } from "./middleware/requireAuth.js";
@@ -57,6 +58,8 @@ const router = express.Router();
 router.post("/signup", signup);
 router.post("/signin", login);
 router.post("/logout", logout);
+
+router.post("/changePassword", changePassword);
 
 // --- PO Audit ---
 router.post("/getPOAuditResults", get_po_audit_results);
