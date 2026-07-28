@@ -90,12 +90,12 @@ const AuthLogin = () => {
         localStorage.setItem("token", response.accessToken);
         localStorage.setItem(
           "role",
-          response.isAuditHead
-            ? "isAuditHead"
+          response.isProcurementManager
+            ? "isProcurementManager"
+            : response.isBuyer
+            ? "isBuyer"
             : response.isAdmin
             ? "isAdmin"
-            : response.isAuditor
-            ? "isAuditor"
             : response.isExecutor
             ? "isExecutor"
             : response.fromSSBD
@@ -105,9 +105,15 @@ const AuthLogin = () => {
         localStorage.setItem("name", response.name);
         localStorage.setItem("email", response.email);
         localStorage.setItem("username", response.userName);
-        
-        // NEW: Save dashboard access for NON-auditors
+
+        // Save dashboard access for NON-auditors
         localStorage.setItem("canViewDashboard", response.canViewDashboard);
+
+        // FIX — flat, directly-retrievable user id straight from the login
+        // response. Every component that needs "who is this user" now
+        // just does localStorage.getItem("userId") — no JSON parsing,
+        // no digging into logsDetails.
+        localStorage.setItem("userId", response.userId);
 
         const { userId, roleId, firstName, lastName, loginTime, logId } =
           response;
@@ -182,8 +188,11 @@ const AuthLogin = () => {
                   JSON.stringify(loginResponse.allowedModules)
                 );
 
-                // NEW: Save dashboard access for AUDITORS
-                localStorage.setItem("canViewDashboard", loginResponse.canViewDashboard);
+                // Save dashboard access for AUDITORS
+                localStorage.setItem(
+                  "canViewDashboard",
+                  loginResponse.canViewDashboard
+                );
 
                 const userLogst = await post("/addAuditorLog", {
                   auditorName: tempName,
@@ -197,6 +206,12 @@ const AuthLogin = () => {
                   loginTime,
                   logId,
                 } = userLogst;
+
+                // FIX — same flat key, sourced from THIS branch's own
+                // response (userLogst), since that's what actually carries
+                // the real userId for an auditor login — loginResponse
+                // does not.
+                localStorage.setItem("userId", userId);
 
                 localStorage.setItem(
                   "logsDetails",

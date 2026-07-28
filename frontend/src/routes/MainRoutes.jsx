@@ -4,7 +4,9 @@ import { lazy } from "react";
 import Loadable from "components/Loadable";
 import MainLayout from "layout/MainLayout";
 import NotFound from "pages/404-page/NotFound";
+const PODataPage = Loadable(lazy(() => import("pages/po-data")));
 import ChangePassword from "pages/authentication/ChangePassword";
+import { element } from "prop-types";
 
 // NOTE: the original "pages/dashboard" calls ~10 analytics endpoints that
 // haven't been converted to Prisma yet (and imports "xlsx" which wasn't even
@@ -32,6 +34,18 @@ const VisibilitySettings = Loadable(
 // PO audit results (Postgres/Prisma demo page)
 const PoAuditResults = Loadable(lazy(() => import("pages/po-audit-results")));
 
+// NEW — RC Overlap (rule 19) standalone section. Rule 19 no longer appears
+// mixed into PO Data & Results / the dashboard's exceptions table; it now
+// has this dedicated page, backed by its own rc_overlap_results table.
+const RcOverlapPage = Loadable(lazy(() => import("pages/rc-overlap")));
+
+// NEW — Buyer Remarks Report. Admin/PM see every buyer's remarks; a Buyer
+// sees only remarks they personally submitted. Backed by
+// /reports/po-remarks-report (+ /download for the xlsx export).
+const PoRemarksReportPage = Loadable(
+  lazy(() => import("pages/po-remarks-report"))
+);
+
 const MainRoutes = {
   path: "/",
   element: <MainLayout />,
@@ -43,12 +57,17 @@ const MainRoutes = {
     { path: "check-invoice-item", element: <InvoiceListAuditor /> },
     { path: "issue-tracker", element: <IssueTracker /> },
     { path: "manage-users", element: <ManageUsers /> },
+    { path: "po-data", element: <PODataPage /> },
     { path: "user-logs", element: <UserLogs /> },
     { path: "risk-categorization", element: <RiskCategorization /> },
     { path: "visibility-settings", element: <VisibilitySettings /> },
     { path: "change-password", element: <ChangePassword /> },
     // NEW
     { path: "po-audit-results", element: <PoAuditResults /> },
+    // NEW — standalone RC Overlap (rule 19) section
+    { path: "rc-overlap", element: <RcOverlapPage /> },
+    // NEW — Buyer Remarks Report (list + download)
+    { path: "po-remarks-report", element: <PoRemarksReportPage /> },
     { path: "*", element: <NotFound /> },
   ],
 };

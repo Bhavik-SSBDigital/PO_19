@@ -12,6 +12,7 @@ import {
   getVendorInfo,
   getPlantName,
   getPurchaseGroupName,
+  getPurchaseGroupCode,
   getPaymentTermDescription,
   getPoTypeName,
 } from "../utility/master-data.js";
@@ -37,7 +38,36 @@ const PURCHASE_GROUPS = [
   "P64",
 ];
 
-function buildWhere(body = {}) {
+/**
+ * ACCESS CONTROL NOTE (this revision):
+ *
+ * Previously buildWhere() only applied the filter-bar's own filters
+ * (dates, PO type, plant, vendor, and an OPT-IN purchaseGroup filter) with
+ * no role-based scoping at all - a Buyer hitting /reports/executive-summary
+ * or /reports/executive-drilldown got company-wide numbers and could drill
+ * into any PO in the system, unlike every other Buyer-facing page (PO Data,
+ * RC Overlap) which locks them to their own purchasing group server-side.
+ *
+ * buildWhere() now takes the authenticated user (req.user) as well as the
+ * request body, and:
+ *   - Buyer (and not also Admin/PM): purchase_group is forced to their own
+ *     group via getPurchaseGroupCode(username), REGARDLESS of whatever
+ *     purchaseGroup filter the client might have sent - a Buyer cannot
+ *     widen their own scope by tampering with the filter payload.
+ *   - Everyone else (Admin, Procurement Manager, and any other role that
+ *     already has dashboard access per the nav config - head/auditor/
+ *     executor/ssbd): unrestricted, exactly as before. They may still use
+ *     the filter bar's optional purchaseGroup filter to narrow their own
+ *     view voluntarily.
+ *
+ * Both getExecutiveSummary (top-line KPIs + every chart) and
+ * getExecutiveDrilldown (the detail list behind any KPI/chart click) now
+ * go through this same buildWhere(), so the numbers on the dashboard and
+ * the rows you get by drilling into them are always drawn from the same
+ * scoped dataset - a Buyer's KPIs and their drilldown lists agree with each
+ * other, and neither leaks data outside their own purchasing group.
+ */
+function buildWhere(body = {}, user = {}) {
   const where = { type: "PO" };
 
   if (body.poDateFrom || body.poDateTo) {
@@ -50,9 +80,6 @@ function buildWhere(body = {}) {
     if (body.prDateFrom) where.pr_create_date.gte = new Date(body.prDateFrom);
     if (body.prDateTo) where.pr_create_date.lte = new Date(body.prDateTo);
   }
-  if (Array.isArray(body.purchaseGroup) && body.purchaseGroup.length) {
-    where.purchase_group = { in: body.purchaseGroup };
-  }
   if (Array.isArray(body.poType) && body.poType.length) {
     where.po_type = { in: body.poType };
   }
@@ -60,7 +87,29 @@ function buildWhere(body = {}) {
   if (body.vendorCode) where.vendor_code = body.vendorCode;
   if (body.materialCode) where.material_code = body.materialCode;
 
+  const isUnrestricted =
+    user.isAdmin || user.isProcurementManager || !user.isBuyer;
+
+  if (isUnrestricted) {
+    // Admin/PM/other dashboard-visible roles: honor an optional, voluntary
+    // purchaseGroup filter from the filter bar, but don't force one.
+    if (Array.isArray(body.purchaseGroup) && body.purchaseGroup.length) {
+      where.purchase_group = { in: body.purchaseGroup };
+    }
+  } else {
+    // Buyer: locked to their own purchasing group, full stop - any
+    // purchaseGroup value the client sent is ignored.
+    const ownGroup = getPurchaseGroupCode(user.username);
+    where.purchase_group = ownGroup || "__no_group_assigned__";
+  }
+
   return where;
+}
+
+function scopeOf(user = {}) {
+  if (user.isAdmin || user.isProcurementManager || !user.isBuyer) return null;
+  const ownGroup = getPurchaseGroupCode(user.username);
+  return { restrictedToPurchaseGroup: ownGroup || user.username };
 }
 
 const parseNum = (v) => {
@@ -171,7 +220,10 @@ export const getExecutiveSummary = async (req, res) => {
   try {
     await ensureSeverityLoaded();
 
-    const where = buildWhere(req.body || {});
+    const user = req.user || {};
+    const where = buildWhere(req.body || {}, user);
+    const scope = scopeOf(user);
+
     const rows = await prisma.auditResult.findMany({
       where,
       select: ROW_SELECT,
@@ -455,6 +507,7 @@ export const getExecutiveSummary = async (req, res) => {
       generatedAt: new Date().toISOString(),
       kpiDefinitions: KPI_DEFINITIONS,
       chartDefinitions: CHART_DEFINITIONS,
+      scope,
       kpis: {
         totalPOCount: poNumbers.size,
         totalPOLineItems: rows.length,
@@ -544,22 +597,37 @@ export const getExecutiveSummary = async (req, res) => {
 
 export const getFilterOptions = async (req, res) => {
   try {
+    const user = req.user || {};
+    const isUnrestricted =
+      user.isAdmin || user.isProcurementManager || !user.isBuyer;
+
+    // A Buyer's filter options are limited to their own purchasing group's
+    // data (they'd never usefully filter by another group's plant/vendor
+    // anyway, and this avoids exposing the full company's vendor/plant
+    // list to someone whose data access is otherwise scoped down).
+    const scopeWhere = isUnrestricted
+      ? {}
+      : {
+          purchase_group:
+            getPurchaseGroupCode(user.username) || "__no_group_assigned__",
+        };
+
     const [plants, vendors, poTypes, groups] = await Promise.all([
       prisma.auditResult.groupBy({
         by: ["plant"],
-        where: { type: "PO", plant: { not: null } },
+        where: { type: "PO", plant: { not: null }, ...scopeWhere },
       }),
       prisma.auditResult.groupBy({
         by: ["vendor_code", "nameOfVendor"],
-        where: { type: "PO", vendor_code: { not: null } },
+        where: { type: "PO", vendor_code: { not: null }, ...scopeWhere },
       }),
       prisma.auditResult.groupBy({
         by: ["po_type"],
-        where: { type: "PO", po_type: { not: null } },
+        where: { type: "PO", po_type: { not: null }, ...scopeWhere },
       }),
       prisma.auditResult.groupBy({
         by: ["purchase_group"],
-        where: { type: "PO", purchase_group: { not: null } },
+        where: { type: "PO", purchase_group: { not: null }, ...scopeWhere },
       }),
     ]);
 
@@ -580,12 +648,17 @@ export const getFilterOptions = async (req, res) => {
       .map((p) => p.po_type)
       .filter(Boolean)
       .sort();
-    const purchaseGroupCodes = [
-      ...new Set([
-        ...PURCHASE_GROUPS,
-        ...groups.map((g) => g.purchase_group).filter(Boolean),
-      ]),
-    ].sort();
+    const purchaseGroupCodes = isUnrestricted
+      ? [
+          ...new Set([
+            ...PURCHASE_GROUPS,
+            ...groups.map((g) => g.purchase_group).filter(Boolean),
+          ]),
+        ].sort()
+      : groups
+          .map((g) => g.purchase_group)
+          .filter(Boolean)
+          .sort();
 
     res.status(200).json({
       plants: plantCodes,
@@ -616,6 +689,7 @@ export const getExecutiveDrilldown = async (req, res) => {
   try {
     await ensureSeverityLoaded();
 
+    const user = req.user || {};
     const {
       dimension,
       value,
@@ -627,7 +701,10 @@ export const getExecutiveDrilldown = async (req, res) => {
     if (!dimension)
       return res.status(400).json({ message: "dimension is required" });
 
-    const where = buildWhere(filterBody);
+    // Same scoping as getExecutiveSummary - a Buyer's drilldown can never
+    // show rows outside their own purchasing group, no matter which
+    // KPI/chart segment/dimension they clicked to get here.
+    const where = buildWhere(filterBody, user);
     const rows = await prisma.auditResult.findMany({
       where,
       select: ROW_SELECT,
@@ -764,6 +841,7 @@ export const getExecutiveDrilldown = async (req, res) => {
       pageSize: take,
       dimension,
       value,
+      scope: scopeOf(user),
     });
   } catch (error) {
     console.error("Error in getExecutiveDrilldown:", error);

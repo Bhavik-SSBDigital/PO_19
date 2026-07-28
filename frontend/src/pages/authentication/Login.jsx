@@ -1,4 +1,3 @@
-
 // material-ui
 import { Typography } from "@mui/material";
 
@@ -10,7 +9,7 @@ import AuthWrapper from "./AuthWrapper";
 
 const Login = () => (
   <AuthWrapper>
-    {/* <Typography
+    <Typography
       variant="h3"
       align="center"
       sx={{
@@ -23,7 +22,7 @@ const Login = () => (
       }}
     >
       AI Based P2P Compliance
-    </Typography> */}
+    </Typography>
     <Typography
       variant="h4"
       sx={{ fontWeight: 700, textTransform: "uppercase" }}

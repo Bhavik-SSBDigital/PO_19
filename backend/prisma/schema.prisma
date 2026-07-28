@@ -2,6 +2,19 @@
 // Converted from the Mongoose models in models.zip. Run `npx prisma db push`
 // (or `npx prisma migrate dev`) against DATABASE_URL to create these tables -
 // you do not need to run schema.sql separately if you use this file.
+//
+// CHANGES IN THIS VERSION (RC Overlap access control):
+//   - RcOverlapResult gained a `purchaseGroups String[]` field: the set of
+//     purchasing groups whose PO lines actually reference this RC (derived
+//     by engine.py by cross-referencing POAUDIT against POAUDITRC at build
+//     time — RC master data has no purchasing-group column of its own).
+//     This is what lets the RC Overlap controller scope a Buyer's view down
+//     to "RCs relevant to my purchasing group", the same way PO Data scopes
+//     buyers by `purchase_group` on AuditResult.
+//   Nothing else changed — purely additive.
+//
+// (Earlier revisions — RC Overlap gets its own section; buyer remarks + PM
+// advanced filtering — are unchanged and still present below.)
 
 generator client {
   provider = "prisma-client-js"
@@ -16,16 +29,14 @@ datasource db {
 // roles (models/role.js)
 // ---------------------------------------------------------------------------
 model Role {
-  id           String   @id @default(uuid())
-  name         String   @unique
-  isAuditHead  Boolean  @default(false) @map("is_audit_head")
-  isAdmin      Boolean  @default(false) @map("is_admin")
-  isAuditor    Boolean  @default(false) @map("is_auditor")
-  isExecutor   Boolean  @default(false) @map("is_executor")
-  fromSSBD     Boolean  @default(false) @map("from_ssbd")
+  id                   String   @id @default(uuid())
+  name                 String   @unique
+  isAdmin              Boolean  @default(false) @map("is_admin")
+  isBuyer              Boolean  @default(false) @map("is_buyer")
+  isProcurementManager Boolean  @default(false) @map("is_procurement_manager")
 
-  users        User[]
-  logs         Log[]
+  users                User[]
+  logs                 Log[]
 
   @@map("roles")
 }
@@ -53,6 +64,7 @@ model User {
   closedWorkflows   VerificationWorkflow[] @relation("closedBy")
   workflowSteps     VerificationWorkflowStep[]
   verifiedManuals   ManualVerification[]
+  poRemarks         PoRemark[] // remarks this user has submitted (buyers, mainly)
 
   @@map("users")
 }
@@ -105,8 +117,6 @@ model Point {
   @@map("points")
 }
 
-
-// Add to schema.prisma
 model AuditPointConfig {
   pointNo   Int      @id
   severity  String   @default("Medium") // Critical | High | Medium | Low
@@ -118,86 +128,91 @@ model AuditPointConfig {
 // audit_results (models/audit_result.js) — the core transaction/audit table
 // ---------------------------------------------------------------------------
 model AuditResult {
-  id                    String    @id @default(uuid())
-  documentDate          DateTime? @map("document_date") @db.Date
-  type                  String    @default("PJV") // BPV | PJV | PO | NONPO
-  reference             String?
-  objectKey             String?   @map("object_key")
-  documentNumber        String?   @map("document_number")
-  po_line_item                          String?  @map("po_line_item")
-  processDocuments      Json      @default("[]") @map("process_documents")
-  vendorTitle           String?   @default("") @map("vendor_title")
-  documentName          String?   @map("document_name")
-  documentNames         String[]  @default([]) @map("document_names")
-  vendor                String?
-  advance               Boolean   @default(false)
-  amount                String?
-  amount_currency       String?
-  taxCode               String?   @map("tax_code_bpv") // generic BPV/PJV tax code - distinct from the PO-specific `tax_code` field below (both exist as separate fields in the original schema)
-  GSTInOfVendor         String?   @map("gstin_of_vendor")
-  nameOfVendor          String?   @map("name_of_vendor")
-  fiscalYear            String?   @map("fiscal_year")
-  grr_nos_against_invoice String[] @default([])
-  product_details_per_grr Json    @default("[]")
-  procurement_data      String?
-  imported              Boolean?
+  id                      String    @id @default(uuid())
+  documentDate            DateTime? @map("document_date") @db.Date
+  type                    String    @default("PJV") // BPV | PJV | PO | NONPO
+  reference               String?
+  objectKey               String?   @map("object_key")
+  documentNumber          String?   @map("document_number")
+  po_line_item            String?   @map("po_line_item")
+  processDocuments        Json      @default("[]") @map("process_documents")
+  vendorTitle             String?   @default("") @map("vendor_title")
+  documentName            String?   @map("document_name")
+  documentNames           String[]  @default([]) @map("document_names")
+  vendor                  String?
+  advance                 Boolean   @default(false)
+  amount                  String?
+  amount_currency         String?
+  taxCode                 String?   @map("tax_code_bpv")
+  GSTInOfVendor           String?   @map("gstin_of_vendor")
+  nameOfVendor            String?   @map("name_of_vendor")
+  fiscalYear              String?   @map("fiscal_year")
+  grr_nos_against_invoice String[]  @default([])
+  product_details_per_grr Json      @default("[]")
+  procurement_data        String?
+  imported                Boolean?
 
-  // per-audit-point results, e.g. [{pointNo, remarks:[...], verified, missing_data, not_applicable, advance, manual_verification}]
-  results               Json      @default("[]")
+  results                 Json      @default("[]")
 
-  auditedOn             DateTime  @default(now()) @map("audited_on")
+  auditedOn               DateTime  @default(now()) @map("audited_on")
 
-  // PO-specific columns (used by the PO audit module / addpo.js)
-  po_number                             String?
-  po_type                               String?
-  po_status                             String?
-  hold_due_date                         DateTime? @db.Date
-  purchase_req                          String?
-  pr_create_date                        DateTime? @db.Date
-  po_created_date                       DateTime? @db.Date
-  po_delivery_date                      DateTime? @db.Date
-  vendor_code                           String?
-  purchase_group                        String?
-  vendor_msme_status                    String?
-  name                                  String?
-  gstin                                 String?
-  tax_code                              String?
-  tax_code_description                  String?
-  payment_term                          String?
-  payt_terms_description                String?
-  special_payment_terms                 String?
-  train_station                         String?
-  pr_quantity                           Decimal?  @db.Decimal(18, 3)
-  po_qty                                Decimal?  @db.Decimal(18, 3)
+  po_number                              String?
+  po_type                                String?
+  po_status                              String?
+  hold_due_date                          DateTime? @db.Date
+  purchase_req                           String?
+  pr_create_date                         DateTime? @db.Date
+  po_created_date                        DateTime? @db.Date
+  po_delivery_date                       DateTime? @db.Date
+  vendor_code                            String?
+  purchase_group                         String?
+  vendor_msme_status                     String?
+  name                                   String?
+  gstin                                  String?
+  tax_code                               String?
+  tax_code_description                   String?
+  payment_term                           String?
+  payt_terms_description                 String?
+  special_payment_terms                  String?
+  train_station                          String?
+  pr_quantity                            Decimal?  @db.Decimal(18, 3)
+  po_qty                                 Decimal?  @db.Decimal(18, 3)
   under_delivery_tolerance_other_than_ea String?
-  unit_of_measure                       String?
-  material_code                         String?
-  material_disc                         String?
-  plant                                 String?
-  net_value                             String?
-  hsn_code                              String?
-  inco_term                             String?
-  doc_cond_no                           String?
-  condition_type                        String[]  @default([])
-  condition_value                       String[]  @default([])
-  po_material_number                    String?
-  manual                                Boolean   @default(false)
+  unit_of_measure                        String?
+  material_code                          String?
+  material_disc                          String?
+  plant                                  String?
+  net_value                              String?
+  hsn_code                               String?
+  inco_term                              String?
+  doc_cond_no                            String?
+  condition_type                         String[]  @default([])
+  condition_value                        String[]  @default([])
+  po_material_number                     String?
+  manual                                 Boolean   @default(false)
 
-  // BPV/PJV specific
-  invoiceType           String?   @map("invoice_type")
-  bpvPo                 String?   @map("bpv_po")
-  dumpFiles             String[]  @default([]) @map("dump_files")
-  pjvInvoiceRefDoc      String?   @map("pjv_invoice_ref_doc")
-  pjvInvoiceRefDocs     String[]  @default([]) @map("pjv_invoice_ref_docs")
-  withHoldingTaxRate    String?   @map("with_holding_tax_rate")
-  specialGlIndicator    String?   @map("special_gl_indicator")
+  invoiceType            String?   @map("invoice_type")
+  bpvPo                  String?   @map("bpv_po")
+  dumpFiles              String[]  @default([]) @map("dump_files")
+  pjvInvoiceRefDoc       String?   @map("pjv_invoice_ref_doc")
+  pjvInvoiceRefDocs      String[]  @default([]) @map("pjv_invoice_ref_docs")
+  withHoldingTaxRate     String?   @map("with_holding_tax_rate")
+  specialGlIndicator     String?   @map("special_gl_indicator")
 
-  createdAt             DateTime  @default(now()) @map("created_at")
-  updatedAt             DateTime  @updatedAt @map("updated_at")
+  // "checked" flag. Once true, no remarks can be added, edited, or
+  // deleted against ANY point on this line item, by anyone.
+  remarksLocked           Boolean   @default(false) @map("remarks_locked")
+  remarksLockedBy         String?   @map("remarks_locked_by")
+  remarksLockedAt         DateTime? @map("remarks_locked_at")
 
-  verificationWorkflow  VerificationWorkflow?
-  manualVerifications   ManualVerification[]
-@@index([po_number, po_line_item])
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  verificationWorkflow   VerificationWorkflow?
+  manualVerifications    ManualVerification[]
+  poRemarks              PoRemark[]
+
+  @@index([po_number, po_line_item])
   @@index([po_number])
   @@index([po_material_number])
   @@index([type])
@@ -213,33 +228,33 @@ model AuditResult {
 // verification_workflows (models/verificationWorkflow.js)
 // ---------------------------------------------------------------------------
 model VerificationWorkflow {
-  id                String    @id @default(uuid())
-  auditResultId     String    @unique @map("audit_result_id")
-  closedBy          String?   @map("closed_by")
-  closedOn          DateTime? @map("closed_on")
-  auditorWhoClosed  String?   @map("auditor_who_closed")
-  currentStatus     String    @default("unassigned") @map("current_status")
+  id               String    @id @default(uuid())
+  auditResultId    String    @unique @map("audit_result_id")
+  closedBy         String?   @map("closed_by")
+  closedOn         DateTime? @map("closed_on")
+  auditorWhoClosed String?   @map("auditor_who_closed")
+  currentStatus    String    @default("unassigned") @map("current_status")
   // unassigned | assigned | under_review | head_review | completed
-  assignedTo        String?   @map("assigned_to")
+  assignedTo       String?   @map("assigned_to")
 
-  auditResult       AuditResult @relation(fields: [auditResultId], references: [id], onDelete: Cascade)
-  assignee          User?       @relation("assignedTo", fields: [assignedTo], references: [id])
-  closer            User?       @relation("closedBy", fields: [closedBy], references: [id])
-  workflowSteps     VerificationWorkflowStep[]
+  auditResult      AuditResult @relation(fields: [auditResultId], references: [id], onDelete: Cascade)
+  assignee         User?       @relation("assignedTo", fields: [assignedTo], references: [id])
+  closer           User?       @relation("closedBy", fields: [closedBy], references: [id])
+  workflowSteps    VerificationWorkflowStep[]
 
   @@map("verification_workflows")
 }
 
 model VerificationWorkflowStep {
-  id                       String   @id @default(uuid())
-  verificationWorkflowId   String   @map("verification_workflow_id")
-  action                   String   // assigned | self-assigned | submitted | approved | rejected | reassigned
-  userId                   String   @map("user_id")
-  timestamp                DateTime @default(now())
-  details                  Json?
+  id                     String   @id @default(uuid())
+  verificationWorkflowId String   @map("verification_workflow_id")
+  action                 String   // assigned | self-assigned | submitted | approved | rejected | reassigned
+  userId                 String   @map("user_id")
+  timestamp              DateTime @default(now())
+  details                Json?
 
-  workflow                 VerificationWorkflow @relation(fields: [verificationWorkflowId], references: [id], onDelete: Cascade)
-  user                     User @relation(fields: [userId], references: [id])
+  workflow               VerificationWorkflow @relation(fields: [verificationWorkflowId], references: [id], onDelete: Cascade)
+  user                   User @relation(fields: [userId], references: [id])
 
   @@index([verificationWorkflowId])
   @@map("verification_workflow_steps")
@@ -249,33 +264,94 @@ model VerificationWorkflowStep {
 // manual_verifications (models/manualVerification.js)
 // ---------------------------------------------------------------------------
 model ManualVerification {
-  id                  String    @id @default(uuid())
-  auditResultId       String    @map("audit_result_id")
-  // results: [{pointNo, ssbdWorkStatus, manualVerified, manualMissingData, manualRemarks:[...],
-  //            headRemarks:[...], conversation:[{remarks, addedBy, addedByUser, addedOn, auditorName, ssbdWorkStatus}]}]
-  results             Json      @default("[]")
-  verifiedBy          String?   @map("verified_by")
-  verifiedOn          DateTime? @map("verified_on")
-  verificationStatus  String    @default("pending") @map("verification_status")
-  auditorName         String?   @map("auditor_name")
+  id                 String    @id @default(uuid())
+  auditResultId      String    @map("audit_result_id")
+  results            Json      @default("[]")
+  verifiedBy         String?   @map("verified_by")
+  verifiedOn         DateTime? @map("verified_on")
+  verificationStatus String    @default("pending") @map("verification_status")
+  auditorName        String?   @map("auditor_name")
 
-  auditResult         AuditResult @relation(fields: [auditResultId], references: [id], onDelete: Cascade)
-  verifier            User?       @relation(fields: [verifiedBy], references: [id])
+  auditResult        AuditResult @relation(fields: [auditResultId], references: [id], onDelete: Cascade)
+  verifier           User?       @relation(fields: [verifiedBy], references: [id])
 
   @@index([auditResultId])
   @@map("manual_verifications")
 }
 
 // ---------------------------------------------------------------------------
+// po_remarks — one row per remark a buyer (or admin/PM) leaves against
+// a specific audit point, on a specific PO line item.
+// ---------------------------------------------------------------------------
+model PoRemark {
+  id            String   @id @default(uuid())
+  auditResultId String   @map("audit_result_id")
+  po_number     String
+  po_line_item  String?
+  pointNo       Int      @map("point_no")
+  remark        String
+  submittedBy   String   @map("submitted_by")
+  submittedAt   DateTime @default(now()) @map("submitted_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  auditResult   AuditResult @relation(fields: [auditResultId], references: [id], onDelete: Cascade)
+  submitter     User        @relation(fields: [submittedBy], references: [id])
+
+  @@unique([auditResultId, pointNo, submittedBy])
+
+  @@index([auditResultId])
+  @@index([po_number])
+  @@index([po_number, po_line_item, pointNo])
+  @@map("po_remarks")
+}
+
+// ---------------------------------------------------------------------------
+// rc_overlap_results — Rule 19 (RC Overlap), at the RC level, keyed by
+// (vendor, RC material code, RC number). Backs the standalone "RC Overlap"
+// section/page instead of point #19 inside a PO line's `results` array.
+//
+// `purchaseGroups` is the derived set of purchasing groups whose PO lines
+// (in POAUDIT) actually reference this RC — computed by engine.py by
+// cross-referencing POAUDIT against POAUDITRC at build time, since RC
+// master data itself carries no purchasing-group column. This is what lets
+// a Buyer's RC Overlap view be scoped down to "RCs relevant to my group",
+// the same way PO Data scopes buyers by AuditResult.purchase_group.
+// An RC can reasonably belong to more than one purchasing group's POs, so
+// this is an array, not a single value.
+// ---------------------------------------------------------------------------
+model RcOverlapResult {
+  id             String    @id @default(uuid())
+  vendorCode     String    @map("vendor_code")
+  rcMaterialCode String    @map("rc_material_code")
+  rcNumber       String    @map("rc_number")
+  validFrom      DateTime? @map("valid_from") @db.Date
+  validTo        DateTime? @map("valid_to") @db.Date
+  status         String    // "Verified" | "Not Verified"
+  overlappingRcs String[]  @default([]) @map("overlapping_rcs")
+  remark         String?
+  purchaseGroups String[]  @default([]) @map("purchase_groups")
+
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@unique([vendorCode, rcMaterialCode, rcNumber])
+  @@index([vendorCode])
+  @@index([rcMaterialCode])
+  @@index([status])
+  @@index([purchaseGroups])
+  @@map("rc_overlap_results")
+}
+
+// ---------------------------------------------------------------------------
 // audit_result_analytics (models/auditResultAnalytics.js)
 // ---------------------------------------------------------------------------
 model AuditResultAnalytics {
-  id                          String   @id @default(uuid())
-  noOfHighRiskResult          Int      @default(0) @map("no_of_high_risk_result")
-  noOfMediumRiskResult        Int      @default(0) @map("no_of_medium_risk_result")
-  noOfLowRiskResult           Int      @default(0) @map("no_of_low_risk_result")
-  noOfResultWithNoVariations  Int      @default(0) @map("no_of_result_with_no_variations")
-  noOfTotalTransactions       Int      @default(0) @map("no_of_total_transactions")
+  id                          String    @id @default(uuid())
+  noOfHighRiskResult          Int       @default(0) @map("no_of_high_risk_result")
+  noOfMediumRiskResult        Int       @default(0) @map("no_of_medium_risk_result")
+  noOfLowRiskResult           Int       @default(0) @map("no_of_low_risk_result")
+  noOfResultWithNoVariations  Int       @default(0) @map("no_of_result_with_no_variations")
+  noOfTotalTransactions       Int       @default(0) @map("no_of_total_transactions")
   date                        DateTime? @db.Date
 
   @@map("audit_result_analytics")
@@ -291,7 +367,7 @@ model PoProcessDetails {
   processName   String?  @map("process_name")
   processTag    String?  @map("process_tag")
   status        String   @default("SYNCED") // PENDING | SYNCED | FAILED
-  documents     Json     @default("[]")      // [{name, path, url, signatures:[...]}]
+  documents     Json     @default("[]")     // [{name, path, url, signatures:[...]}]
   syncedAt      DateTime @default(now()) @map("synced_at")
   syncAttempts  Int      @default(1) @map("sync_attempts")
   lastSyncError String?  @map("last_sync_error")

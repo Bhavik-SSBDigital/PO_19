@@ -1,10 +1,6 @@
 import { useEffect, useState } from "react";
 // material-ui
 import {
-  Autocomplete,
-  Dialog,
-  DialogActions,
-  DialogContent,
   Typography,
   Box,
   Button,
@@ -13,28 +9,20 @@ import {
   TableContainer,
   TableHead,
   TableRow,
-  TextField,
   TableCell,
   Chip,
   Paper,
-  DialogTitle,
-  IconButton,
-  MenuItem,
-  Select,
 } from "@mui/material";
 
-import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import TaskAltRoundedIcon from "@mui/icons-material/TaskAltRounded";
 import PanToolAltRoundedIcon from "@mui/icons-material/PanToolAltRounded";
+import LockRoundedIcon from "@mui/icons-material/LockRounded";
+import LockOpenRoundedIcon from "@mui/icons-material/LockOpenRounded";
 
-import moment from "moment";
 import { toast } from "react-toastify";
-import { useSelector } from "react-redux";
 
-import { get, post } from "utils/axiosApi";
-import { useViewDocument } from "../contexts";
-import DocumentView from "./document-view";
-import { AutoSplit, SplitBox } from "../../../components/SplitLayout";
+import PointRemarkPanel from "../../executive-dashboard/components/PointRemarkPanel";
+import { getPoRemarks, setAuditResultCheckedStatus } from "../../../api/api-functions";
 
 // ── Shared chip exported so AuditResultReview can reuse it ──────────────────
 export const VerificationChip = ({ result }) => {
@@ -136,32 +124,142 @@ const getSeverityColor = (severity) => {
   }
 };
 
-// ==============================|| SEARCH AUDIT DATA ||============================== //
+// ==============================|| AUDIT RESULTS TABLE ||============================== //
 
 const AuditResults = ({ searchData }) => {
-  // If there is no data or no results array, do not render the table
+  // Who's logged in.
+  // FIX — "userId" is now set as a flat key at login time (AuthLogin.jsx),
+  // so this simple read is correct again — no more digging into
+  // logsDetails.
+  const role = localStorage.getItem("role");
+  const currentUserId = localStorage.getItem("userId");
+  const isBuyer = role === "isBuyer";
+  const isAdmin = role === "isAdmin";
+  const isProcurementManager = role === "isProcurementManager";
+  // Only a Buyer may toggle the checked/locked state of a line item.
+  const canToggleLock = isBuyer;
+
+  const poNumber = searchData?.po_number;
+  const poLineItem = searchData?.lineItem || searchData?.po_line_item;
+
+  // Whether this line item's remarks are locked ("checked"), and
+  // busy-state for the toggle button.
+  const [locked, setLocked] = useState(false);
+  const [lockBusy, setLockBusy] = useState(false);
+
+  // Pull current lock state whenever we land on a different line item.
+  useEffect(() => {
+    if (!poNumber || !poLineItem) {
+      setLocked(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await getPoRemarks({ poNumber, poLineItem });
+        if (!cancelled) setLocked(Boolean(res?.remarksLocked));
+      } catch (error) {
+        // non-fatal — bar just won't reflect the true state until reload
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [poNumber, poLineItem]);
+
+  const toggleLock = async () => {
+    if (!poNumber || !poLineItem) return;
+    setLockBusy(true);
+    try {
+      const res = await setAuditResultCheckedStatus({
+        poNumber,
+        poLineItem,
+        checked: !locked,
+      });
+      setLocked(Boolean(res?.remarksLocked));
+      toast.success(
+        res?.remarksLocked ? "Line item marked as checked" : "Line item reopened"
+      );
+    } catch (error) {
+      toast.error(
+        error?.response?.data?.message || error?.message || "Failed to update checked status"
+      );
+    } finally {
+      setLockBusy(false);
+    }
+  };
+
+  // If there is no data or no results array, do not render the table.
+  // (This check happens AFTER the hooks above on purpose — React requires
+  // hooks to run in the same order on every render, so an early return
+  // can never sit above a useState/useEffect.)
   if (!searchData || !searchData.results || searchData.results.length === 0) {
     return null;
   }
 
   return (
     <Box sx={{ mt: 3, mb: 2, px: 2 }}>
-      <Typography variant="h5" sx={{ mb: 1.5, fontWeight: 700 }}>
-        Audit Check Results
-      </Typography>
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: 1,
+          mb: 1.5,
+        }}
+      >
+        <Typography variant="h5" sx={{ fontWeight: 700 }}>
+          Audit Check Results
+        </Typography>
+
+        {poNumber && poLineItem && (
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+            <Chip
+              icon={
+                locked ? (
+                  <LockRoundedIcon fontSize="small" />
+                ) : (
+                  <LockOpenRoundedIcon fontSize="small" />
+                )
+              }
+              label={locked ? "Checked — Remarks Locked" : "Open"}
+              color={locked ? "warning" : "default"}
+              size="small"
+              sx={{ fontWeight: 700 }}
+            />
+            {canToggleLock && (
+              <Button
+                size="small"
+                variant="outlined"
+                disabled={lockBusy}
+                onClick={toggleLock}
+                sx={{ textTransform: "none", fontWeight: 600 }}
+              >
+                {lockBusy ? "…" : locked ? "Reopen" : "Mark as Checked"}
+              </Button>
+            )}
+          </Box>
+        )}
+      </Box>
 
       <TableContainer component={Paper} variant="outlined">
         <Table size="small">
           <TableHead sx={{ bgcolor: "#f5f5f5" }}>
             <TableRow>
               <TableCell sx={{ fontWeight: 600, width: "5%" }}>Pt #</TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "25%" }}>
+              <TableCell sx={{ fontWeight: 600, width: "22%" }}>
                 Title & Summary
               </TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "27%" }}>Logic</TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "8%" }}>Severity</TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "13%" }}>Status</TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "22%" }}>Remarks</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "23%" }}>Logic</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "7%" }}>Severity</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "11%" }}>Status</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "13%" }}>
+                System Remarks
+              </TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "19%" }}>
+                Buyer Remarks
+              </TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -217,6 +315,26 @@ const AuditResults = ({ searchData }) => {
                   ) : (
                     <Typography variant="body2" color="textSecondary">
                       None
+                    </Typography>
+                  )}
+                </TableCell>
+
+                <TableCell sx={{ verticalAlign: "top" }}>
+                  {poNumber && poLineItem ? (
+                    <PointRemarkPanel
+                      poNumber={poNumber}
+                      poLineItem={poLineItem}
+                      pointNo={row.pointNo}
+                      currentUserId={currentUserId}
+                      isBuyer={isBuyer}
+                      isAdmin={isAdmin}
+                      isProcurementManager={isProcurementManager}
+                      locked={locked}
+                      compact
+                    />
+                  ) : (
+                    <Typography variant="caption" color="text.secondary">
+                      —
                     </Typography>
                   )}
                 </TableCell>

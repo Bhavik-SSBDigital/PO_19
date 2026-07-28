@@ -1,19 +1,15 @@
-import { useCallback, useEffect, useRef, useState, useMemo } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import PoDetailsPreviewDialog from "./components/PoDetailsPreviewDialog";
+import PoWiseExceptionsTable from "./components/PoWiseExceptionsTable";
 import { buildSearchUrl, getFirstLineItem } from "utils/po-link-utils";
 import {
   Box, Card, CardActionArea, CardContent, Grid, IconButton, Paper, Skeleton,
-  Tooltip as MuiTooltip, Typography, Chip, TextField, TableContainer, Table,
-  TableHead, TableRow, TableCell, TableBody, TableSortLabel, InputAdornment, alpha,
-  Menu, MenuItem,
+  Tooltip as MuiTooltip, Typography, Chip, alpha,
 } from "@mui/material";
 import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
 import FileDownloadRoundedIcon from "@mui/icons-material/FileDownloadRounded";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
-import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
-import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
-import VisibilityRoundedIcon from "@mui/icons-material/VisibilityRounded";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line,
@@ -30,7 +26,7 @@ import {
 } from "./components/tooltips";
 
 // --- DASHBOARD PALETTE (v2) ---
-const SEVERITY_COLORS = { Critical: "#b91c1c", High: "#ea580c", Medium: "#d97706", Low: "#64748b" };
+const SEVERITY_COLORS = { Critical: "#dc2626", High: "#f97316", Medium: "#f59e0b", Low: "#64748b" };
 const BAR_COLOR = "#4f46e5"; // Indigo — primary/neutral series (trend line, chrome)
 const VERIFIED_COLOR = "#059669"; // Emerald — compliant
 const NOT_VERIFIED_COLOR = "#dc2626"; // Red — exception
@@ -94,24 +90,26 @@ const InfoTip = ({ text, placement = "top" }) => {
   );
 };
 
-const KpiCard = ({ label, value, sublabel, loading, onClick, info }) => {
+const KpiCard = ({ label, value, sublabel, loading, onClick, info, valueColor = 'text.primary' }) => {
   const content = (
-    <CardContent sx={{ p: 3 }}>
-      <Box sx={{ display: "flex", alignItems: "center", mb: 1.5 }}>
-        <Typography variant="overline" color="text.secondary" sx={{ fontWeight: 700, letterSpacing: 1, lineHeight: 1.2 }}>
-          {label}
-        </Typography>
-        <InfoTip text={info} />
+    <CardContent sx={{ p: 3, display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'space-between' }}>
+      <Box>
+        <Box sx={{ display: "flex", alignItems: "center", mb: 2, justifyContent: 'space-between' }}>
+          <Typography variant="overline" color="text.secondary" sx={{ fontWeight: 700, letterSpacing: 1, lineHeight: 1.2 }}>
+            {label}
+          </Typography>
+          <InfoTip text={info} />
+        </Box>
+        {loading ? (
+          <Skeleton width="60%" height={48} sx={{ borderRadius: 2 }} />
+        ) : (
+          <Typography variant="h3" sx={{ fontWeight: 800, color: valueColor, letterSpacing: -1 }}>
+            {value}
+          </Typography>
+        )}
       </Box>
-      {loading ? (
-        <Skeleton width="60%" height={48} sx={{ borderRadius: 2 }} />
-      ) : (
-        <Typography variant="h3" sx={{ fontWeight: 800, color: 'text.primary', letterSpacing: -1 }}>
-          {value}
-        </Typography>
-      )}
       {sublabel && (
-        <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block', fontWeight: 500 }}>
+        <Typography variant="caption" color="text.secondary" sx={{ mt: 2, display: 'block', fontWeight: 500, pt: 1.5, borderTop: '1px dashed', borderColor: 'grey.200' }}>
           {sublabel}
         </Typography>
       )}
@@ -123,15 +121,15 @@ const KpiCard = ({ label, value, sublabel, loading, onClick, info }) => {
       sx={{ 
         height: "100%", 
         borderRadius: 4, 
-        background: "linear-gradient(135deg, #ffffff 0%, #f8fafc 100%)",
+        background: "#ffffff",
         border: '1px solid',
         borderColor: 'grey.100',
-        boxShadow: '0 4px 20px -2px rgba(0,0,0,0.03)',
+        boxShadow: '0 10px 30px -5px rgba(0,0,0,0.04)',
         transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
         ...(onClick && {
           '&:hover': {
-            transform: 'translateY(-6px)',
-            boxShadow: '0 14px 28px rgba(0,0,0,0.08)',
+            transform: 'translateY(-4px)',
+            boxShadow: '0 15px 35px -5px rgba(79, 70, 229, 0.12)',
             borderColor: alpha('#4f46e5', 0.3)
           }
         })
@@ -150,11 +148,11 @@ const ChartPanel = ({ title, hint, children, height = 320, info }) => (
     background: '#ffffff',
     border: '1px solid', 
     borderColor: 'grey.100',
-    boxShadow: '0 4px 20px -2px rgba(0,0,0,0.03)'
+    boxShadow: '0 10px 30px -5px rgba(0,0,0,0.04)'
   }}>
     <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", mb: 4 }}>
       <Box>
-        <Typography variant="h6" sx={{ fontWeight: 800, color: '#1e293b', display: "flex", alignItems: "center" }}>
+        <Typography variant="h6" sx={{ fontWeight: 800, color: '#0f172a', display: "flex", alignItems: "center" }}>
           {title}
           <InfoTip text={info} />
         </Typography>
@@ -176,25 +174,25 @@ const ComplianceTooltip = ({ active, payload, labelKey, labelFormatter }) => {
         border: "1px solid",
         borderColor: "grey.100",
         borderRadius: 3,
-        boxShadow: "0 10px 15px -3px rgba(0,0,0,0.1)",
+        boxShadow: "0 10px 25px -5px rgba(0,0,0,0.1)",
         p: 2,
         minWidth: 180,
       }}
     >
-      <Typography variant="body2" sx={{ fontWeight: 800, mb: 1, color: '#1e293b' }}>
+      <Typography variant="body2" sx={{ fontWeight: 800, mb: 1, color: '#0f172a' }}>
         {labelFormatter ? labelFormatter(d) : d[labelKey]}
       </Typography>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
         <Typography variant="caption" sx={{ color: VERIFIED_COLOR, fontWeight: 700 }}>Verified:</Typography>
-        <Typography variant="caption" sx={{ color: '#1e293b', fontWeight: 700 }}>{d.verified}</Typography>
+        <Typography variant="caption" sx={{ color: '#0f172a', fontWeight: 700 }}>{d.verified}</Typography>
       </Box>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
         <Typography variant="caption" sx={{ color: NOT_VERIFIED_COLOR, fontWeight: 700 }}>Not Verified:</Typography>
-        <Typography variant="caption" sx={{ color: '#1e293b', fontWeight: 700 }}>{d.notVerified}</Typography>
+        <Typography variant="caption" sx={{ color: '#0f172a', fontWeight: 700 }}>{d.notVerified}</Typography>
       </Box>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 1, pt: 1, borderTop: '1px solid', borderColor: 'grey.100' }}>
         <Typography variant="caption" sx={{ color: "#64748b", fontWeight: 700 }}>Compliance:</Typography>
-        <Typography variant="caption" sx={{ color: '#1e293b', fontWeight: 800 }}>
+        <Typography variant="caption" sx={{ color: '#0f172a', fontWeight: 800 }}>
           {d.compliancePct != null ? `${d.compliancePct}%` : "N/A"}
         </Typography>
       </Box>
@@ -219,219 +217,6 @@ const buildSummaryBody = (f) => ({
 });
 
 const csvEscape = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-
-const joinLineItems = (r) => {
-  if (Array.isArray(r.lineItems) && r.lineItems.length) {
-    return r.lineItems.length > 4
-      ? `${r.lineItems.slice(0, 4).join(", ")} +${r.lineItems.length - 4} more`
-      : r.lineItems.join(", ");
-  }
-  return r.distinctLineItems ? `${r.distinctLineItems} line item(s)` : "—";
-};
-
-const PoWiseExceptionsTable = ({ rows, loading, onRowAction }) => {
-  const [search, setSearch] = useState("");
-  const [orderBy, setOrderBy] = useState("exceptionLineCount");
-  const [order, setOrder] = useState("desc");
-  const [menuAnchor, setMenuAnchor] = useState(null);
-  const [menuRow, setMenuRow] = useState(null);
-
-  const filtered = useMemo(() => {
-    const term = search.trim().toLowerCase();
-    const base = !term
-      ? rows
-      : rows.filter((r) =>
-          [
-            r.poNumber, r.vendorName, r.vendorCode, r.poType, r.poTypeName,
-            r.plant, r.plantName, r.purchaseGroup, r.purchaseGroupName,
-            r.paymentTerm, r.paymentTermDescription, r.purchase_req,
-            r.vendorGstin, r.taxCode, ...(r.lineItems || []),
-          ]
-            .filter(Boolean)
-            .some((f) => String(f).toLowerCase().includes(term)),
-        );
-    const sorted = [...base].sort((a, b) => {
-      const av = a[orderBy] ?? "";
-      const bv = b[orderBy] ?? "";
-      if (typeof av === "number" && typeof bv === "number") return order === "asc" ? av - bv : bv - av;
-      return order === "asc" ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
-    });
-    return sorted;
-  }, [rows, search, orderBy, order]);
-
-  const toggleSort = (field) => {
-    if (orderBy === field) {
-      setOrder(order === "asc" ? "desc" : "asc");
-    } else {
-      setOrderBy(field);
-      setOrder("desc");
-    }
-  };
-
-  const openRowMenu = (event, row) => {
-    setMenuAnchor(event.currentTarget);
-    setMenuRow(row);
-  };
-
-  const closeRowMenu = () => {
-    setMenuAnchor(null);
-    setMenuRow(null);
-  };
-
-  const columns = [
-    { key: "poNumber", label: "PO Number", minWidth: 120 },
-    { key: "lineItemsDisplay", label: "Line Item(s)", sortKey: "distinctLineItems", minWidth: 100 },
-    { key: "purchase_req", label: "PR Number", minWidth: 120 },
-    { key: "vendorName", label: "Vendor", minWidth: 180 },
-    { key: "vendorGstin", label: "GSTIN", minWidth: 130 },
-    { key: "plantName", label: "Plant", minWidth: 130 },
-    { key: "poTypeName", label: "PO Type", minWidth: 130 },
-    { key: "taxCode", label: "Tax Code", minWidth: 100 },
-    { key: "purchaseGroupName", label: "Purchasing Group", minWidth: 150 },
-    { key: "paymentTermDescription", label: "Payment Term", minWidth: 150 },
-    { key: "exceptionLineCount", label: "Exceptions", minWidth: 100 },
-    { key: "valueExposure", label: "Value Exposure", minWidth: 130 },
-  ];
-
-  return (
-    <Paper elevation={0} sx={{ 
-      p: 0, 
-      borderRadius: 4, 
-      background: '#ffffff',
-      border: '1px solid', 
-      borderColor: 'grey.100', 
-      boxShadow: '0 4px 20px -2px rgba(0,0,0,0.03)',
-      overflow: 'hidden' 
-    }}>
-      <Box sx={{ p: 3, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 2 }}>
-        <Typography variant="h6" sx={{ fontWeight: 800, color: '#1e293b', display: "flex", alignItems: "center" }}>
-          PO-Wise Exceptions 
-          <Chip size="small" label={`${rows.length} POs`} sx={{ ml: 2, fontWeight: 700, bgcolor: alpha('#4f46e5', 0.1), color: '#4f46e5' }} />
-          <InfoTip text="Click ANY row to open its PO Data & Results — in a new tab or right here in a preview." />
-        </Typography>
-        <TextField
-          size="small"
-          placeholder="Search PO, vendor, PR, plant..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          InputProps={{
-            startAdornment: <InputAdornment position="start"><SearchRoundedIcon fontSize="small" sx={{ color: 'text.secondary' }} /></InputAdornment>,
-            sx: { borderRadius: 3, bgcolor: '#f8fafc', '& fieldset': { borderColor: 'transparent' }, '&:hover fieldset': { borderColor: 'grey.300' } }
-          }}
-          sx={{ minWidth: 320 }}
-        />
-      </Box>
-      {loading ? (
-        <Box sx={{ p: 3 }}><Skeleton variant="rectangular" height={320} sx={{ borderRadius: 2 }} /></Box>
-      ) : (
-        <TableContainer sx={{ maxHeight: 500, overflowX: 'auto' }}>
-          <Table size="medium" stickyHeader sx={{ minWidth: 1200 }}>
-            <TableHead>
-              <TableRow>
-                {columns.map((c) => (
-                  <TableCell 
-                    key={c.key} 
-                    sx={{ 
-                      bgcolor: '#f8fafc', 
-                      fontWeight: 700, 
-                      color: '#475569',
-                      borderBottom: '2px solid',
-                      borderColor: 'grey.100',
-                      minWidth: c.minWidth,
-                      whiteSpace: 'nowrap'
-                    }}
-                  >
-                    <TableSortLabel
-                      active={orderBy === (c.sortKey || c.key)}
-                      direction={orderBy === (c.sortKey || c.key) ? order : "asc"}
-                      onClick={() => toggleSort(c.sortKey || c.key)}
-                    >
-                      {c.label}
-                    </TableSortLabel>
-                  </TableCell>
-                ))}
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {filtered.map((r) => (
-                <TableRow 
-                  key={r.poNumber} 
-                  hover 
-                  sx={{ 
-                    cursor: "pointer", 
-                    '&:last-child td': { border: 0 },
-                    transition: 'background-color 0.2s',
-                    '&:hover': { bgcolor: alpha('#4f46e5', 0.04) }
-                  }} 
-                  onClick={(e) => openRowMenu(e, r)}
-                >
-                  <TableCell sx={{ fontWeight: 600, color: '#1e293b', whiteSpace: 'nowrap' }}>{r.poNumber}</TableCell>
-                  <TableCell sx={{ whiteSpace: 'nowrap' }}>
-                    <MuiTooltip title={(r.lineItems || []).join(", ") || "—"}>
-                      <Chip size="small" label={joinLineItems(r)} sx={{ height: 24, fontSize: '0.75rem', fontWeight: 600, bgcolor: 'grey.100' }}/>
-                    </MuiTooltip>
-                  </TableCell>
-                  <TableCell sx={{ whiteSpace: 'nowrap', color: '#475569' }}>{r.purchase_req || "—"}</TableCell>
-                  <TableCell sx={{ whiteSpace: 'nowrap', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', color: '#475569' }}>
-                    <MuiTooltip title={r.vendorName || r.vendorCode || "—"}>
-                      <span>{r.vendorName || r.vendorCode || "—"}</span>
-                    </MuiTooltip>
-                  </TableCell>
-                  <TableCell sx={{ whiteSpace: 'nowrap', color: '#475569' }}>{r.vendorGstin || "—"}</TableCell>
-                  <TableCell sx={{ whiteSpace: 'nowrap', color: '#475569' }}>{r.plantName || r.plant || "—"}</TableCell>
-                  <TableCell sx={{ whiteSpace: 'nowrap', color: '#475569' }}>{r.poTypeName || r.poType || "—"}</TableCell>
-                  <TableCell sx={{ whiteSpace: 'nowrap', color: '#475569' }}>{r.taxCode || "—"}</TableCell>
-                  <TableCell sx={{ whiteSpace: 'nowrap', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', color: '#475569' }}>
-                    <MuiTooltip title={r.purchaseGroupName || r.purchaseGroup || "—"}>
-                      <span>{r.purchaseGroupName || r.purchaseGroup || "—"}</span>
-                    </MuiTooltip>
-                  </TableCell>
-                  <TableCell sx={{ whiteSpace: 'nowrap', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', color: '#475569' }}>
-                    <MuiTooltip title={r.paymentTermDescription || r.paymentTerm || "—"}>
-                      <span>{r.paymentTermDescription || r.paymentTerm || "—"}</span>
-                    </MuiTooltip>
-                  </TableCell>
-                  <TableCell sx={{ fontWeight: 700, color: r.exceptionLineCount > 0 ? '#dc2626' : 'inherit' }}>
-                    {r.exceptionLineCount}
-                  </TableCell>
-                  <TableCell sx={{ whiteSpace: 'nowrap', fontWeight: 500, color: '#1e293b' }}>
-                    {r.valueExposure?.toLocaleString?.() ?? r.valueExposure}
-                  </TableCell>
-                </TableRow>
-              ))}
-              {filtered.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={columns.length} align="center" sx={{ py: 6, color: 'text.secondary' }}>No matching POs found.</TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </TableContainer>
-      )}
-
-      <Menu anchorEl={menuAnchor} open={Boolean(menuAnchor)} onClose={closeRowMenu}>
-        <MenuItem
-          onClick={() => {
-            onRowAction(menuRow, "newtab");
-            closeRowMenu();
-          }}
-        >
-          <OpenInNewRoundedIcon fontSize="small" sx={{ mr: 1.25, color: "text.secondary" }} />
-          Open in New Tab
-        </MenuItem>
-        <MenuItem
-          onClick={() => {
-            onRowAction(menuRow, "modal");
-            closeRowMenu();
-          }}
-        >
-          <VisibilityRoundedIcon fontSize="small" sx={{ mr: 1.25, color: "text.secondary" }} />
-          View Details Here
-        </MenuItem>
-      </Menu>
-    </Paper>
-  );
-};
 
 const ExecutiveDashboard = () => {
   const navigate = useNavigate();
@@ -489,6 +274,12 @@ const ExecutiveDashboard = () => {
   const charts = data?.charts || {};
   const kpiDefs = data?.kpiDefinitions || {};
   const chartDefs = data?.chartDefinitions || {};
+  // NEW — backend now returns `scope` when the current user's numbers are
+  // restricted to their own purchasing group (Buyers). Admin/PM/other
+  // dashboard-visible roles get `scope: null` and see the notice hidden.
+  const restrictedNotice = data?.scope?.restrictedToPurchaseGroup
+    ? `Showing figures for purchasing group ${data.scope.restrictedToPurchaseGroup} only`
+    : undefined;
 
   const openDrilldown = (dimension, value, title, extra = {}) => setDrilldown({ dimension, value, title, ...extra });
 
@@ -516,7 +307,14 @@ const ExecutiveDashboard = () => {
   const exportSummaryCsv = () => {
     if (!data) return;
     const lines = ["Section,Key,Value,Extra"];
-    Object.entries(kpis).forEach(([k, v]) => lines.push(`KPI,${csvEscape(k)},${csvEscape(v)},`));
+    
+    // Export KPIs except any dynamically injected 'hold' definitions
+    Object.entries(kpis).forEach(([k, v]) => {
+      if (!k.toLowerCase().includes('hold')) {
+        lines.push(`KPI,${csvEscape(k)},${csvEscape(v)},`);
+      }
+    });
+
     (charts.controlWiseCompliance || []).forEach((d) =>
       lines.push(`Control-Wise Compliance,Point ${d.pointNo} (${d.severity}),${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`)
     );
@@ -527,6 +325,7 @@ const ExecutiveDashboard = () => {
     (charts.vendorWiseCompliance || []).forEach((d) => lines.push(`Vendor-Wise Compliance,${csvEscape(d.vendorName || d.vendorCode)},${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`));
     (charts.poNumberWiseCompliance || []).forEach((d) => lines.push(`PO-Wise Compliance,${csvEscape(d.poNumber)},${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`));
     (charts.monthlyExceptionTrend || []).forEach((d) => lines.push(`Monthly Exception Trend,${d.month},${d.count},valueExposure=${d.valueExposure}`));
+    
     const blob = new Blob([lines.join("\n")], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -543,7 +342,7 @@ const ExecutiveDashboard = () => {
           <Typography variant="h3" sx={{ 
             fontWeight: 900, 
             letterSpacing: -1, 
-            background: 'linear-gradient(45deg, #4338ca, #7c3aed)', 
+            background: 'linear-gradient(90deg, #1e1b4b, #4338ca)', 
             WebkitBackgroundClip: 'text', 
             WebkitTextFillColor: 'transparent',
             mb: 1.5 
@@ -554,13 +353,18 @@ const ExecutiveDashboard = () => {
             Tracks how many of the 19 checkpoints each PO line passes. Hover the <InfoOutlinedIcon sx={{ fontSize: 16, verticalAlign: "text-bottom" }} /> icon
             on any card or chart below for what that specific metric means. Criticality of each checkpoint is managed on the Risk Categorization Master page.
           </Typography>
+          {restrictedNotice && (
+            <Typography variant="caption" sx={{ mt: 1.5, display: 'block', fontWeight: 700, color: '#4f46e5' }}>
+              {restrictedNotice}
+            </Typography>
+          )}
           {lastUpdated && (
             <Typography variant="caption" sx={{ mt: 1.5, display: 'block', fontWeight: 600, color: '#94a3b8' }}>
               Last updated {moment(lastUpdated).format("DD-MMM-YYYY HH:mm:ss")}
             </Typography>
           )}
         </Box>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 2, p: 1.5, bgcolor: '#ffffff', borderRadius: 3, border: '1px solid', borderColor: 'grey.100', boxShadow: '0 4px 20px -2px rgba(0,0,0,0.03)' }}>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 2, p: 1.5, bgcolor: '#ffffff', borderRadius: 3, border: '1px solid', borderColor: 'grey.100', boxShadow: '0 10px 30px -5px rgba(0,0,0,0.04)' }}>
           <Chip
             label={kpis.overallComplianceScore != null ? `${kpis.overallComplianceScore}% compliant` : "—"}
             sx={{ 
@@ -600,42 +404,41 @@ const ExecutiveDashboard = () => {
       </Box>
 
       {error && (
-        <Paper elevation={0} sx={{ p: 2.5, mb: 4, bgcolor: "#fef2f2", borderRadius: 3, border: '1px solid', borderColor: "#fecaca", color: "#b91c1c" }}>
+        <Paper elevation={0} sx={{ p: 2.5, mb: 4, bgcolor: "#fef2f2", borderRadius: 3, border: '1px solid', borderColor: "#fecaca", color: "#dc2626" }}>
           <Typography variant="body1" sx={{ fontWeight: 600 }}>{error}</Typography>
         </Paper>
       )}
 
-      {/* KPI Cards */}
+      {/* KPI Cards - Structured cleanly in a 3x3 layout (md=4 for 3 columns) */}
       <Grid container spacing={3} sx={{ mb: 5 }}>
-        <Grid item xs={6} sm={4} md={2.4}>
+        <Grid item xs={12} sm={6} md={4}>
           <KpiCard label="Total PO Count" value={kpis.totalPOCount ?? "—"} sublabel="Click to view all PO lines" loading={loading} info={kpiDefs.totalPOCount} onClick={kpis.totalPOCount ? () => openDrilldown("all", true, "All PO Lines") : undefined} />
         </Grid>
-        <Grid item xs={6} sm={4} md={2.4}>
+        <Grid item xs={12} sm={6} md={4}>
           <KpiCard label="Total PO Lines" value={kpis.totalPOLineItems ?? "—"} sublabel="Click to view all PO lines" loading={loading} info={kpiDefs.totalPOLineItems} onClick={kpis.totalPOLineItems ? () => openDrilldown("all", true, "All PO Lines") : undefined} />
         </Grid>
-        <Grid item xs={6} sm={4} md={2.4}>
+        <Grid item xs={12} sm={6} md={4}>
           <KpiCard label="Total PR Count" value={kpis.totalPRCount ?? "—"} sublabel="Click to view all PO lines" loading={loading} info={kpiDefs.totalPRCount} onClick={kpis.totalPRCount ? () => openDrilldown("all", true, "All PO Lines") : undefined} />
         </Grid>
-        <Grid item xs={6} sm={4} md={2.4}>
-          <KpiCard label="Hold PO Count" value={kpis.holdPOCount ?? "—"} sublabel="Click to drill in" loading={loading} info={kpiDefs.holdPOCount} onClick={kpis.holdPOCount ? () => openDrilldown("hold", true, "Hold POs") : undefined} />
+        
+        <Grid item xs={12} sm={6} md={4}>
+          <KpiCard label="Exception Exposure" value={kpis.exceptionValueExposure != null ? `${kpis.exceptionValueExposure.toLocaleString()}` : "—"} sublabel="Click to drill in" loading={loading} info={kpiDefs.exceptionValueExposure} onClick={kpis.exceptionValueExposure ? () => openDrilldown("anyException", true, "Lines Contributing to Exception Value Exposure") : undefined} />
         </Grid>
-        <Grid item xs={6} sm={4} md={2.4}>
-          <KpiCard label="Exception Exposure" value={kpis.exceptionValueExposure != null ? `$${kpis.exceptionValueExposure.toLocaleString()}` : "—"} sublabel="Click to drill in" loading={loading} info={kpiDefs.exceptionValueExposure} onClick={kpis.exceptionValueExposure ? () => openDrilldown("anyException", true, "Lines Contributing to Exception Value Exposure") : undefined} />
+        <Grid item xs={12} sm={6} md={4}>
+          <KpiCard label="Verified Checks" value={kpis.verifiedCount ?? "—"} valueColor="#059669" sublabel="Click to drill in" loading={loading} info={kpiDefs.verifiedCount} onClick={kpis.verifiedCount ? () => openDrilldown("verifiedAny", true, "Lines with at Least One Verified Checkpoint", { statusFilter: "verified" }) : undefined} />
         </Grid>
-        <Grid item xs={6} sm={4} md={2.4}>
-          <KpiCard label="Verified Checks" value={kpis.verifiedCount ?? "—"} sublabel="Click to drill in" loading={loading} info={kpiDefs.verifiedCount} onClick={kpis.verifiedCount ? () => openDrilldown("verifiedAny", true, "Lines with at Least One Verified Checkpoint", { statusFilter: "verified" }) : undefined} />
+        <Grid item xs={12} sm={6} md={4}>
+          <KpiCard label="Not Verified Checks" value={kpis.notVerifiedCount ?? "—"} valueColor="#dc2626" sublabel="Click to drill in" loading={loading} info={kpiDefs.notVerifiedCount} onClick={kpis.notVerifiedCount ? () => openDrilldown("anyException", true, "Lines with at Least One Exception") : undefined} />
         </Grid>
-        <Grid item xs={6} sm={4} md={2.4}>
-          <KpiCard label="Not Verified Checks" value={kpis.notVerifiedCount ?? "—"} sublabel="Click to drill in" loading={loading} info={kpiDefs.notVerifiedCount} onClick={kpis.notVerifiedCount ? () => openDrilldown("anyException", true, "Lines with at Least One Exception") : undefined} />
-        </Grid>
-        <Grid item xs={6} sm={4} md={2.4}>
+        
+        <Grid item xs={12} sm={6} md={4}>
           <KpiCard label="Not Applicable" value={kpis.notApplicableCount ?? "—"} sublabel="Click to drill in" loading={loading} info={kpiDefs.notApplicableCount} onClick={kpis.notApplicableCount ? () => openDrilldown("na", true, "Lines with at Least One N/A Checkpoint", { statusFilter: "na" }) : undefined} />
         </Grid>
-        <Grid item xs={6} sm={4} md={2.4}>
+        <Grid item xs={12} sm={6} md={4}>
           <KpiCard label="Manual Review" value={kpis.manualReviewCount ?? "—"} sublabel="Click to drill in" loading={loading} info={kpiDefs.manualReviewCount} onClick={kpis.manualReviewCount ? () => openDrilldown("manual", true, "Lines Needing Manual Review", { statusFilter: "manual" }) : undefined} />
         </Grid>
-        <Grid item xs={6} sm={4} md={2.4}>
-          <KpiCard label="High-Risk Alerts" value={kpis.highRiskExceptions ?? "—"} sublabel="Critical + High severity" loading={loading} info={kpiDefs.highRiskExceptions} onClick={kpis.highRiskExceptions ? () => openDrilldown("severity", "Critical,High", "High-Risk Exceptions (Critical + High)") : undefined} />
+        <Grid item xs={12} sm={6} md={4}>
+          <KpiCard label="High-Risk Alerts" value={kpis.highRiskExceptions ?? "—"} valueColor="#dc2626" sublabel="Critical + High severity" loading={loading} info={kpiDefs.highRiskExceptions} onClick={kpis.highRiskExceptions ? () => openDrilldown("severity", "Critical,High", "High-Risk Exceptions (Critical + High)") : undefined} />
         </Grid>
       </Grid>
 
@@ -904,12 +707,22 @@ const ExecutiveDashboard = () => {
         </Grid>
       </Grid>
 
-      {/* PO-WISE EXCEPTIONS TABLE */}
+      {/*
+        PO-WISE EXCEPTIONS TABLE
+        Still embedded here as before (per requirements: keep it on the
+        dashboard). It's now the shared component also used, full-page,
+        by the "PO-Data" sidebar entry at /po-data - `viewAllHref` adds a
+        shortcut button into that full page from right here. `restrictedNotice`
+        is now threaded through from the same backend `scope` used above, so
+        a Buyer sees the same "purchasing group only" caveat here too.
+      */}
       <Box sx={{ mt: 5 }}>
         <PoWiseExceptionsTable
           rows={charts.poWiseExceptions || []}
           loading={loading}
           onRowAction={handleRowAction}
+          viewAllHref="/po-data"
+          restrictedNotice={restrictedNotice}
         />
       </Box>
 

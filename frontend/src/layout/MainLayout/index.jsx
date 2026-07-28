@@ -111,7 +111,7 @@ const MainLayout = () => {
         display: "flex",
         width: "100%",
         // UPGRADED THEME: Premium Slate-50 background perfectly complements the clean white sidebar
-        backgroundColor: "#f8fafc", 
+        backgroundColor: "#f8fafc",
         minHeight: "100vh",
       }}
     >
@@ -122,9 +122,12 @@ const MainLayout = () => {
         component="main"
         sx={{
           width: "100%",
+          minWidth: 0, // critical: lets this flex child shrink below its content's natural width,
+                       // so wide children (like tables) scroll internally instead of blowing out the whole page
           flexGrow: 1,
           p: { xs: 2, sm: 3, md: 4 }, // Slightly increased padding on larger screens for better breathing room
-          overflow: "auto",
+          overflowX: "hidden", // page itself should never scroll horizontally
+          overflowY: "auto",
           transition: "padding 0.2s ease-in-out" // Smooth transition if drawer toggles
         }}
       >

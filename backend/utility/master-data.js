@@ -82,9 +82,6 @@ function resolveColumn(sampleRow, patterns, label, fileLabel) {
   for (const pattern of patterns) {
     const hit = normalizedMap.find((h) => pattern.test(h.norm));
     if (hit) {
-      console.log(
-        `[master-data] ${fileLabel}: "${label}" -> matched column "${hit.raw}"`,
-      );
       return hit.raw;
     }
   }
@@ -177,9 +174,7 @@ function buildVendorMap() {
       gstin,
     });
   }
-  console.log(
-    `[master-data] ✅ Loaded ${map.size} vendors (${map.size - missingGstin} with GSTIN, ${missingGstin} missing GSTIN).`,
-  );
+
   if (!gstinCol) {
     console.error(
       "[master-data] 🚨 GSTIN column was never found in Vendor Master — every vendor will show blank GSTIN. " +
@@ -447,6 +442,43 @@ export function getPlantName(plantCode) {
 export function getPurchaseGroupName(code) {
   return purchaseGroupMap.get(normText(code).toUpperCase())?.name || "";
 }
+
+export function getPurchaseGroupCode(name) {
+  const target = normText(name).toUpperCase();
+
+  for (const [code, data] of purchaseGroupMap.entries()) {
+    if (normText(data.name).toUpperCase() === target) {
+      return code;
+    }
+  }
+
+  return "";
+}
+
+// --- NEW ---------------------------------------------------------------
+// Full {code, name} list — feeds the Procurement Manager's "Purchasing
+// Group" advanced-filter dropdown on the PO Data page.
+export function getPurchaseGroupsList() {
+  return [...purchaseGroupMap.values()]
+    .map((g) => ({ code: g.code, name: g.name }))
+    .sort((a, b) => a.code.localeCompare(b.code));
+}
+
+// Free-text search across BOTH code and name — lets a PM type "P15" or
+// "Packaging" in the advanced filter and get the matching group code(s)
+// back, which the controller then folds into the `purchase_group` filter.
+export function searchPurchaseGroupCodes(query) {
+  const q = normText(query).toLowerCase();
+  if (!q) return [];
+  return [...purchaseGroupMap.values()]
+    .filter(
+      (g) =>
+        g.code.toLowerCase().includes(q) || g.name.toLowerCase().includes(q),
+    )
+    .map((g) => g.code);
+}
+// --- END NEW -------------------------------------------------------------
+
 export function getPaymentTermDescription(code) {
   return paymentTermMap.get(normText(code).toUpperCase())?.description || "";
 }
@@ -474,6 +506,20 @@ export function enrichPoRow(row) {
     poTypeName: poType.name,
     poTypeIsAssumption: poType.isAssumption,
   };
+}
+
+export function getPoTypesList() {
+  return Object.entries(PO_TYPE_NAMES)
+    .map(([code, name]) => ({ code, name }))
+    .sort((a, b) => a.code.localeCompare(b.code));
+}
+
+// Full {code, name} list for the Plant advanced-filter dropdown, sourced
+// from the real Plant Master file — same pattern as getPurchaseGroupsList.
+export function getPlantsList() {
+  return [...plantMap.values()]
+    .map((p) => ({ code: p.code, name: p.name }))
+    .sort((a, b) => a.code.localeCompare(b.code));
 }
 
 export function enrichByCode({

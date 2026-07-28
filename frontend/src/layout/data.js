@@ -50,6 +50,34 @@ const adminNavItems = [
     breadcrumbs: false,
   },
   {
+    id: "po-data",
+    title: "PO-Data",
+    type: "item",
+    url: "/po-data",
+    icon: icons.PlaylistAddCheckRoundedIcon,
+    breadcrumbs: false,
+  },
+  // NEW — standalone RC Overlap (rule 19) section
+  {
+    id: "rc-overlap",
+    title: "RC Overlap",
+    type: "item",
+    url: "/rc-overlap",
+    icon: icons.AssignmentTurnedInRoundedIcon,
+    breadcrumbs: false,
+  },
+  // NEW — Buyer Remarks Report. Admin sees every buyer's remarks (per the
+  // controller's isAdmin/isProcurementManager branch), same page Buyers/PM
+  // already had access to below.
+  {
+    id: "po-remarks-report",
+    title: "Buyer Remarks Report",
+    type: "item",
+    url: "/po-remarks-report",
+    icon: icons.AssignmentTurnedInRoundedIcon,
+    breadcrumbs: false,
+  },
+  {
     id: "risk-categorization",
     title: "Risk-Categorization",
     type: "item",
@@ -74,6 +102,23 @@ const headNavItems = [
     type: "item",
     url: "/search-data",
     icon: icons.ManageSearchRoundedIcon,
+    breadcrumbs: false,
+  },
+  {
+    id: "po-data",
+    title: "PO-Data",
+    type: "item",
+    url: "/po-data",
+    icon: icons.PlaylistAddCheckRoundedIcon,
+    breadcrumbs: false,
+  },
+  // NEW — standalone RC Overlap (rule 19) section
+  {
+    id: "rc-overlap",
+    title: "RC Overlap",
+    type: "item",
+    url: "/rc-overlap",
+    icon: icons.AssignmentTurnedInRoundedIcon,
     breadcrumbs: false,
   },
   {
@@ -104,6 +149,23 @@ const executorNavItems = [
     breadcrumbs: false,
   },
   {
+    id: "po-data",
+    title: "PO-Data",
+    type: "item",
+    url: "/po-data",
+    icon: icons.PlaylistAddCheckRoundedIcon,
+    breadcrumbs: false,
+  },
+  // NEW — standalone RC Overlap (rule 19) section
+  {
+    id: "rc-overlap",
+    title: "RC Overlap",
+    type: "item",
+    url: "/rc-overlap",
+    icon: icons.AssignmentTurnedInRoundedIcon,
+    breadcrumbs: false,
+  },
+  {
     id: "risk-categorization",
     title: "Risk-Categorization",
     type: "item",
@@ -131,6 +193,23 @@ const ssbdNavItems = [
     breadcrumbs: false,
   },
   {
+    id: "po-data",
+    title: "PO-Data",
+    type: "item",
+    url: "/po-data",
+    icon: icons.PlaylistAddCheckRoundedIcon,
+    breadcrumbs: false,
+  },
+  // NEW — standalone RC Overlap (rule 19) section
+  {
+    id: "rc-overlap",
+    title: "RC Overlap",
+    type: "item",
+    url: "/rc-overlap",
+    icon: icons.AssignmentTurnedInRoundedIcon,
+    breadcrumbs: false,
+  },
+  {
     id: "risk-categorization",
     title: "Risk-Categorization",
     type: "item",
@@ -151,6 +230,56 @@ const auditorNavItems = [
   },
 ];
 
+// Buyer / Procurement Manager bucket.
+// Per requirements: Dashboard, Search-Data, PO-Data only - no User
+// Management, and (unlike admin/head/executor/ssbd) no Risk-Categorization
+// either, since that wasn't in the list of pages these two roles should see.
+// RC Overlap is added here too, right alongside PO-Data, since Buyers/PMs
+// are exactly the users who need to see RC compliance status.
+const buyerOrProcurementManagerNavItems = [
+  {
+    id: "custom-dashboard",
+    title: "Dashboard",
+    type: "item",
+    url: "/",
+    icon: icons.SpeedRoundedIcon,
+    breadcrumbs: false,
+  },
+  {
+    id: "search-buyer-pm",
+    title: "Search-Data",
+    type: "item",
+    url: "/search-data",
+    icon: icons.ManageSearchRoundedIcon,
+    breadcrumbs: false,
+  },
+  {
+    id: "po-data",
+    title: "PO-Data",
+    type: "item",
+    url: "/po-data",
+    icon: icons.PlaylistAddCheckRoundedIcon,
+    breadcrumbs: false,
+  },
+  // NEW — standalone RC Overlap (rule 19) section
+  {
+    id: "rc-overlap",
+    title: "RC Overlap",
+    type: "item",
+    url: "/rc-overlap",
+    icon: icons.AssignmentTurnedInRoundedIcon,
+    breadcrumbs: false,
+  },
+  {
+    id: "po-remarks-report",
+    title: "Buyer Remarks Report",
+    type: "item",
+    url: "/po-remarks-report",
+    icon: icons.AssignmentTurnedInRoundedIcon,
+    breadcrumbs: false,
+  },
+];
+
 // ==============================|| MENU ITEMS ||============================== //
 
 const menuItems = {
@@ -159,6 +288,13 @@ const menuItems = {
   auditor: auditorNavItems,
   executor: executorNavItems,
   ssbdUser: ssbdNavItems,
+
+  // Buyer + Procurement Manager
+  isBuyer: buyerOrProcurementManagerNavItems,
+  isProcurementManager: buyerOrProcurementManagerNavItems,
+
+  // optional old bucket name
+  buyerOrPM: buyerOrProcurementManagerNavItems,
 };
 
 export default menuItems;

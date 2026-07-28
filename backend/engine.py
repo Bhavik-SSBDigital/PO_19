@@ -1,7 +1,7 @@
 """
 P2P Purchase Order Audit Engine
 ================================
-Implements the 19 audit points defined in "Procurement audit points.xlsx"
+Implements the audit points defined in "Procurement audit points.xlsx"
 (Final sheet) against the SAP extract files:
 
     POAUDIT_*      -> entry point, one row per PO line item
@@ -13,22 +13,50 @@ Each of the three inputs can be either .csv (the original export format) or
 
 Output:
     audit_results.xlsx
-        - "PO Line Results"  : one row per PO line item, one column per rule (1-19)
-                                 with Verified / Not Verified / Not Applicable /
-                                 Manual Review Required, plus a remarks column.
-        - "Rule 19 - RC Overlap" : RC-level results (rule 19 is not a PO-line rule).
-        - "Assumptions"       : every assumption this script had to make, because
-                                 some rules depend on master data / config that
-                                 was not present in the uploaded files. THESE MUST
-                                 BE CONFIRMED WITH THE CLIENT (see accompanying
-                                 Word document).
+        - "PO Line Results"  : one row per PO line item, one column per rule
+                                 (1-18) with Verified / Not Verified /
+                                 Not Applicable / Manual Review Required,
+                                 plus a remarks column.
+        - "Rule 19 - RC Overlap" : RC-level results (rule 19 is not a PO-line
+                                 rule - see CHANGELOG below for why it now
+                                 lives entirely separately).
+        - "Assumptions"       : every assumption this script had to make.
+                                 THESE MUST BE CONFIRMED WITH THE CLIENT.
 
-CHANGELOG (this revision):
-    - Rule 19 was being silently dropped from every PO line's `results` array.
-      PO_LINE_RULES was defined three times in this module; the third
-      (final, winning) definition ended at rule 18 and omitted rule 19
-      entirely. There is now exactly ONE definition of PO_LINE_RULES, and it
-      includes all 19 rules.
+CHANGELOG (this revision - RC Overlap access control):
+    - RC master data (POAUDITRC) has no purchasing-group column of its own,
+      but the client wants Buyers restricted to "RC Overlap rows relevant
+      to me" the same way they're already restricted on the PO Data page
+      (by purchase_group). To make that possible, build_rc_overlap_records()
+      now also takes po_rows and cross-references POAUDIT ("RC no." +
+      "Vendor Code" + "Material Code" + "Purchase Group") to derive, per RC,
+      the set of purchasing groups whose PO lines actually reference it.
+      That set is emitted as a new "purchaseGroups" array field on each RC
+      Overlap record, feeding the new RcOverlapResult.purchaseGroups column.
+      --rc-json / build_rc_overlap_records() signature changed accordingly -
+      see run() below.
+
+CHANGELOG (earlier revision - RC Overlap gets its own list/section):
+    - Client requested RC Overlap (rule 19) be shown as its own dedicated
+      list/section rather than mixed in with the other 18 PO-line audit
+      points. Rule 19 was already structurally different from the other 18
+      (it's a fact about an RC - vendor+material+RC number - not about an
+      individual PO line), so this revision finishes separating it out:
+        * Rule 19 has been REMOVED from PO_LINE_RULES. It no longer appears
+          in a PO line's `results` array, in the "PO Line Results" sheet's
+          per-rule columns, or in the addpo-json records fed into
+          audit_results (DB table `audit_results`).
+        * build_rc_overlap_records() + --rc-json CLI flag produce a
+          separate JSON file, one record per RC (vendor + material + RC
+          number), meant for a new `node addrc.js <file>` importer feeding
+          a new `rc_overlap_results` DB table - which is what backs the new
+          standalone RC Overlap page/section.
+        * rule_19_rc_overlap() and run_rule_19() are both left in place
+          unchanged (the "Rule 19 - RC Overlap" Excel sheet still gets
+          written exactly as before) - only the per-PO-line duplication of
+          that same check has been removed.
+
+CHANGELOG (earlier revision):
     - Rule 9 (tax logic) compared the Tax Master's "Category" string against
       "CGST+SGST" / "CGST/SGST" / "LOCAL". The actual master data
       (TAX code Master - Working.xlsx) uses "SGST+CGST" (opposite order) and
@@ -50,7 +78,10 @@ CHANGELOG (this revision):
       instead of falling through to Not Applicable on every row.
 
 Usage:
-    python audit_engine.py --poaudit POAUDIT_x.xlsx --cnd POAUDITCND_x.xlsx --rc POAUDITRC_x.xlsx --out audit_results.xlsx
+    python3 engine.py --poaudit POAUDIT_x.xlsx --cnd POAUDITCND_x.xlsx \
+        --rc POAUDITRC_x.xlsx --out audit_results.xlsx \
+        --addpo-json audit_results_for_db.json \
+        --rc-json rc_overlap_for_db.json
 """
 
 import argparse
@@ -88,13 +119,6 @@ PR_RELEASED_VALUES = {"2"}          # ASSUMPTION - confirm with client
 RC_RELEASED_VALUES = {"R"}          # ASSUMPTION - confirm with client
 
 # --- Rule 9 support: normalized GST-category classification -----------------
-# Real values observed in "TAX code Master - Working.xlsx" -> Category column
-# include things like "SGST+CGST", "SGST+CGST + TCS", "IGST", "IGST+ TCS",
-# "VAT, ED", "CST, ED", "Works Contracts", "GTA", "ST", "No GST",
-# "Input Tax", "Out of Gst", "Composit Scheme", etc. Only the GST-regime
-# in-state / out-of-state categories are meaningful for this rule; everything
-# else (VAT/CST/Excise/Works-Contract/exempt/etc.) predates or sits outside
-# plain GST and should not be forced through an IGST-vs-SGST+CGST test.
 def _normalize_category_tokens(category_raw):
     """Return a canonical, order/space/case-independent token for a Tax
     Master 'Category' value, e.g. 'SGST + CGST', 'sgst+cgst', 'CGST+SGST'
@@ -110,9 +134,6 @@ def _normalize_category_tokens(category_raw):
 
 GST_LOCAL_TOKENS = {_normalize_category_tokens("SGST+CGST"), _normalize_category_tokens("CGST+SGST")}
 GST_IGST_TOKENS = {_normalize_category_tokens("IGST")}
-# Categories that exist in the master but are not GST in/out-of-state codes
-# at all (older VAT/CST/Excise regime, exempt, works-contract, etc.) - rule 9
-# does not apply to these.
 GST_NOT_APPLICABLE_TOKENS = {
     _normalize_category_tokens(x)
     for x in [
@@ -128,10 +149,6 @@ GST_NOT_APPLICABLE_TOKENS = {
 }
 
 # --- Rule 15 support: normalized rate-approval tag matching ------------------
-# The rule sheet describes the tag as "DWS-APPROVED"; the real "Our Ref."
-# data instead contains free-text variants of "approved rate" / "rate
-# approval" with inconsistent spacing/casing. Matching is done against a
-# normalized (uppercased, spaces/hyphens stripped) form of the cell.
 RATE_APPROVAL_TAG_TOKENS = {
     "APPROVEDRATE", "APPROVERATE", "RATEAPPROVAL", "APPROVEDRAT", "DWSAPPROVED", "DWSAAPPROVED",
 }
@@ -157,9 +174,7 @@ def parse_sap_date(value):
 
     By the time a value reaches this function it has already been through
     normalize_sap_date() at load time (see load_all()), so it is always one
-    of: a clean 'YYYYMMDD' string, or '' / None for blank. This function is
-    kept simple and only has to deal with that canonical form - all the
-    messy format-detection work lives in normalize_sap_date().
+    of: a clean 'YYYYMMDD' string, or '' / None for blank.
     """
     if value is None:
         return None
@@ -171,8 +186,6 @@ def parse_sap_date(value):
     try:
         return datetime.strptime(v, "%Y%m%d")
     except ValueError:
-        # Shouldn't normally happen post-normalization, but fall back to a
-        # permissive parse rather than crashing the whole run over one bad cell.
         try:
             return datetime.fromisoformat(v.split(" ")[0])
         except ValueError:
@@ -211,7 +224,6 @@ def s(row, col):
 EXCEL_EXTENSIONS = {".xlsx", ".xlsm", ".xls"}
 CSV_EXTENSIONS = {".csv", ".txt"}
 
-# Date columns that need normalizing right after load - see normalize_sap_date().
 PO_DATE_COLUMNS = ("PO Created date", "PR Creation date", "Delivery Date")
 RC_DATE_COLUMNS = ("RC valid from", "RC valid to")
 
@@ -220,28 +232,10 @@ def normalize_sap_date(value):
     """
     Normalize a raw date cell into the canonical 'YYYYMMDD' string that the
     rest of this script (parse_sap_date and every rule function) expects.
-
-    This wasn't needed when the only input format was CSV, where SAP always
-    exports dates as plain 'YYYYMMDD' text. Now that .xlsx exports are also
-    accepted, the same column can arrive as a handful of different shapes
-    depending on how Excel/openpyxl/pandas read the cell:
-        - a native datetime.datetime / pandas.Timestamp (Excel cell formatted
-          as a date)
-        - a bare Excel serial number (cell not formatted as a date)
-        - plain text in 'YYYYMMDD', 'YYYY-MM-DD', 'DD.MM.YYYY',
-          'DD-MM-YYYY', or 'MM/DD/YYYY' form
-        - blank / NaN / SAP's '00000000' "no date" sentinel
-
-    Doing this once, at load time, means parse_sap_date and every rule
-    function downstream keep working exactly as before, on a plain
-    'YYYYMMDD' string, regardless of which file format the value came from.
     """
     if value is None:
         return ""
 
-    # pandas/numpy NaN (blank Excel cells read with dtype=object can still
-    # surface as float('nan') even after an upstream fillna in some pandas
-    # versions, so this check stays as a safety net)
     if isinstance(value, float):
         try:
             if pd.isna(value):
@@ -249,8 +243,6 @@ def normalize_sap_date(value):
         except Exception:
             pass
 
-    # Native datetime / pandas Timestamp - what openpyxl/pandas hand back for
-    # a properly-formatted Excel date cell.
     if isinstance(value, datetime):
         return value.strftime("%Y%m%d")
     if hasattr(value, "to_pydatetime"):
@@ -259,11 +251,6 @@ def normalize_sap_date(value):
         except Exception:
             pass
 
-    # Bare Excel serial date number (only reached if the cell wasn't
-    # formatted as a date in Excel). An 8-digit 'YYYYMMDD' encoded as a raw
-    # number (e.g. 20260623) is far larger than any realistic Excel serial
-    # (Excel day 1 = 1900-01-01; serials for the 2020s are in the ~45000s),
-    # so the two ranges don't collide.
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         ival = int(value)
         if ival == 0:
@@ -273,7 +260,7 @@ def normalize_sap_date(value):
                 return (datetime(1899, 12, 30) + timedelta(days=ival)).strftime("%Y%m%d")
             except Exception:
                 return ""
-        value = str(ival)  # e.g. 20260623 read in as a plain number - fall through to string handling
+        value = str(ival)
 
     v = str(value).strip()
     if not v or v in {"00000000", "nan", "NaT", "None"}:
@@ -282,16 +269,16 @@ def normalize_sap_date(value):
     if re.match(r"^\d{8}$", v):
         return v
 
-    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", v)  # ISO, optionally with a time part
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", v)
     if m:
         return f"{m.group(1)}{m.group(2)}{m.group(3)}"
 
-    m = re.match(r"^(\d{1,2})[.\-](\d{1,2})[.\-](\d{4})$", v)  # SAP/European D.M.Y
+    m = re.match(r"^(\d{1,2})[.\-](\d{1,2})[.\-](\d{4})$", v)
     if m:
         day, month, year = m.groups()
         return f"{year}{int(month):02d}{int(day):02d}"
 
-    m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})$", v)  # US M/D/Y
+    m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})$", v)
     if m:
         month, day, year = m.groups()
         return f"{year}{int(month):02d}{int(day):02d}"
@@ -299,18 +286,10 @@ def normalize_sap_date(value):
     try:
         return datetime.fromisoformat(v.split(" ")[0]).strftime("%Y%m%d")
     except Exception:
-        return v  # unrecognised format - parse_sap_date's own fallback will catch it downstream
+        return v
 
 
 def load_table(path):
-    """
-    Load a SAP extract as a list of dicts, whether it's the older .csv export
-    or a direct .xlsx export. Every value comes back as a string (or, for
-    .xlsx, occasionally a native date/number type that the rest of this
-    module already knows how to handle); blank cells are normalized to "" in
-    both cases, so rule functions and the s()/parse_sap_number() helpers
-    don't need to care which format the file arrived in.
-    """
     ext = os.path.splitext(path)[1].lower()
 
     if ext in EXCEL_EXTENSIONS:
@@ -331,9 +310,6 @@ def load_all(poaudit_path, cnd_path, rc_path):
     cnd_rows = load_table(cnd_path)
     rc_rows = load_table(rc_path)
 
-    # Normalize every known date column to a canonical 'YYYYMMDD' string right
-    # at load time - see normalize_sap_date() for why this is needed now that
-    # .xlsx is a supported input format alongside .csv.
     for row in po_rows:
         for col in PO_DATE_COLUMNS:
             if col in row:
@@ -344,7 +320,6 @@ def load_all(poaudit_path, cnd_path, rc_path):
             if col in row:
                 row[col] = normalize_sap_date(row[col])
 
-    # index conditions by PO number (POAUDITCND uses "PO NO")
     cnd_by_po = defaultdict(list)
     for r in cnd_rows:
         cnd_by_po[s(r, "PO NO")].append(r)
@@ -352,13 +327,10 @@ def load_all(poaudit_path, cnd_path, rc_path):
     return po_rows, cnd_rows, rc_rows, cnd_by_po
 
 
-
 def load_tax_master(base_folder):
-    # base_folder is "Batch 1". We need to look one folder up in the parent directory to find "Masters"
     parent_dir = os.path.dirname(base_folder)
     path = os.path.join(parent_dir, "Masters", "TAX code Master - Working.xlsx")
 
-    # Fallback just in case it's in the current folder
     if not os.path.exists(path):
         path = os.path.join(base_folder, "Masters", "TAX code Master - Working.xlsx")
 
@@ -448,10 +420,6 @@ def rule_06_quantity_control(row, ctx):
     pr_qty = parse_sap_number(s(row, "PR Qty."))
     if not purchase_req or pr_qty is None or pr_qty == 0:
         return NA, "PR qty not available (no PR line, or unparseable)"
-    # Per the spec note ("SSBD should cumulate the qty to check PO Qty. against
-    # PR" / dashboard doc's partial-PO example), this compares the SUM of PO
-    # qty across every PO line referencing this PR line - not just this one
-    # PO line - against the PR qty.
     cumulative_po_qty = ctx["pr_cumulative_po_qty"].get((purchase_req, pr_line), 0)
     if cumulative_po_qty <= pr_qty:
         return VERIFIED, f"Cumulative PO qty ({cumulative_po_qty}) across all POs against this PR is within PR qty ({pr_qty})"
@@ -506,21 +474,6 @@ def rule_08_rc_consistency(row, ctx):
 
 
 def rule_09_tax_logic(row, ctx):
-    """
-    FIXED: previously compared the tax master's Category string against
-    "CGST+SGST" / "CGST/SGST" / "LOCAL" - none of which occur in the real
-    master data (which uses "SGST+CGST", opposite token order, and no
-    "LOCAL" value at all). That made every in-state (Gujarat) line fail
-    regardless of whether the tax code was actually correct.
-
-    Now: normalize both sides (case/space/order-independent, "+TCS" suffix
-    stripped) and compare against known GST-local / GST-IGST token sets.
-    Categories that are not GST in/out-of-state codes at all (VAT, CST,
-    Excise, Works Contracts, GTA, exempt codes, etc. - all present in the
-    real master) are Not Applicable, since this rule is specifically about
-    the IGST-vs-SGST+CGST in-state/out-of-state distinction and doesn't
-    apply to pre-GST or exempt tax regimes.
-    """
     vendor_state = s(row, "Vendor State").upper()
     tax_code = s(row, "Tax code")
 
@@ -626,15 +579,6 @@ def rule_14_exw_fca_no_freight(row, ctx):
 
 
 def rule_15_rate_approval(row, ctx):
-    """
-    FIXED: previously required the literal substring "DWS-APPROVED" /
-    "DWS-AAPPROVED" in "Our Ref." - a string that does not appear anywhere
-    in the real POAUDIT extracts, so this rule was Not Applicable on 100%
-    of rows. The real data expresses the same "rate approved" tag as
-    "APPROVEDRATE" / "RATEAPPROVAL" / "APPROVE RATE" / minor variants.
-    Matching is now done on a normalized (uppercased, space/hyphen-stripped)
-    value against the known tag variants (see _is_rate_approval_tag).
-    """
     our_ref = s(row, "Our Ref.")
     if not _is_rate_approval_tag(our_ref):
         return NA, "No rate-approval tag found in Our Ref."
@@ -681,6 +625,12 @@ def rule_18_multiple_po_same_day(row, ctx):
 
 
 def rule_19_rc_overlap(row, ctx):
+    """
+    Kept for reference / for anyone who wants a row-level lookup of this
+    check, but NO LONGER included in PO_LINE_RULES (see CHANGELOG at top of
+    file). RC Overlap now lives entirely in its own list - see
+    build_rc_overlap_records() and run_rule_19() below.
+    """
     rc_no = s(row, "RC no.")
     if not rc_no:
         return NA, "No RC assigned to this line"
@@ -695,9 +645,10 @@ def rule_19_rc_overlap(row, ctx):
 
 
 # ---------------------------------------------------------------------------
-# The single, authoritative list of PO-line rules. (Previously this was
-# defined three times in this module; the last definition silently dropped
-# rule 19 from every result set. There is now exactly one definition.)
+# The single, authoritative list of PO-line rules (1-18). Rule 19 (RC
+# Overlap) is intentionally NOT in this list any more - it is an RC-level
+# check, not a PO-line check, and now lives entirely in its own list/section
+# (see build_rc_overlap_records() / run_rule_19() / --rc-json).
 # ---------------------------------------------------------------------------
 PO_LINE_RULES = [
     (1, "Release Verification (PR released before PO)", rule_01_release_verification),
@@ -718,12 +669,13 @@ PO_LINE_RULES = [
     (16, "Service PO (ZSER) uses Item Cat D + Acct Assignment K", rule_16_service_po_item_category),
     (17, "ZLRM must not use Item Cat D + Acct Assignment K", rule_17_zlrm_no_service_category),
     (18, "Multiple POs to same vendor on same day flagged", rule_18_multiple_po_same_day),
-    (19, "RC Overlap Validation", rule_19_rc_overlap),
+    # (19, ...) REMOVED - see CHANGELOG. RC Overlap is now its own section.
 ]
 
 
 # ---------------------------------------------------------------------------
 # Rule 19 - Rate Contract overlap (operates on POAUDITRC, not POAUDIT)
+# Still used for the "Rule 19 - RC Overlap" sheet in the human-facing xlsx.
 # ---------------------------------------------------------------------------
 def run_rule_19(rc_rows):
     results = []
@@ -764,6 +716,82 @@ def run_rule_19(rc_rows):
 
 
 # ---------------------------------------------------------------------------
+# NEW: which purchasing groups' PO lines actually reference each RC.
+#
+# RC master data (POAUDITRC) has no purchasing-group column at all - only
+# POAUDIT (the PO line extract) does. So "which buyers/purchasing groups
+# care about this RC" has to be derived by scanning PO lines and noting,
+# for every (vendor, material, RC no.) combo referenced there, which
+# purchasing group that PO line belongs to.
+# ---------------------------------------------------------------------------
+def build_rc_purchase_groups(po_rows):
+    groups = defaultdict(set)
+    for row in po_rows:
+        rc_no = s(row, "RC no.")
+        if not rc_no:
+            continue
+        vendor = s(row, "Vendor Code")
+        material = s(row, "Material Code")
+        purchase_group = s(row, "Purchase Group")
+        if purchase_group:
+            groups[(vendor, material, rc_no)].add(purchase_group)
+    return groups
+
+
+# ---------------------------------------------------------------------------
+# NEW: RC Overlap records for the standalone RC Overlap DB table / section.
+# One record per (vendor, RC material code, RC number) - matches the
+# RcOverlapResult Prisma model, including the derived `purchaseGroups` list
+# used to scope a Buyer's access. Feed the output into:
+#     node addrc.js <this_file>.json
+# ---------------------------------------------------------------------------
+def build_rc_overlap_records(rc_rows, po_rows):
+    rc_purchase_groups = build_rc_purchase_groups(po_rows)
+
+    records = []
+    by_vendor_material = defaultdict(list)
+    for r in rc_rows:
+        vendor = s(r, "Vendor Code")
+        material = s(r, "RC Material Code")
+        valid_from = parse_sap_date(s(r, "RC valid from"))
+        valid_to = parse_sap_date(s(r, "RC valid to"))
+        rc_no = s(r, "RC number")
+        by_vendor_material[(vendor, material)].append(
+            {"rc_no": rc_no, "from": valid_from, "to": valid_to}
+        )
+
+    for (vendor, material), rcs in by_vendor_material.items():
+        for i, rc_a in enumerate(rcs):
+            if not rc_a["rc_no"]:
+                continue
+            overlaps = []
+            for j, rc_b in enumerate(rcs):
+                if i == j or rc_a["rc_no"] == rc_b["rc_no"]:
+                    continue
+                if not rc_a["from"] or not rc_a["to"] or not rc_b["from"] or not rc_b["to"]:
+                    continue
+                if rc_a["from"] <= rc_b["to"] and rc_b["from"] <= rc_a["to"]:
+                    overlaps.append(rc_b["rc_no"])
+
+            purchase_groups = sorted(
+                rc_purchase_groups.get((vendor, material, rc_a["rc_no"]), set())
+            )
+
+            records.append({
+                "vendorCode": vendor,
+                "rcMaterialCode": material,
+                "rcNumber": rc_a["rc_no"],
+                "validFrom": rc_a["from"].strftime("%Y-%m-%d") if rc_a["from"] else None,
+                "validTo": rc_a["to"].strftime("%Y-%m-%d") if rc_a["to"] else None,
+                "status": NOT_VERIFIED if overlaps else VERIFIED,
+                "overlappingRcs": overlaps,
+                "remark": f"Overlaps with RC(s): {overlaps}" if overlaps else "No overlapping RC validity found",
+                "purchaseGroups": purchase_groups,
+            })
+    return records
+
+
+# ---------------------------------------------------------------------------
 # Build context (grouping / lookups needed by multiple rules)
 # ---------------------------------------------------------------------------
 def build_context(po_rows, cnd_by_po, rc_rows):
@@ -773,7 +801,6 @@ def build_context(po_rows, cnd_by_po, rc_rows):
     pr_cumulative_po_qty = defaultdict(float)
     rc_overlaps = {}
 
-    # Pre-calculate RC overlaps for rule 19
     by_vendor_material = defaultdict(list)
     for r in rc_rows:
         vendor = s(r, "Vendor Code")
@@ -841,10 +868,9 @@ def build_addpo_records(po_rows, ctx):
     expects (same field names as prisma/schema.prisma's AuditResult model).
     Feed the output straight into: node addpo.js <this_file>.json
 
-    Now also emits `po_line_item` (the raw PO line-item number, e.g. "10",
-    "20") as its own field, in addition to `po_material_number`
-    ("{po_number}-{line_item}"), so the frontend can display a clean,
-    disambiguating column instead of parsing the combined key itself.
+    `results` now only contains rules 1-18 (see CHANGELOG) - RC Overlap
+    (rule 19) is emitted separately by build_rc_overlap_records() /
+    --rc-json, for `node addrc.js <file>.json`.
     """
     records = []
     for row in po_rows:
@@ -869,7 +895,6 @@ def build_addpo_records(po_rows, ctx):
             "po_material_number": f"{po_number}-{line_item}",
             "po_type": s(row, "PO Type"),
             "po_status": po_status,
-            # Per the spec: "Hold PO Due Date = PO date + 30 days"
             "hold_due_date": (po_created_date + timedelta(days=30)).strftime("%Y-%m-%d") if (po_status == "H" and po_created_date) else None,
             "purchase_req": s(row, "Purchase Req"),
             "vendor_code": s(row, "Vendor Code"),
@@ -889,9 +914,6 @@ def build_addpo_records(po_rows, ctx):
             "po_created_date": po_created_date.strftime("%Y-%m-%d") if po_created_date else None,
             "po_delivery_date": po_delivery_date.strftime("%Y-%m-%d") if po_delivery_date else None,
             "pr_create_date": pr_create_date.strftime("%Y-%m-%d") if pr_create_date else None,
-            # ASSUMPTION: the SAP extract has no fiscal-year column; using the
-            # PO created year as a stand-in. Confirm with client whether SAP's
-            # fiscal year (which may not equal calendar year) should be used instead.
             "fiscalYear": str(po_created_date.year) if po_created_date else None,
             "auditedOn": datetime.now().strftime("%Y-%m-%d"),
             "results": results,
@@ -903,7 +925,7 @@ def build_addpo_records(po_rows, ctx):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None):
+def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None, rc_json_path=None):
     po_rows, cnd_rows, rc_rows, cnd_by_po = load_all(poaudit_path, cnd_path, rc_path)
 
     ctx = build_context(po_rows, cnd_by_po, rc_rows)
@@ -936,14 +958,20 @@ def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None):
         rule19_df.to_excel(writer, sheet_name="Rule 19 - RC Overlap", index=False)
         assumptions_df.to_excel(writer, sheet_name="Assumptions", index=False)
 
-    print(f"Wrote {len(df)} PO-line results and {len(rule19_df)} RC-overlap rows to {out_path}")
+    print(f"Wrote {len(df)} PO-line results (rules 1-18) and {len(rule19_df)} RC-overlap rows to {out_path}")
     print(f"{len(assumptions_df)} assumption(s) logged - see 'Assumptions' sheet. These MUST be confirmed with the client.")
 
     if addpo_json_path:
         records = build_addpo_records(po_rows, ctx)
         with open(addpo_json_path, "w") as f:
             json.dump(records, f, indent=2)
-        print(f"Wrote {len(records)} records to {addpo_json_path} - insert with: node addpo.js {addpo_json_path}")
+        print(f"Wrote {len(records)} PO-line records (rules 1-18 only) to {addpo_json_path} - insert with: node addpo.js {addpo_json_path}")
+
+    if rc_json_path:
+        rc_records = build_rc_overlap_records(rc_rows, po_rows)
+        with open(rc_json_path, "w") as f:
+            json.dump(rc_records, f, indent=2)
+        print(f"Wrote {len(rc_records)} RC Overlap records (with derived purchaseGroups) to {rc_json_path} - insert with: node addrc.js {rc_json_path}")
 
 
 if __name__ == "__main__":
@@ -952,6 +980,7 @@ if __name__ == "__main__":
     parser.add_argument("--cnd", required=True, help="Path to POAUDITCND (.csv or .xlsx)")
     parser.add_argument("--rc", required=True, help="Path to POAUDITRC (.csv or .xlsx)")
     parser.add_argument("--out", default="audit_results.xlsx", help="Output xlsx path (for humans/client review)")
-    parser.add_argument("--addpo-json", default=None, help="Also write a JSON file shaped for `node addpo.js <file>` (DB insert)")
+    parser.add_argument("--addpo-json", default=None, help="JSON for `node addpo.js <file>` (rules 1-18, audit_results table)")
+    parser.add_argument("--rc-json", default=None, help="JSON for `node addrc.js <file>` (RC Overlap, rc_overlap_results table)")
     args = parser.parse_args()
-    run(args.poaudit, args.cnd, args.rc, args.out, args.addpo_json)
+    run(args.poaudit, args.cnd, args.rc, args.out, args.addpo_json, args.rc_json)

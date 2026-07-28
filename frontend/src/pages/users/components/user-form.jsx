@@ -40,6 +40,7 @@ import {
 
 import { get, post } from "utils/axiosApi";
 
+// Validation schema updated for confirm password logic
 const validationSchema = Yup.object().shape({
   firstName: Yup.string().max(255).required("First Name is required"),
   lastName: Yup.string().max(255).required("Last Name is required"),
@@ -49,12 +50,15 @@ const validationSchema = Yup.object().shape({
     .required("Email is required"),
   roleName: Yup.string().required("Role is required"),
   formUsername: Yup.string().required("Username is required"),
-  password: Yup.string(),
-  // NEW: Default to false
+  password: Yup.string().min(6, "Password must be at least 6 characters"),
+  confirmPassword: Yup.string().oneOf(
+    [Yup.ref("password"), null],
+    "Passwords must match"
+  ),
   canViewDashboard: Yup.boolean().default(false), 
 });
 
-// ================================|| REGISTER ||================================ //
+// ================================|| REGISTER / BUTTONS ||================================ //
 
 export const CreateButton = ({ fetchUsers }) => {
   const [modelOpen, setModelOpen] = useState(false);
@@ -137,6 +141,8 @@ export const UpdateButton = ({ fetchUsers, data }) => {
   );
 };
 
+// ================================|| USER FORM ||================================ //
+
 export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
   const [roles, setRoles] = useState([]);
   const [selectedRole, setSelectedRole] = useState(null);
@@ -154,21 +160,21 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
     setError,
     setValue,
     watch,
-    // NEW: Destructured isValid from formState
     formState: { errors, isSubmitting, isValid }, 
   } = useForm({
     resolver: yupResolver(validationSchema),
-    mode: "onChange", // NEW: Triggers validation as the user types
+    mode: "onChange", 
     defaultValues: {
       firstName: "",
       lastName: "",
       email: "",
       roleName: "",
       password: "",
+      confirmPassword: "", // Added confirm password field
       allowedAuditors: [],
       allowedModules: [],
       formUsername: data?.username || "",
-      canViewDashboard: data?.canViewDashboard ?? false, // NEW: Default to false if not set
+      canViewDashboard: data?.canViewDashboard ?? false,
       ...data,
     },
   });
@@ -184,7 +190,7 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
     const fetchRoles = async () => {
       try {
         const response = await get("/getRoles");
-        const roleList = response?.data?.filter((role) => !role.isAdmin) || [];
+        const roleList = response?.data || response || [];
 
         setRoles(roleList);
 
@@ -202,16 +208,25 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
   useEffect(() => {
     const matchedRole = roles.find((role) => role.name === watchedRole);
     setSelectedRole(matchedRole || null);
-  }, [watchedRole]);
+  }, [watchedRole, roles]);
   
   useEffect(() => {
     if (!data?.allowedAuditors?.length) return;
-    const allowedAuditors = [...(data?.allowedAuditors || [])];
-    allowedAuditors.shift();
-    setAllowedAuditors(allowedAuditors);
+    const allowedAuditorsCopy = [...(data?.allowedAuditors || [])];
+    allowedAuditorsCopy.shift();
+    setAllowedAuditors(allowedAuditorsCopy);
   }, [data]);
 
+  // Derived boolean to check if user role should see/set extra configs
+  const requiresModuleConfig = selectedRole?.isBuyer || selectedRole?.isProcurementManager;
+
   const onSubmit = async (values) => {
+    // Manually enforce password creation for new users
+    if (type === "create" && !values.password) {
+      setError("password", { type: "manual", message: "Password is required" });
+      return;
+    }
+
     try {
       const payload = {
         ...values,
@@ -220,11 +235,20 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
           `${values.firstName.trim()} ${values.lastName.trim()}`,
           ...allowedAuditors,
         ],
-        allowedModules: selectedRole?.isAuditor ? allowedModules : null,
+        allowedModules: requiresModuleConfig ? allowedModules : null,
       };
-      if (type === "update") payload._id = data._id;
-      //remove password if updating user
-      if (type === "update") delete payload.password;
+
+      // Strip confirmPassword before sending to the backend
+      delete payload.confirmPassword;
+
+      if (type === "update") {
+        payload.id = data.id || data._id; 
+        // If password field is empty during update, remove it so we don't overwrite with a blank password
+        if (!payload.password) {
+          delete payload.password;
+        }
+      }
+      
       if (values.formUsername) delete payload.formUsername;
 
       const path = type === "update" ? "/editUser" : "/signup";
@@ -245,8 +269,9 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
       setError("root", { type: "manual", message: error });
     }
   };
+
   const handleModuleChange = (module) => {
-    if (selectedRole?.isAuditor) {
+    if (requiresModuleConfig) {
       setValue(
         "allowedModules",
         (allowedModules || []).includes(module)
@@ -283,11 +308,12 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
                     <Autocomplete
                       disablePortal
                       options={roles}
-                      getOptionLabel={(option) => option.name}
+                      getOptionLabel={(option) => option.name || ""}
                       value={roles.find((r) => r.name === field.value) || null}
                       onChange={(_, value) => field.onChange(value?.name || "")}
                       isOptionEqualToValue={(option, value) =>
-                        option._id === value._id
+                        (option.id && option.id === value.id) || 
+                        (option._id && option._id === value._id)
                       }
                       renderInput={(params) => (
                         <TextField
@@ -401,6 +427,55 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
               />
             </Grid>
 
+            {/* PASSWORD FIELDS */}
+            <Grid item xs={12} sm={6}>
+              <InputLabel htmlFor="password">
+                {type === "update" ? "New Password" : "Password *"}
+              </InputLabel>
+              <Controller
+                name="password"
+                control={control}
+                render={({ field }) => (
+                  <TextField
+                    {...field}
+                    placeholder={type === "update" ? "Leave blank to keep current" : "Enter password"}
+                    fullWidth
+                    type="password"
+                    error={!!errors.password}
+                    autoComplete="new-password"
+                    inputProps={{
+                      autoComplete: "new-password",
+                      form: { autoComplete: "off" },
+                    }}
+                    helperText={errors.password?.message}
+                  />
+                )}
+              />
+            </Grid>
+
+            <Grid item xs={12} sm={6}>
+              <InputLabel htmlFor="confirmPassword">Confirm Password</InputLabel>
+              <Controller
+                name="confirmPassword"
+                control={control}
+                render={({ field }) => (
+                  <TextField
+                    {...field}
+                    placeholder="Confirm password"
+                    fullWidth
+                    type="password"
+                    error={!!errors.confirmPassword}
+                    autoComplete="new-password"
+                    inputProps={{
+                      autoComplete: "new-password",
+                      form: { autoComplete: "off" },
+                    }}
+                    helperText={errors.confirmPassword?.message}
+                  />
+                )}
+              />
+            </Grid>
+
             {/* DASHBOARD PERMISSION TOGGLE */}
             <Grid item xs={12}>
               <FormGroup sx={{ mt: 1, p: 2, border: "1px solid #e0e0e0", borderRadius: 1 }}>
@@ -431,7 +506,7 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
             </Grid>
 
             {/* Extra Table for Allowed Auditors */}
-            {selectedRole?.isAuditor && (
+            {requiresModuleConfig && (
               <>
                 <Grid item xs={12}>
                   <Typography variant="h5">Allowed Auditors</Typography>
@@ -537,7 +612,7 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
                 </Grid>
               </>
             )}
-            {selectedRole?.isAuditor && (
+            {requiresModuleConfig && (
               <Grid item xs={12}>
                 <Typography variant="h5">Allowed Modules</Typography>
                 <Box>
@@ -587,7 +662,7 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
         <Button
           disableElevation
           form="user-form"
-          disabled={isSubmitting || !isValid} // NEW: Disabled until valid
+          disabled={isSubmitting || !isValid} 
           fullWidth
           type="submit"
           sx={{ mx: 2 }}

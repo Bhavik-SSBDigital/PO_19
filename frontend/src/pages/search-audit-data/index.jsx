@@ -10,8 +10,6 @@ import {
   TextField,
   Divider,
   CircularProgress,
-  MenuItem,
-  Select,
   Card,
   InputLabel,
   Table,
@@ -42,11 +40,6 @@ import { ViewDocumentProvider } from "./contexts";
 import AuditDetails from "./components/audit-details";
 import AuditResults from "./components/results-table";
 import AuditResultReview from "./components/audit-result-review";
-
-const getLastFiveYears = () => {
-  const currentYear = new Date().getFullYear();
-  return Array.from({ length: 5 }, (_, index) => currentYear - index);
-};
 
 // Shared "PO summary" strip — shows the same enrichment fields (vendor name,
 // GSTIN, plant, PO type, purchasing group, payment term, etc.) that the
@@ -125,7 +118,6 @@ const SearchAuditData = () => {
   const [searchInputs, setSearchInputs] = useState({
     documentNumber: "",
     paymentDocumentNumber: "",
-    fiscalYear: "",
     grrNumber: "",
     PONumber: "",
     poLineItem: "",
@@ -138,7 +130,6 @@ const SearchAuditData = () => {
     const {
       documentNumber,
       paymentDocumentNumber,
-      fiscalYear,
       grrNumber,
       PONumber,
       poLineItem,
@@ -155,10 +146,6 @@ const SearchAuditData = () => {
       toast.info("Provide details to search");
       return;
     }
-    if (documentNumber?.trim() && !fiscalYear) {
-      toast.info("Please select year");
-      return;
-    }
 
     setSearchLoading(true);
     const endpoint = {
@@ -172,7 +159,6 @@ const SearchAuditData = () => {
     if (dataViewType === "PO") {
       payload = {
         po_number: PONumber?.trim(),
-        fiscalYear,
         po_line_item: poLineItem?.trim(),
         poMaterialNumber: poMaterialNumber?.trim(),
       };
@@ -180,13 +166,11 @@ const SearchAuditData = () => {
       payload = {
         documentNumber: paymentDocumentNumber?.trim() || documentNumber?.trim(),
         paymentDocumentNumber: paymentDocumentNumber?.trim() || documentNumber?.trim(),
-        fiscalYear,
       };
     } else {
       payload = {
         search_key: grrNumber ? "GRR_NO" : "Document_No",
         search_value: grrNumber?.trim() || documentNumber?.trim(),
-        fiscalYear,
       };
     }
 
@@ -216,7 +200,6 @@ const SearchAuditData = () => {
 
   useEffect(() => {
     const documentNo = searchParams.get("documentNo")?.trim();
-    const year = searchParams.get("year")?.trim();
     const PONoParams = searchParams.get("PONo")?.trim();
     // Line item passed from other tables/pages (e.g. the Executive Dashboard's
     // PO-Wise Exceptions table) so the search page arrives fully pre-filled.
@@ -229,7 +212,6 @@ const SearchAuditData = () => {
     if (documentNo || poMaterialNo || PONoParams || poLineItemParams || paymentDocumentNumber) {
       const inputs = {
         documentNumber: documentNo || "",
-        fiscalYear: year || "",
         PONumber: PONoParams || "",
         poLineItem: poLineItemParams || "",
         poMaterialNumber: poMaterialNo || "",
@@ -318,7 +300,7 @@ const SearchAuditData = () => {
             <Stack alignItems="center" gap={1} sx={{ mt: "15px" }}>
               {dataViewType === "PJV" && (
                 <Box sx={{ maxWidth: "400px", width: "100%" }}>
-                  <InputLabel fullWidth>Document Number :</InputLabel>
+                  <InputLabel sx={{ width: "100%" }}>Document Number :</InputLabel>
                   <TextField
                     disabled={searchLoading}
                     value={searchInputs.documentNumber}
@@ -333,31 +315,6 @@ const SearchAuditData = () => {
                       });
                     }}
                   />
-                  <InputLabel sx={{ width: "100%", mt: "10px" }}>
-                    Fiscal Year :
-                  </InputLabel>
-                  <Select
-                    value={searchInputs.fiscalYear}
-                    disabled={searchLoading}
-                    name="fiscalYear"
-                    placeholder="Select Fiscal Year"
-                    fullWidth
-                    displayEmpty
-                    onChange={(e) => {
-                      setSearchInputs({
-                        ...searchInputs,
-                        fiscalYear: e.target.value,
-                        grrNumber: "",
-                      });
-                    }}
-                  >
-                    <MenuItem value="">Select Fiscal Year</MenuItem>
-                    {getLastFiveYears().map((year) => (
-                      <MenuItem key={year} value={year}>
-                        {year}
-                      </MenuItem>
-                    ))}
-                  </Select>
                   <Divider sx={{ width: "100%", my: "15px" }}>OR</Divider>
                   <InputLabel name="GRR_NO" fullWidth>
                     GRR Number :
@@ -373,7 +330,6 @@ const SearchAuditData = () => {
                         ...searchInputs,
                         grrNumber: e.target.value,
                         documentNumber: "",
-                        fiscalYear: "",
                       });
                     }}
                   />
@@ -381,7 +337,7 @@ const SearchAuditData = () => {
               )}
               {dataViewType === "NONPO" && (
                 <Box sx={{ maxWidth: "400px", width: "100%" }}>
-                  <InputLabel fullWidth>Document Number :</InputLabel>
+                  <InputLabel sx={{ width: "100%" }}>Document Number :</InputLabel>
                   <TextField
                     disabled={searchLoading}
                     value={searchInputs.documentNumber}
@@ -396,36 +352,11 @@ const SearchAuditData = () => {
                       });
                     }}
                   />
-                  <InputLabel sx={{ width: "100%", mt: "10px" }}>
-                    Fiscal Year :
-                  </InputLabel>
-                  <Select
-                    value={searchInputs.fiscalYear}
-                    disabled={searchLoading}
-                    name="fiscalYear"
-                    placeholder="Select Fiscal Year"
-                    fullWidth
-                    displayEmpty
-                    onChange={(e) => {
-                      setSearchInputs({
-                        ...searchInputs,
-                        fiscalYear: e.target.value,
-                        grrNumber: "",
-                      });
-                    }}
-                  >
-                    <MenuItem value="">Select Fiscal Year</MenuItem>
-                    {getLastFiveYears().map((year) => (
-                      <MenuItem key={year} value={year}>
-                        {year}
-                      </MenuItem>
-                    ))}
-                  </Select>
                 </Box>
               )}
               {dataViewType === "PO" && (
                 <Box sx={{ maxWidth: "400px", width: "100%" }}>
-                  <InputLabel fullWidth>PO Number :</InputLabel>
+                  <InputLabel sx={{ width: "100%" }}>PO Number :</InputLabel>
                   <TextField
                     disabled={searchLoading}
                     placeholder="Enter PO Number"
@@ -469,35 +400,11 @@ const SearchAuditData = () => {
                       });
                     }}
                   />
-                  <InputLabel sx={{ width: "100%", mt: "10px" }}>
-                    Fiscal Year :
-                  </InputLabel>
-                  <Select
-                    value={searchInputs.fiscalYear}
-                    disabled={searchLoading}
-                    name="fiscalYear"
-                    placeholder="Select Fiscal Year"
-                    fullWidth
-                    displayEmpty
-                    onChange={(e) => {
-                      setSearchInputs({
-                        ...searchInputs,
-                        fiscalYear: e.target.value,
-                      });
-                    }}
-                  >
-                    <MenuItem value="">Select Fiscal Year</MenuItem>
-                    {getLastFiveYears().map((year) => (
-                      <MenuItem key={year} value={year}>
-                        {year}
-                      </MenuItem>
-                    ))}
-                  </Select>
                 </Box>
               )}
               {dataViewType === "BPV" && (
                 <Box sx={{ maxWidth: "400px", width: "100%" }}>
-                  <InputLabel fullWidth>Payment Document Number :</InputLabel>
+                  <InputLabel sx={{ width: "100%" }}>Payment Document Number :</InputLabel>
                   <TextField
                     disabled={searchLoading}
                     value={searchInputs.paymentDocumentNumber}
@@ -511,31 +418,6 @@ const SearchAuditData = () => {
                       });
                     }}
                   />
-                  <InputLabel sx={{ width: "100%", mt: "10px" }}>
-                    Fiscal Year :
-                  </InputLabel>
-                  <Select
-                    value={searchInputs.fiscalYear}
-                    disabled={searchLoading}
-                    name="fiscalYear"
-                    placeholder="Select Fiscal Year"
-                    fullWidth
-                    displayEmpty
-                    onChange={(e) => {
-                      setSearchInputs({
-                        ...searchInputs,
-                        fiscalYear: e.target.value,
-                        grrNumber: "",
-                      });
-                    }}
-                  >
-                    <MenuItem value="">Select Fiscal Year</MenuItem>
-                    {getLastFiveYears().map((year) => (
-                      <MenuItem key={year} value={year}>
-                        {year}
-                      </MenuItem>
-                    ))}
-                  </Select>
                 </Box>
               )}
               <Button

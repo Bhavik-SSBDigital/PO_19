@@ -69,7 +69,7 @@ const Header = ({ open, handleDrawerToggle }) => {
     sx: {
       borderBottom: `1px solid ${theme.palette.divider}`,
       boxShadow: "rgba(0, 0, 0, 0.15) 1.95px 1.95px 2.6px",
-      // boxShadow: theme.customShadows.z1
+      // Optional: You can swap the above shadow for theme.customShadows.z1 if it's defined in your theme
     },
   };
 

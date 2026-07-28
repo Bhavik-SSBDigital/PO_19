@@ -232,6 +232,34 @@ export const get_po_audit_results = async (req, res) => {
   }
 };
 
+// Shared enrichment applied to every single-result response, so the shape
+// returned here always matches what PoDetailsPreviewDialog's field getters
+// expect (vendorName, vendorGstin, plantName, poTypeName,
+// purchaseGroupName, paymentTermDescription) — the SAME fields already
+// produced by getPoWiseExceptions / getExecutiveDrilldown, and previously
+// only produced by the "multipleMatches" branch of THIS controller.
+//
+// Root cause this fixes: the exact-match and single-broad-match paths were
+// returning the raw Prisma row as-is. Any field that only exists in
+// "resolved from master data" form (e.g. vendor name resolved from
+// vendor_code when nameOfVendor is null) was silently missing — the
+// frontend's `d.vendorName || d.nameOfVendor` fallback has nothing to fall
+// back TO if neither the enriched nor the raw field is on the payload.
+function enrichPoResult(result) {
+  if (!result) return result;
+  const vendor = getVendorInfo(result.vendor_code);
+  return {
+    ...result,
+    vendorName:
+      result.nameOfVendor || vendor?.name || getVendorName(result.vendor_code),
+    vendorGstin: result.GSTInOfVendor || vendor?.gstin || "",
+    plantName: getPlantName(result.plant),
+    poTypeName: getPoTypeName(result.po_type),
+    purchaseGroupName: getPurchaseGroupName(result.purchase_group),
+    paymentTermDescription: getPaymentTermDescription(result.payment_term),
+  };
+}
+
 export const get_po_audit_result = async (req, res) => {
   try {
     await ensureSeverityLoaded();
@@ -259,7 +287,10 @@ export const get_po_audit_result = async (req, res) => {
         where,
         include: RESULT_INCLUDE,
       });
-      if (result) return res.status(200).json(withExceptionPoints(result));
+      if (result)
+        return res
+          .status(200)
+          .json(withExceptionPoints(enrichPoResult(result)));
 
       if (po_line_item)
         return res.status(404).json({
@@ -280,7 +311,9 @@ export const get_po_audit_result = async (req, res) => {
     if (matches.length === 0)
       return res.status(404).json({ message: "PO audit result not found" });
     if (matches.length === 1)
-      return res.status(200).json(withExceptionPoints(matches[0]));
+      return res
+        .status(200)
+        .json(withExceptionPoints(enrichPoResult(matches[0])));
 
     // Multiple Matches found - Return array for Frontend Popup Modal
     return res.status(200).json({
