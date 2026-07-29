@@ -301,7 +301,7 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage }) => {
             {Array.isArray(details.results) && details.results.length > 0 && (
               <Box sx={{ mb: 3 }}>
                 <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
-                  Audit Check Results
+                  Check PO Results
                 </Typography>
                 <TableContainer component={Paper} variant="outlined">
                   <Table size="small">

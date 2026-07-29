@@ -62,8 +62,9 @@ const ROW_SELECT = {
   tax_code: true,
   GSTInOfVendor: true,
   // This is what lets us tell CLOSED vs OPEN per line item, and roll that
-  // up into a per-PO "20/40 closed" progress figure below. See rowIsClosed
-  // above for why remarksLocked (not verificationWorkflow) is the source.
+  // up into a per-PO "3/8 closed" progress figure + line-item breakdown
+  // below. See rowIsClosed above for why remarksLocked (not
+  // verificationWorkflow) is the source.
   remarksLocked: true,
   remarksLockedBy: true,
   remarksLockedAt: true,
@@ -135,9 +136,13 @@ function newBucket() {
     exceptionLines: 0, // lines with at least one notVerified point
     verifiedPoints: 0, // point-level tally, across every line, for compliance %
     notVerifiedPoints: 0,
-    closedLines: 0, // lines whose VerificationWorkflow.currentStatus === "completed"
-    openLines: 0, // every other line (unassigned/assigned/under_review/head_review)
+    closedLines: 0, // lines whose remarksLocked === true
+    openLines: 0, // every other line (remarksLocked !== true)
     lineItems: new Set(),
+    // Per-line-item breakdown, so the frontend's "click PO -> see which
+    // line item is closed and which isn't" dialog doesn't need a second
+    // round-trip. One entry per AuditResult row folded into this PO.
+    lineItemDetails: [],
     prs: new Set(),
     taxCodes: new Set(),
     gstins: new Set(),
@@ -159,13 +164,25 @@ function compliancePctOf(b) {
 }
 
 // Distinct from compliancePct (which is point-level "verified vs
-// notVerified" across audit checks). This is the review-workflow progress —
-// how many of the PO's line items have been carried to "completed" — which
-// is what the frontend's Open/Closed tabs and progress bar are driven by.
+// notVerified" across audit checks). This is the review/closure progress —
+// how many of the PO's line items have remarksLocked === true — which is
+// what the frontend's three tabs and progress bar are driven by.
 function closedPctOf(b) {
   return b.totalLines > 0
     ? Number(((b.closedLines / b.totalLines) * 100).toFixed(1))
     : null;
+}
+
+// Three-way status for a PO, based on how many of its line items are
+// closed (remarksLocked === true) out of its total line count:
+//   - "pending"     : closedLines === 0        -> nothing started yet
+//   - "in_progress" : 0 < closedLines < total   -> e.g. 3/8 closed
+//   - "reviewed"    : closedLines === total     -> fully closed
+// A PO with zero lines (shouldn't normally happen) falls back to "pending".
+function reviewStatusOf(b) {
+  if (b.totalLines === 0 || b.closedLines === 0) return "pending";
+  if (b.closedLines === b.totalLines) return "reviewed";
+  return "in_progress";
 }
 
 /**
@@ -179,16 +196,22 @@ function closedPctOf(b) {
  * with no such filter, every PO in scope is returned regardless of its
  * compliance status.
  *
- * CLOSED/OPEN (new):
- * Each returned PO also carries closedLineCount/openLineCount/totalLineCount
- * and isFullyClosed, derived from each line item's `remarksLocked` flag
- * (per-line-item, not per-PO — see rowIsClosed above). A PO is only
- * "Closed" once ALL of its line items have remarksLocked === true; a PO
- * with even one line item still unlocked is "Open", and its
- * closedLineCount/totalLineCount is the "20/40 closed" progress figure the
- * frontend renders as a progress bar. The frontend does this open/closed
- * split client-side (single fetch), not this endpoint — so no new query
- * param is needed here for that.
+ * REVIEW STATUS (pending / in_progress / reviewed):
+ * Each returned PO carries closedLineCount/openLineCount/totalLineCount,
+ * closedPct, and reviewStatus, derived from each line item's `remarksLocked`
+ * flag (per-line-item, not per-PO — see rowIsClosed above). See
+ * reviewStatusOf for the 3-way split. `isFullyClosed` is kept as a plain
+ * boolean alias (`reviewStatus === "reviewed"`) for anything still reading
+ * the older 2-state field.
+ *
+ * Each PO also carries `lineItemDetails`: an array with one entry per line
+ * item (lineItem, closed, hasException, remarksLockedAt, netValue, ...) so
+ * the frontend can show "which line item is closed / which isn't" without a
+ * second request when a PO row is clicked.
+ *
+ * The frontend does the pending/in_progress/reviewed split client-side
+ * (single fetch), not this endpoint — so no new query param is needed here
+ * for that.
  */
 export const getPoWiseExceptions = async (req, res) => {
   try {
@@ -249,9 +272,12 @@ export const getPoWiseExceptions = async (req, res) => {
       byPo[poKey] = byPo[poKey] || newBucket();
       const b = byPo[poKey];
 
+      const closed = rowIsClosed(row);
+      const hasException = rowHasException(row);
+
       b.totalLines += 1;
-      if (rowHasException(row)) b.exceptionLines += 1;
-      if (rowIsClosed(row)) b.closedLines += 1;
+      if (hasException) b.exceptionLines += 1;
+      if (closed) b.closedLines += 1;
       else b.openLines += 1;
 
       for (const p of row.results || []) {
@@ -262,6 +288,17 @@ export const getPoWiseExceptions = async (req, res) => {
 
       const li = lineItemOf(row);
       if (li) b.lineItems.add(li);
+
+      b.lineItemDetails.push({
+        lineItem: li || row.po_material_number || "—",
+        poLineItem: row.po_line_item || null,
+        materialCode: row.material_code || null,
+        closed,
+        hasException,
+        remarksLockedAt: row.remarksLockedAt || null,
+        netValue: parseNum(row.net_value),
+      });
+
       if (row.purchase_req) b.prs.add(row.purchase_req);
       if (row.tax_code) b.taxCodes.add(row.tax_code);
       const gstin = row.GSTInOfVendor || vendor?.gstin || "";
@@ -298,7 +335,13 @@ export const getPoWiseExceptions = async (req, res) => {
         closedLineCount: v.closedLines,
         openLineCount: v.openLines,
         closedPct: closedPctOf(v),
-        isFullyClosed: v.totalLines > 0 && v.closedLines === v.totalLines,
+        reviewStatus: reviewStatusOf(v), // "pending" | "in_progress" | "reviewed"
+        isFullyClosed: v.totalLines > 0 && v.closedLines === v.totalLines, // back-compat alias
+        lineItemDetails: [...v.lineItemDetails].sort((a, c) =>
+          String(a.lineItem).localeCompare(String(c.lineItem), undefined, {
+            numeric: true,
+          }),
+        ),
         distinctLineItems: v.lineItems.size,
         lineItems: [...v.lineItems].sort(),
         purchase_req: [...v.prs].join(", "),

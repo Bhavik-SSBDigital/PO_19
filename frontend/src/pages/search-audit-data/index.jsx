@@ -262,14 +262,14 @@ const SearchAuditData = () => {
   return (
     <ViewDocumentProvider>
       <Box sx={{ maxWidth: "xl", mx: "auto", p: 2 }}>
-        <Button
+        {/* <Button
           onClick={() => navigate(-1)}
           size="small"
           sx={{ mb: 2, fontWeight: 700 }}
           startIcon={<KeyboardBackspaceRoundedIcon />}
         >
           Back
-        </Button>
+        </Button> */}
         <Typography variant="h4" sx={{ fontWeight: 800, mb: 3 }}>
           PO Data, Report, and Results
         </Typography>
@@ -295,7 +295,7 @@ const SearchAuditData = () => {
                 fontWeight: 700,
               }}
             >
-              Search Audit
+              Search PO
             </Typography>
             <Stack alignItems="center" gap={1} sx={{ mt: "15px" }}>
               {dataViewType === "PJV" && (
@@ -735,7 +735,7 @@ const SearchAuditData = () => {
                             handleSearch(exactPayload);
                           }}
                         >
-                          View Audit
+                          View PO
                         </Button>
                       </TableCell>
                     </TableRow>

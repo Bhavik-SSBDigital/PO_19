@@ -206,7 +206,7 @@ function richBucketToJson(key, bucket) {
 }
 
 // Compliance % helper shared by every "-wise compliance" chart below
-// (control-wise, PO-type-wise, purchasing-group-wise, and now plant-wise,
+// (control-wise, PO-type-wise, purchasing-group-wise, plant-wise,
 // vendor-wise, PO-number-wise). na/manual points are excluded from the
 // denominator, same as every other compliance chart already on this
 // dashboard, so all of these charts stay apples-to-apples comparable.
@@ -256,12 +256,12 @@ export const getExecutiveSummary = async (req, res) => {
     const byPoNumber = {};
     const monthlyExceptions = {};
 
-    // NEW: verified/notVerified counters keyed by plant / vendor / PO
-    // number, for the new "-wise Compliance" charts. Unlike byPlant/
-    // byVendor/byPoNumber above (which only ever fill on an exception, for
-    // the exception-count charts), these accumulate on EVERY point so a
-    // proper verified-vs-notVerified % can be computed per plant/vendor/PO,
-    // exactly like controlWise / byPurchaseGroup / byPoType already do.
+    // verified/notVerified counters keyed by plant / vendor / PO number, for
+    // the "-wise Compliance" charts. Unlike byPlant/byVendor/byPoNumber
+    // above (which only ever fill on an exception, for the exception-count
+    // charts), these accumulate on EVERY point so a proper
+    // verified-vs-notVerified % can be computed per plant/vendor/PO, exactly
+    // like controlWise / byPurchaseGroup / byPoType already do.
     const byPlantCompliance = {};
     const byVendorCompliance = {};
     const byPoNumberCompliance = {};
@@ -458,9 +458,9 @@ export const getExecutiveSummary = async (req, res) => {
         valueExposure: Number(v.valueExposure.toFixed(2)),
       }));
 
-    // NEW CHART: Plant-Wise Compliance. Returns every plant (there are
-    // relatively few), worst compliance first, so the dashboard reads
-    // top-to-bottom as "which plants need attention".
+    // Plant-Wise Compliance. Returns every plant (there are relatively
+    // few), worst compliance first, so the dashboard reads top-to-bottom
+    // as "which plants need attention".
     const plantWiseCompliance = Object.entries(byPlantCompliance)
       .map(([plant, v]) => ({
         plant,
@@ -471,9 +471,9 @@ export const getExecutiveSummary = async (req, res) => {
       }))
       .sort((a, b) => (a.compliancePct ?? 101) - (b.compliancePct ?? 101));
 
-    // NEW CHART: Vendor-Wise Compliance. Vendor cardinality can be large, so
-    // this is capped to the 15 vendors with the most not-verified lines
-    // (i.e. the vendors contributing the most compliance risk).
+    // Vendor-Wise Compliance. Vendor cardinality can be large, so this is
+    // capped to the 15 vendors with the most not-verified lines (i.e. the
+    // vendors contributing the most compliance risk).
     const vendorWiseCompliance = Object.entries(byVendorCompliance)
       .map(([vendorCode, v]) => {
         const vendor = getVendorInfo(vendorCode);
@@ -488,9 +488,9 @@ export const getExecutiveSummary = async (req, res) => {
       .sort((a, b) => b.notVerified - a.notVerified)
       .slice(0, 15);
 
-    // NEW CHART: PO-Number-Wise Compliance. Same idea — PO cardinality is
-    // the largest of the three, so capped to the 15 worst-offending POs by
-    // not-verified line count.
+    // PO-Number-Wise Compliance. Same idea — PO cardinality is the largest
+    // of the group, so capped to the 15 worst-offending POs by not-verified
+    // line count.
     const poNumberWiseCompliance = Object.entries(byPoNumberCompliance)
       .map(([poNumber, v]) => ({
         poNumber,
@@ -500,6 +500,24 @@ export const getExecutiveSummary = async (req, res) => {
       }))
       .sort((a, b) => b.notVerified - a.notVerified)
       .slice(0, 15);
+
+    // NEW CHART: Purchase Group-Wise Compliance. byPurchaseGroup was already
+    // being accumulated (it feeds the older `purchaseGroupCompliance` shape
+    // below), but it was never surfaced on the dashboard as its own panel
+    // and wasn't sorted. This now mirrors plantWiseCompliance: every
+    // purchasing group (there are relatively few, per PURCHASE_GROUPS),
+    // worst compliance first, enriched with the master-data name via
+    // getPurchaseGroupName() so the chart/CSV/drilldown all read the same
+    // human-friendly label as every other "-wise" chart on this dashboard.
+    const purchaseGroupWiseCompliance = Object.entries(byPurchaseGroup)
+      .map(([group, v]) => ({
+        purchaseGroup: group,
+        purchaseGroupName: getPurchaseGroupName(group),
+        verified: v.verified,
+        notVerified: v.notVerified,
+        compliancePct: compliancePctOf(v),
+      }))
+      .sort((a, b) => (a.compliancePct ?? 101) - (b.compliancePct ?? 101));
 
     res.status(200).json({
       filtersApplied: req.body || {},
@@ -549,6 +567,8 @@ export const getExecutiveSummary = async (req, res) => {
                 )
               : 0,
         })),
+        // Legacy/unsorted shape kept intact in case any other consumer
+        // (e.g. an older client build) still reads it directly.
         purchaseGroupCompliance: Object.entries(byPurchaseGroup).map(
           ([group, v]) => ({
             purchaseGroup: group,
@@ -571,10 +591,12 @@ export const getExecutiveSummary = async (req, res) => {
           notVerified: v.notVerified,
           compliancePct: compliancePctOf(v),
         })),
-        // NEW
         plantWiseCompliance,
         vendorWiseCompliance,
         poNumberWiseCompliance,
+        // NEW — sorted, master-data-enriched Purchase Group-Wise Compliance
+        // chart, rendered on the dashboard below Plant-Wise Compliance.
+        purchaseGroupWiseCompliance,
         monthlyExceptionTrend: Object.entries(monthlyExceptions)
           .sort((a, b) => (a[0] < b[0] ? -1 : 1))
           .map(([month, v]) => ({
@@ -716,11 +738,11 @@ export const getExecutiveDrilldown = async (req, res) => {
       switch (dimension) {
         case "plant":
           // FIX: previously this ALWAYS required rowHasException(row), so
-          // clicking the "Verified" segment of the new Plant-Wise
-          // Compliance chart (statusFilter: "verified") returned zero rows.
-          // When a statusFilter is supplied, let matchesStatusFilter below
-          // do the verified/notVerified/na/manual split instead; only fall
-          // back to "exceptions only" when no statusFilter was given, which
+          // clicking the "Verified" segment of the Plant-Wise Compliance
+          // chart (statusFilter: "verified") returned zero rows. When a
+          // statusFilter is supplied, let matchesStatusFilter below do the
+          // verified/notVerified/na/manual split instead; only fall back
+          // to "exceptions only" when no statusFilter was given, which
           // preserves the old behavior for any existing exception-only
           // callers (e.g. plantWiseExceptions).
           return (
@@ -738,6 +760,11 @@ export const getExecutiveDrilldown = async (req, res) => {
             (statusFilter ? true : rowHasException(row))
           );
         case "purchaseGroup":
+          // Same treatment as plant/vendor/poNumber above: a statusFilter
+          // (e.g. "verified" from clicking the verified segment of the new
+          // Purchase Group-Wise Compliance chart) is handled by
+          // matchesStatusFilter below, so this only needs to match the
+          // group itself.
           return (row.purchase_group || "Unassigned") === value;
         case "poType":
           return (row.po_type || "Unknown") === value;

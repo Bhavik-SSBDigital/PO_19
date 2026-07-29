@@ -19,7 +19,7 @@ export const POINT_DEFINITIONS = [
     summary:
       "Confirms the Purchase Requisition linked to this PO line was released in SAP before the PO was raised.",
     logic:
-      "Not applicable for PO types ZSER/ZJVW/ZJWV, or when no PR is linked to the line. Otherwise Verified only if 'PR Release Ind' equals the released code.",
+      "Not applicable for PO types ZSER/ZJVW/ZJWV. Otherwise Verified only if 'PR Release Ind' equals the released code is 2.",
     dataPoints: "PO Type, Purchase Req, PR Release Ind",
   },
   {

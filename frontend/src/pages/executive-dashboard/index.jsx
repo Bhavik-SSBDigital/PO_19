@@ -274,9 +274,9 @@ const ExecutiveDashboard = () => {
   const charts = data?.charts || {};
   const kpiDefs = data?.kpiDefinitions || {};
   const chartDefs = data?.chartDefinitions || {};
-  // NEW — backend now returns `scope` when the current user's numbers are
-  // restricted to their own purchasing group (Buyers). Admin/PM/other
-  // dashboard-visible roles get `scope: null` and see the notice hidden.
+  // Backend returns `scope` when the current user's numbers are restricted
+  // to their own purchasing group (Buyers). Admin/PM/other dashboard-visible
+  // roles get `scope: null` and see the notice hidden.
   const restrictedNotice = data?.scope?.restrictedToPurchaseGroup
     ? `Showing figures for purchasing group ${data.scope.restrictedToPurchaseGroup} only`
     : undefined;
@@ -319,9 +319,10 @@ const ExecutiveDashboard = () => {
       lines.push(`Control-Wise Compliance,Point ${d.pointNo} (${d.severity}),${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`)
     );
     (charts.exceptionBySeverity || []).forEach((d) => lines.push(`Exceptions by Severity,${d.severity},${d.count},${d.pct}%`));
+    (charts.purchaseGroupWiseCompliance || []).forEach((d) => lines.push(`Purchase Group-Wise Compliance,${csvEscape(d.purchaseGroupName || d.purchaseGroup)},${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`));
     (charts.plantWiseExceptions || []).forEach((d) => lines.push(`Plant-Wise Exceptions,${csvEscape(d.plantName || d.key)},${d.value},valueExposure=${d.valueExposure}`));
-    (charts.vendorWiseTopExceptions || []).forEach((d) => lines.push(`Vendor-Wise Exceptions,${csvEscape(d.vendorName || d.name || d.key)},${d.value},valueExposure=${d.valueExposure}`));
     (charts.plantWiseCompliance || []).forEach((d) => lines.push(`Plant-Wise Compliance,${csvEscape(d.plantName || d.plant)},${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`));
+    (charts.vendorWiseTopExceptions || []).forEach((d) => lines.push(`Vendor-Wise Exceptions,${csvEscape(d.vendorName || d.name || d.key)},${d.value},valueExposure=${d.valueExposure}`));
     (charts.vendorWiseCompliance || []).forEach((d) => lines.push(`Vendor-Wise Compliance,${csvEscape(d.vendorName || d.vendorCode)},${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`));
     (charts.poNumberWiseCompliance || []).forEach((d) => lines.push(`PO-Wise Compliance,${csvEscape(d.poNumber)},${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`));
     (charts.monthlyExceptionTrend || []).forEach((d) => lines.push(`Monthly Exception Trend,${d.month},${d.count},valueExposure=${d.valueExposure}`));
@@ -442,7 +443,17 @@ const ExecutiveDashboard = () => {
         </Grid>
       </Grid>
 
-      {/* Charts Section */}
+      {/*
+        CHART ORDER (per requirements):
+        1. Control-Wise Compliance
+        2. Exceptions by Severity
+        3. Purchase Group-Wise Compliance
+        4. Plant-Wise Compliance
+        5. Vendor-Wise Compliance
+        6. PO Type-Wise Compliance
+        7. PO-Wise Compliance
+        8. Monthly Exception Trend (last)
+      */}
       <Grid container spacing={3}>
         <Grid item xs={12} md={7}>
           <ChartPanel title="Control-Wise Compliance" hint="% verified (Points 1-19). Click a bar to drill in." info={chartDefs.controlWiseCompliance}>
@@ -505,79 +516,52 @@ const ExecutiveDashboard = () => {
           </ChartPanel>
         </Grid>
 
+        {/*
+          Purchase Group-Wise Compliance
+          Backed by charts.purchaseGroupWiseCompliance from the executive
+          summary endpoint — verified vs. not-verified counts per purchasing
+          group, sorted worst-compliance-first, enriched with the
+          master-data purchaseGroupName via getPurchaseGroupName() on the
+          backend so the axis labels, tooltip, and CSV export all show the
+          human-readable group name rather than just the raw code (e.g. "P02").
+        */}
         <Grid item xs={12}>
           <ChartPanel
-            title="PO Type-Wise Compliance"
-            hint="Click a segment to drill in"
-            info={chartDefs.poTypeWiseCompliance}
-            height={horizontalChartHeight((charts.poTypeWiseCompliance || []).length, 40, 60, 180)}
+            title="Purchase Group-Wise Compliance"
+            hint="% verified per purchasing group, worst first. Click a segment to drill in."
+            info="Shows verified vs. not-verified checkpoint counts for every purchasing group, so you can see which buyer groups need the most attention."
+            height={horizontalChartHeight((charts.purchaseGroupWiseCompliance || []).length)}
           >
             {loading ? <Skeleton variant="rounded" height="100%" sx={{ borderRadius: 2 }} /> : (
               <ResponsiveContainer>
                 <BarChart
-                  data={charts.poTypeWiseCompliance || []}
+                  data={charts.purchaseGroupWiseCompliance || []}
                   layout="vertical"
                   margin={{ top: 10, bottom: 10, left: 10, right: 30 }}
-                  barCategoryGap="30%"
+                  barCategoryGap="25%"
                 >
                   <ChartGradients />
                   <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke={GRID_COLOR} />
                   <XAxis type="number" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12, fontWeight: 500 }} />
                   <YAxis
                     type="category"
-                    dataKey="poType"
+                    dataKey="purchaseGroup"
                     tickFormatter={(v) => {
-                      const row = (charts.poTypeWiseCompliance || []).find((c) => c.poType === v);
-                      return truncateLabel(row?.poTypeName || v, 22);
+                      const row = (charts.purchaseGroupWiseCompliance || []).find((c) => c.purchaseGroup === v);
+                      return truncateLabel(row?.purchaseGroupName || v, 22);
                     }}
-                    width={160}
+                    width={170}
                     axisLine={false}
                     tickLine={false}
                     tick={{ fill: '#334155', fontSize: 13, fontWeight: 600 }}
                   />
-                  <Tooltip content={<PoTypeTooltip />} cursor={{ fill: alpha('#4f46e5', 0.05) }} />
+                  <Tooltip content={<ComplianceTooltip labelFormatter={(d) => d.purchaseGroupName || d.purchaseGroup} />} cursor={{ fill: alpha('#4f46e5', 0.05) }} />
                   <Legend iconType="circle" wrapperStyle={{ paddingTop: 10, fontSize: '14px', fontWeight: 600 }} />
-                  <Bar dataKey="verified" stackId="a" fill="url(#gradVerified)" name="Verified" cursor="pointer" radius={[6, 0, 0, 6]} barSize={22}
-                    onClick={(d) => { const p = payloadOf(d); openDrilldown("poType", p.poType, `PO Type: ${p.poTypeName || p.poType} - Verified lines`, { statusFilter: "verified" }); }} />
-                  <Bar dataKey="notVerified" stackId="a" fill="url(#gradNotVerified)" name="Not Verified" radius={[0, 6, 6, 0]} cursor="pointer" barSize={22}
-                    onClick={(d) => { const p = payloadOf(d); openDrilldown("poType", p.poType, `PO Type: ${p.poTypeName || p.poType} - Not-Verified lines`, { statusFilter: "notVerified" }); }} />
+                  <Bar dataKey="verified" stackId="a" fill="url(#gradVerified)" name="Verified" cursor="pointer" radius={[6, 0, 0, 6]} barSize={20}
+                    onClick={(d) => { const p = payloadOf(d); openDrilldown("purchaseGroup", p.purchaseGroup, `Purchase Group: ${p.purchaseGroupName || p.purchaseGroup} - Verified lines`, { statusFilter: "verified" }); }} />
+                  <Bar dataKey="notVerified" stackId="a" fill="url(#gradNotVerified)" name="Not Verified" radius={[0, 6, 6, 0]} cursor="pointer" barSize={20}
+                    onClick={(d) => { const p = payloadOf(d); openDrilldown("purchaseGroup", p.purchaseGroup, `Purchase Group: ${p.purchaseGroupName || p.purchaseGroup} - Not-Verified lines`, { statusFilter: "notVerified" }); }} />
                 </BarChart>
-              </ResponsiveContainer>
-            )}
-          </ChartPanel>
-        </Grid>
-
-        <Grid item xs={12}>
-          <ChartPanel title="Monthly Exception Trend" hint="Click a point to drill in" info={chartDefs.monthlyExceptionTrend} height={300}>
-            {loading ? <Skeleton variant="rounded" height="100%" sx={{ borderRadius: 2 }} /> : (
-              <ResponsiveContainer>
-                <LineChart data={charts.monthlyExceptionTrend || []} margin={{ top: 20, right: 20 }}>
-                  <ChartGradients />
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={GRID_COLOR} />
-                  <XAxis dataKey="month" tickFormatter={formatMonthLabel} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12, fontWeight: 500 }} />
-                  <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12, fontWeight: 500 }} />
-                  <Tooltip content={<MonthlyTooltip />} />
-                  <Line
-                    type="monotone"
-                    dataKey="count"
-                    stroke="url(#gradLine)"
-                    strokeWidth={4}
-                    dot={(props) => (
-                      <circle
-                        key={props.payload.month}
-                        cx={props.cx}
-                        cy={props.cy}
-                        r={6}
-                        fill="#4f46e5"
-                        stroke="#ffffff"
-                        strokeWidth={3}
-                        style={{ cursor: "pointer", filter: 'drop-shadow(0px 4px 6px rgba(0, 0, 0, 0.1))' }}
-                        onClick={() => openDrilldown("month", props.payload.month, `Exceptions in ${moment(props.payload.month, "YYYY-MM").format("MMMM YYYY")}`)}
-                      />
-                    )}
-                    activeDot={{ r: 9, strokeWidth: 0, fill: "#7c3aed" }}
-                  />
-                </LineChart>
               </ResponsiveContainer>
             )}
           </ChartPanel>
@@ -667,6 +651,48 @@ const ExecutiveDashboard = () => {
           </ChartPanel>
         </Grid>
 
+        <Grid item xs={12}>
+          <ChartPanel
+            title="PO Type-Wise Compliance"
+            hint="Click a segment to drill in"
+            info={chartDefs.poTypeWiseCompliance}
+            height={horizontalChartHeight((charts.poTypeWiseCompliance || []).length, 40, 60, 180)}
+          >
+            {loading ? <Skeleton variant="rounded" height="100%" sx={{ borderRadius: 2 }} /> : (
+              <ResponsiveContainer>
+                <BarChart
+                  data={charts.poTypeWiseCompliance || []}
+                  layout="vertical"
+                  margin={{ top: 10, bottom: 10, left: 10, right: 30 }}
+                  barCategoryGap="30%"
+                >
+                  <ChartGradients />
+                  <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke={GRID_COLOR} />
+                  <XAxis type="number" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12, fontWeight: 500 }} />
+                  <YAxis
+                    type="category"
+                    dataKey="poType"
+                    tickFormatter={(v) => {
+                      const row = (charts.poTypeWiseCompliance || []).find((c) => c.poType === v);
+                      return truncateLabel(row?.poTypeName || v, 22);
+                    }}
+                    width={160}
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: '#334155', fontSize: 13, fontWeight: 600 }}
+                  />
+                  <Tooltip content={<PoTypeTooltip />} cursor={{ fill: alpha('#4f46e5', 0.05) }} />
+                  <Legend iconType="circle" wrapperStyle={{ paddingTop: 10, fontSize: '14px', fontWeight: 600 }} />
+                  <Bar dataKey="verified" stackId="a" fill="url(#gradVerified)" name="Verified" cursor="pointer" radius={[6, 0, 0, 6]} barSize={22}
+                    onClick={(d) => { const p = payloadOf(d); openDrilldown("poType", p.poType, `PO Type: ${p.poTypeName || p.poType} - Verified lines`, { statusFilter: "verified" }); }} />
+                  <Bar dataKey="notVerified" stackId="a" fill="url(#gradNotVerified)" name="Not Verified" radius={[0, 6, 6, 0]} cursor="pointer" barSize={22}
+                    onClick={(d) => { const p = payloadOf(d); openDrilldown("poType", p.poType, `PO Type: ${p.poTypeName || p.poType} - Not-Verified lines`, { statusFilter: "notVerified" }); }} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </ChartPanel>
+        </Grid>
+
         {/* PO-Wise Compliance */}
         <Grid item xs={12}>
           <ChartPanel
@@ -701,6 +727,43 @@ const ExecutiveDashboard = () => {
                   <Bar dataKey="notVerified" stackId="a" fill="url(#gradNotVerified)" name="Not Verified" radius={[0, 6, 6, 0]} cursor="pointer" barSize={20}
                     onClick={(d) => { const p = payloadOf(d); openDrilldown("poNumber", p.poNumber, `PO ${p.poNumber} - Not-Verified lines`, { statusFilter: "notVerified" }); }} />
                 </BarChart>
+              </ResponsiveContainer>
+            )}
+          </ChartPanel>
+        </Grid>
+
+        {/* Monthly Exception Trend — kept last, still a LineChart (unchanged chart type) */}
+        <Grid item xs={12}>
+          <ChartPanel title="Monthly Exception Trend" hint="Click a point to drill in" info={chartDefs.monthlyExceptionTrend} height={300}>
+            {loading ? <Skeleton variant="rounded" height="100%" sx={{ borderRadius: 2 }} /> : (
+              <ResponsiveContainer>
+                <LineChart data={charts.monthlyExceptionTrend || []} margin={{ top: 20, right: 20 }}>
+                  <ChartGradients />
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={GRID_COLOR} />
+                  <XAxis dataKey="month" tickFormatter={formatMonthLabel} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12, fontWeight: 500 }} />
+                  <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12, fontWeight: 500 }} />
+                  <Tooltip content={<MonthlyTooltip />} />
+                  <Line
+                    type="monotone"
+                    dataKey="count"
+                    stroke="url(#gradLine)"
+                    strokeWidth={4}
+                    dot={(props) => (
+                      <circle
+                        key={props.payload.month}
+                        cx={props.cx}
+                        cy={props.cy}
+                        r={6}
+                        fill="#4f46e5"
+                        stroke="#ffffff"
+                        strokeWidth={3}
+                        style={{ cursor: "pointer", filter: 'drop-shadow(0px 4px 6px rgba(0, 0, 0, 0.1))' }}
+                        onClick={() => openDrilldown("month", props.payload.month, `Exceptions in ${moment(props.payload.month, "YYYY-MM").format("MMMM YYYY")}`)}
+                      />
+                    )}
+                    activeDot={{ r: 9, strokeWidth: 0, fill: "#7c3aed" }}
+                  />
+                </LineChart>
               </ResponsiveContainer>
             )}
           </ChartPanel>

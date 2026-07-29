@@ -43,7 +43,7 @@ const AuditDetails = ({ auditDetails = {} }) => {
             padding: "10px",
           }}
         >
-          Audit Report
+          PO Report
         </Typography>
       </Stack>
       {auditDetails?.workflowDetails?.currentStatus === "completed" && (
@@ -60,7 +60,7 @@ const AuditDetails = ({ auditDetails = {} }) => {
             }}
           >
             <Typography variant="h5">
-              Audit Report had been concluded
+              PO Report had been concluded
             </Typography>
           </Alert>
         </Box>

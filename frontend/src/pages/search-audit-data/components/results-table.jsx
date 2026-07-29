@@ -210,7 +210,7 @@ const AuditResults = ({ searchData }) => {
         }}
       >
         <Typography variant="h5" sx={{ fontWeight: 700 }}>
-          Audit Check Results
+          Check PO Results
         </Typography>
 
         {poNumber && poLineItem && (
