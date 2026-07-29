@@ -34,9 +34,9 @@ export const POINT_DEFINITIONS = [
     pointNo: "3",
     title: "PR Creation Date Within 6 Months of PO",
     summary:
-      "Confirms the PR was created within 6 months (183 days) before the PO date.",
+      "Confirms the PR was created within 6 months (180 days) before the PO date.",
     logic:
-      "Not Applicable if no PR assigned. Manual Review if PO/PR dates are missing or unparseable. Verified if PR date >= PO date - 183 days.",
+      "Not Applicable if no PR assigned. Manual Review if PO/PR dates are missing or unparseable. Verified if PR date >= PO date - 180 days.",
     dataPoints: "Purchase Req, PO Created date, PR Creation date",
   },
   {
@@ -162,6 +162,15 @@ export const POINT_DEFINITIONS = [
   },
   {
     pointNo: "17",
+    title: "Service PO (ZCSR) Item Category",
+    summary:
+      "Confirms Capital Service PO (ZCSR) lines use the correct Item Category (D) and Account Assignment (A).",
+    logic:
+      "Not Applicable if PO Type isn't ZCSR. Verified only if Item category is D and Account Assignment is A.",
+    dataPoints: "PO Type, Item category disc, Account Assignment",
+  },
+  {
+    pointNo: "18",
     title: "ZLRM Must Not Use Service Item Category",
     summary:
       "Confirms Local Raw Material (ZLRM) PO lines do NOT incorrectly use the Service item category + Account Assignment K combination reserved for service POs.",
@@ -170,7 +179,7 @@ export const POINT_DEFINITIONS = [
     dataPoints: "PO Type, Item category disc, Account Assignment",
   },
   {
-    pointNo: "18",
+    pointNo: "19",
     title: "Multiple POs to Same Vendor, Same Day",
     summary:
       "Flags possible order-splitting: the same vendor, plant, and purchasing group issued more than one PO on the same date.",
@@ -178,16 +187,6 @@ export const POINT_DEFINITIONS = [
       "Not Verified if other PO numbers share the same Vendor Code + PO Created date + Plant + Purchase Group; Verified otherwise.",
     dataPoints:
       "Vendor Code, PO Created date, Plant, Purchase Group, PO number",
-  },
-  {
-    pointNo: "19",
-    title: "Rate Contract (RC) Overlap Validation",
-    summary:
-      "Confirms a vendor + material's Rate Contract validity window doesn't overlap another RC for the same vendor + material.",
-    logic:
-      "Not Applicable if no RC assigned. Not Verified if this RC's [valid-from, valid-to] window overlaps another RC's window for the same vendor+material, else Verified.",
-    dataPoints:
-      "Vendor Code, RC Material Code, RC number, RC valid from, RC valid to (POAUDITRC)",
   },
 ];
 

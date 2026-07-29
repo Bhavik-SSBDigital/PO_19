@@ -32,6 +32,17 @@ const lineItemOf = (row) => {
   return null;
 };
 
+// A line item counts as CLOSED once `remarksLocked` is true on the
+// AuditResult row itself — this is the actual "checked" flag the app sets
+// (see schema comment: "Once true, no remarks can be added, edited, or
+// deleted against ANY point on this line item"). NOTE: this deliberately
+// does NOT look at `verificationWorkflow` — in real data that relation is
+// consistently null (no VerificationWorkflow rows are being created), so
+// keying off it made every PO permanently "open" regardless of how many
+// lines were actually locked/reviewed. remarksLocked is the field that is
+// actually populated and actually reflects reviewer sign-off.
+const rowIsClosed = (row) => row.remarksLocked === true;
+
 const ROW_SELECT = {
   id: true,
   po_number: true,
@@ -50,6 +61,12 @@ const ROW_SELECT = {
   results: true,
   tax_code: true,
   GSTInOfVendor: true,
+  // This is what lets us tell CLOSED vs OPEN per line item, and roll that
+  // up into a per-PO "20/40 closed" progress figure below. See rowIsClosed
+  // above for why remarksLocked (not verificationWorkflow) is the source.
+  remarksLocked: true,
+  remarksLockedBy: true,
+  remarksLockedAt: true,
 };
 
 function buildBaseWhere(body = {}) {
@@ -118,6 +135,8 @@ function newBucket() {
     exceptionLines: 0, // lines with at least one notVerified point
     verifiedPoints: 0, // point-level tally, across every line, for compliance %
     notVerifiedPoints: 0,
+    closedLines: 0, // lines whose VerificationWorkflow.currentStatus === "completed"
+    openLines: 0, // every other line (unassigned/assigned/under_review/head_review)
     lineItems: new Set(),
     prs: new Set(),
     taxCodes: new Set(),
@@ -139,6 +158,16 @@ function compliancePctOf(b) {
     : null;
 }
 
+// Distinct from compliancePct (which is point-level "verified vs
+// notVerified" across audit checks). This is the review-workflow progress —
+// how many of the PO's line items have been carried to "completed" — which
+// is what the frontend's Open/Closed tabs and progress bar are driven by.
+function closedPctOf(b) {
+  return b.totalLines > 0
+    ? Number(((b.closedLines / b.totalLines) * 100).toFixed(1))
+    : null;
+}
+
 /**
  * PO-wise data for the standalone PO Data page (/po-data).
  *
@@ -149,6 +178,17 @@ function compliancePctOf(b) {
  * when it has a matching exception point (see pointMatchesAdvancedFilters);
  * with no such filter, every PO in scope is returned regardless of its
  * compliance status.
+ *
+ * CLOSED/OPEN (new):
+ * Each returned PO also carries closedLineCount/openLineCount/totalLineCount
+ * and isFullyClosed, derived from each line item's `remarksLocked` flag
+ * (per-line-item, not per-PO — see rowIsClosed above). A PO is only
+ * "Closed" once ALL of its line items have remarksLocked === true; a PO
+ * with even one line item still unlocked is "Open", and its
+ * closedLineCount/totalLineCount is the "20/40 closed" progress figure the
+ * frontend renders as a progress bar. The frontend does this open/closed
+ * split client-side (single fetch), not this endpoint — so no new query
+ * param is needed here for that.
  */
 export const getPoWiseExceptions = async (req, res) => {
   try {
@@ -211,6 +251,8 @@ export const getPoWiseExceptions = async (req, res) => {
 
       b.totalLines += 1;
       if (rowHasException(row)) b.exceptionLines += 1;
+      if (rowIsClosed(row)) b.closedLines += 1;
+      else b.openLines += 1;
 
       for (const p of row.results || []) {
         const status = classifyPoint(p);
@@ -252,6 +294,11 @@ export const getPoWiseExceptions = async (req, res) => {
         totalLineCount: v.totalLines,
         exceptionLineCount: v.exceptionLines,
         compliancePct: compliancePctOf(v),
+        // Review-workflow progress (per PO), NOT audit compliance:
+        closedLineCount: v.closedLines,
+        openLineCount: v.openLines,
+        closedPct: closedPctOf(v),
+        isFullyClosed: v.totalLines > 0 && v.closedLines === v.totalLines,
         distinctLineItems: v.lineItems.size,
         lineItems: [...v.lineItems].sort(),
         purchase_req: [...v.prs].join(", "),

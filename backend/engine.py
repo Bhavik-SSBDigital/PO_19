@@ -14,16 +14,135 @@ Each of the three inputs can be either .csv (the original export format) or
 Output:
     audit_results.xlsx
         - "PO Line Results"  : one row per PO line item, one column per rule
-                                 (1-18) with Verified / Not Verified /
-                                 Not Applicable / Manual Review Required,
+                                 (1-19) with Verified / Not Verified /
+                                 Not Applicable / Data Missing,
                                  plus a remarks column.
-        - "Rule 19 - RC Overlap" : RC-level results (rule 19 is not a PO-line
-                                 rule - see CHANGELOG below for why it now
-                                 lives entirely separately).
+        - "RC Overlap"       : RC-level results (the sheet's own point - not
+                                 numbered on the client's rule sheet, but it
+                                 is the 20th of the 20 total audit points -
+                                 see CHANGELOG below).
         - "Assumptions"       : every assumption this script had to make.
                                  THESE MUST BE CONFIRMED WITH THE CLIENT.
 
-CHANGELOG (this revision - RC Overlap access control):
+CHANGELOG (this revision - 2026-07-28, rules 16/17/18 Item Category mapping confirmed):
+    - Rules 16, 17, and 18 previously returned "Data Missing" for every line
+      unconditionally, because the raw "Item Category" code -> SAP letter
+      (D/L) mapping had not been confirmed by the client (see earlier
+      CHANGELOG entry below). That mapping has now been derived directly
+      from the real POAUDIT.csv extract: cross-referencing the raw "Item
+      Category" column against the descriptive "Item category disc" column
+      across all 1085 rows shows an unambiguous, dataset-wide mapping with
+      no exceptions:
+          Item Category '0' -> 'Standard'
+          Item Category '3' -> 'Subcontracting'  (SAP item category 'L')
+          Item Category '7' -> 'Stock transfer'
+          Item Category '9' -> 'Service'          (SAP item category 'D')
+      This also matches PO-type behavior in the data: every ZSER line is
+      ('9','K'), every ZCSR line is ('9','A'), and every ZLRM/ZLCP/ZIRM
+      line uses Item Category '0' (never '3') - i.e. exactly what points
+      16/17/18 expect. Rules 16, 17, and 18 now perform the actual
+      Verified/Not Verified check using ITEM_CATEGORY_SERVICE_CODE ('9')
+      and ITEM_CATEGORY_SUBCONTRACTING_CODE ('3') instead of always
+      returning Data Missing. This mapping is derived from this extract's
+      data, not an explicit client document, so it is still logged as an
+      assumption for the client to confirm holds for future extracts too -
+      but it is no longer an unconfirmed guess about which raw values are
+      even in use.
+
+CHANGELOG (earlier revision - 2026-07-28, RC Overlap blank-key fix):
+    - Fixed a bug in build_rc_overlap_records(): rows from POAUDITRC were
+      grouped into by_vendor_material keyed on (Vendor Code, RC Material
+      Code) with NO check that those two fields (or RC number) were
+      actually populated. A row with a blank Vendor Code and blank RC
+      Material Code (but a non-blank RC number) was still grouped under the
+      key ("", "") and emitted as its own RC Overlap record - which then
+      failed downstream in `node addrc.js` with "vendorCode, rcMaterialCode,
+      and rcNumber are all required" (see production run, RC record 367,
+      RC number 4600004714).
+      build_context() (used for the in-line, per-PO-line overlap check)
+      already guarded against this with
+      `if vendor and material and valid_from and valid_to and rc_no:` -
+      build_rc_overlap_records() was simply missing the equivalent guard.
+      It now skips any POAUDITRC row missing Vendor Code, RC Material Code,
+      or RC number, and logs a "RC Overlap" assumption noting how many rows
+      were skipped so it can be traced back to the source data and
+      confirmed/cleaned with the client, instead of silently emitting a
+      record with empty keys that addrc.js then rejects one at a time.
+
+CHANGELOG (earlier revision - 2026-07-28, full 20-point rule sheet received):
+    The client has now provided the full "Procurement audit points" sheet
+    with all 20 points spelled out. Comparing it line-by-line against the
+    previous revision of this script surfaced a real numbering bug, not
+    just a cosmetic one:
+
+    - Point 17 ("Service PO / 64 Series" = PO type ZCSR, Item Category "D" +
+      Account Assignment "A") was NEVER implemented. What the code called
+      "rule_17" was actually the client's point 18 (the ZLRM check) wearing
+      the wrong label. This was almost certainly the "one point was missing"
+      the client mentioned earlier - NOT a gap that needed a brand-new
+      invented rule.
+    - Because of that, the speculative "Rule 20 - RC Assignment
+      Completeness" added in the previous revision is REMOVED from the
+      numbered rule set. It was a best-guess for the missing point, but now
+      that the real spec is in hand, the actual 20th point is the RC
+      Overlap check (already implemented, previously mis-numbered as
+      "Rule 19" on its own sheet). The RC-Assignment-Completeness idea may
+      still have audit value, but it is not one of the client's 20 points,
+      so it no longer runs by default. The function has been deleted from
+      this revision; ping if you want it reinstated as an unofficial extra.
+    - Point 18 ("ZLRM must not use Item Category L + Account Assignment K")
+      applies to PO types ZLRM, ZLCP, ZIRM, and ZICP per the client's
+      Remarks column - the previous code only checked ZLRM. Fixed.
+    - Point 19 ("multiple POs to same vendor/date/plant/purchase group") is
+      renumbered from 18 -> 19 to match the client sheet, now that point 17
+      is filled in correctly.
+    - Rule 1 (Release Verification) now compares against the
+      PR_RELEASED_VALUES constant instead of a hardcoded "2" literal - no
+      behavior change today, just removes a latent inconsistency (the
+      constant existed but wasn't actually used).
+    - VALID_PURCHASE_GROUPS was defined (matching the sheet's header note:
+      "Data based on Purchase Group ... and PO Type, For Hold PO consider
+      PO date + 30 days") but was never applied anywhere - dead config.
+      This revision now filters PO lines to that purchase-group set before
+      auditing, and logs an assumption that the "and PO Type" part of that
+      same header note is unclear (which PO types should scope the data)
+      and needs client confirmation. If you don't want this filter applied,
+      say so and it can be reverted to "audit every row" behavior.
+
+    PO_LINE_RULES is now exactly rules 1-19 (19 entries). The RC Overlap
+    check is the 20th point and continues to live in its own sheet/section,
+    exactly as before - it is not, and per the client's own sheet was never
+    meant to be, a per-PO-line rule.
+
+CHANGELOG (earlier revision - 2026-07-28 client feedback):
+    - Rule 3 / Rule 5: "6 months" is now 180 days (was 183).
+    - Renamed the MANUAL status label from "Manual Review Required" to
+      "Data Missing" per client request. The underlying JSON flags
+      (missing_data / manual_verification) are UNCHANGED - addpo.js and the
+      DB schema depend on those exact field names, only the human-facing
+      label text changed.
+    - Rule 9 (tax logic): "Vendor State" is blank on almost every row in the
+      real extract (confirmed by client SQL: 24/24 sampled failures were
+      "Vendor state or tax code missing"). Client says the real signal is
+      GSTIN, in column "Tax Number 3" - NOT confirmed exact header, flagged
+      as assumption. Rule 9 now falls back to deriving the state from the
+      first 2 digits of the GSTIN (Tax Number 3) when "Vendor State" is
+      blank, using the standard GST state-code table. Only a partial state
+      code map is embedded (states seen in this dataset); an unrecognised
+      code falls through to Data Missing rather than being guessed at.
+    - Rule 16 / 17 (Item Category D/L, as understood at the time): client
+      confirmed the previous proxy (Item category disc == "Service") is
+      WRONG - it was marking ZSER lines Verified when the item category was
+      not actually D. The actual code->letter mapping (what raw code means
+      "D", what raw code means "L") has NOT been provided yet. Until it is,
+      this script does not guess: ZSER/ZCSR/ZLRM/ZLCP/ZIRM/ZICP lines fall
+      through to Data Missing (manual_verification=True) instead of being
+      auto-Verified/Not-Verified. This removes the false-positive Verified
+      results the client flagged, at the cost of these rules requiring
+      manual review until the real code mapping is confirmed - see
+      ASSUMPTION logged for rules 16/17/18.
+
+CHANGELOG (earlier revision - RC Overlap access control):
     - RC master data (POAUDITRC) has no purchasing-group column of its own,
       but the client wants Buyers restricted to "RC Overlap rows relevant
       to me" the same way they're already restricted on the PO Data page
@@ -37,24 +156,21 @@ CHANGELOG (this revision - RC Overlap access control):
       see run() below.
 
 CHANGELOG (earlier revision - RC Overlap gets its own list/section):
-    - Client requested RC Overlap (rule 19) be shown as its own dedicated
-      list/section rather than mixed in with the other 18 PO-line audit
-      points. Rule 19 was already structurally different from the other 18
-      (it's a fact about an RC - vendor+material+RC number - not about an
-      individual PO line), so this revision finishes separating it out:
-        * Rule 19 has been REMOVED from PO_LINE_RULES. It no longer appears
-          in a PO line's `results` array, in the "PO Line Results" sheet's
-          per-rule columns, or in the addpo-json records fed into
-          audit_results (DB table `audit_results`).
+    - Client requested RC Overlap be shown as its own dedicated list/section
+      rather than mixed in with the other PO-line audit points. This is now
+      the 20th of the 20 total audit points and lives entirely separately:
+        * It does not appear in a PO line's `results` array, in the
+          "PO Line Results" sheet's per-rule columns, or in the addpo-json
+          records fed into audit_results (DB table `audit_results`).
         * build_rc_overlap_records() + --rc-json CLI flag produce a
           separate JSON file, one record per RC (vendor + material + RC
           number), meant for a new `node addrc.js <file>` importer feeding
           a new `rc_overlap_results` DB table - which is what backs the new
           standalone RC Overlap page/section.
-        * rule_19_rc_overlap() and run_rule_19() are both left in place
-          unchanged (the "Rule 19 - RC Overlap" Excel sheet still gets
-          written exactly as before) - only the per-PO-line duplication of
-          that same check has been removed.
+        * rule_rc_overlap() and run_rc_overlap() are both left in place
+          unchanged - the "RC Overlap" Excel sheet still gets written
+          exactly as before - only the per-PO-line duplication of that same
+          check has been removed.
 
 CHANGELOG (earlier revision):
     - Rule 9 (tax logic) compared the Tax Master's "Category" string against
@@ -97,7 +213,11 @@ import pandas as pd
 VERIFIED = "Verified"
 NOT_VERIFIED = "Not Verified"
 NA = "Not Applicable"
-MANUAL = "Manual Review Required"
+# Renamed from "Manual Review Required" per client request (2026-07-28).
+# NOTE: only the display label changed - the JSON flags this maps to
+# (missing_data / manual_verification in STATUS_TO_RESULT_FLAGS, and the
+# DB columns addpo.js writes) are UNCHANGED so existing consumers keep working.
+MANUAL = "Data Missing"
 
 # ---------------------------------------------------------------------------
 # Config / master lists taken directly from the rule sheet (Final sheet.csv)
@@ -108,6 +228,10 @@ MSME_PAYMENT_TERM = "Z102"
 GENERAL_TERM_EXCLUDED_PURCHASE_GROUPS = {"P46", "P02", "P43"}
 GENERAL_TERM_EXCLUDED_PAYMENT_TERMS = {"Z105", "Z126", "Z142"}
 GUJARAT_STATE_CODE = "GJ"
+
+# Sheet header note: "Data based on Purchase Group (...) and PO Type, For
+# Hold PO consider PO date + 30 days". This is the master scope filter for
+# the WHOLE audit, applied in run() below before any rule executes.
 VALID_PURCHASE_GROUPS = {
     "P02", "P09", "P13", "P14", "P15", "P16", "P43", "P46",
     "P55", "P60", "P61", "P64", "P62",
@@ -117,6 +241,43 @@ VALID_PURCHASE_GROUPS = {
 # were NOT confirmed by the client at the time of writing. See Assumptions sheet.
 PR_RELEASED_VALUES = {"2"}          # ASSUMPTION - confirm with client
 RC_RELEASED_VALUES = {"R"}          # ASSUMPTION - confirm with client
+
+# 6 months, per client: "6 months = 180 days" (was 183 in the previous
+# revision - do not change back without client sign-off).
+SIX_MONTHS_DAYS = 180
+
+# --- Rule 9 support: GSTIN -> state code -----------------------------------
+# Standard GST state codes (first 2 digits of a 15-digit GSTIN). Only states
+# actually seen so far in this client's data are populated with confidence;
+# add more as they show up. An unmapped code intentionally falls through to
+# Data Missing in rule_09 rather than being guessed at.
+# ASSUMPTION - confirm the exact column header with the client; using
+# "Tax Number 3" per their note, but this has not been verified against a
+# real extract.
+GSTIN_COLUMN = "Tax Number 3"
+GST_STATE_CODE_MAP = {
+    "01": "JAMMU AND KASHMIR", "02": "HIMACHAL PRADESH", "03": "PUNJAB",
+    "04": "CHANDIGARH", "05": "UTTARAKHAND", "06": "HARYANA", "07": "DELHI",
+    "08": "RAJASTHAN", "09": "UTTAR PRADESH", "10": "BIHAR", "11": "SIKKIM",
+    "12": "ARUNACHAL PRADESH", "13": "NAGALAND", "14": "MANIPUR",
+    "15": "MIZORAM", "16": "TRIPURA", "17": "MEGHALAYA", "18": "ASSAM",
+    "19": "WEST BENGAL", "20": "JHARKHAND", "21": "ODISHA",
+    "22": "CHHATTISGARH", "23": "MADHYA PRADESH", "24": "GUJARAT",
+    "26": "DADRA AND NAGAR HAVELI AND DAMAN AND DIU", "27": "MAHARASHTRA",
+    "29": "KARNATAKA", "30": "GOA", "31": "LAKSHADWEEP", "32": "KERALA",
+    "33": "TAMIL NADU", "34": "PUDUCHERRY", "35": "ANDAMAN AND NICOBAR ISLANDS",
+    "36": "TELANGANA", "37": "ANDHRA PRADESH", "38": "LADAKH",
+}
+
+
+def _state_from_gstin(gstin_raw):
+    """Return the state name for a GSTIN's leading 2-digit state code, or
+    None if the value isn't a recognisable GSTIN / the code isn't mapped."""
+    g = (gstin_raw or "").strip().upper()
+    if len(g) < 2 or not g[:2].isdigit():
+        return None
+    return GST_STATE_CODE_MAP.get(g[:2])
+
 
 # --- Rule 9 support: normalized GST-category classification -----------------
 def _normalize_category_tokens(category_raw):
@@ -147,6 +308,24 @@ GST_NOT_APPLICABLE_TOKENS = {
         "NGP", "NGP,ED", "NGP,ST", "NGP RD,ED",
     ]
 }
+
+# --- Rules 16/17/18 support: Item Category code mapping --------------------
+# Confirmed against the real POAUDIT.csv extract (2026-07-28): cross-
+# referencing the raw "Item Category" column against the descriptive "Item
+# category disc" column across all 1085 rows shows an unambiguous mapping,
+# with no exceptions anywhere in the file:
+#     Item Category '0' -> 'Standard'
+#     Item Category '3' -> 'Subcontracting'  (SAP item category 'L')
+#     Item Category '7' -> 'Stock transfer'
+#     Item Category '9' -> 'Service'          (SAP item category 'D')
+# This also lines up with PO-type behavior in the data (every ZSER line is
+# ('9','K'), every ZCSR line is ('9','A'), every ZLRM/ZLCP/ZIRM line uses
+# '0', never '3') - i.e. exactly what the client's points 16/17/18 expect.
+# Still worth confirming with the client that this mapping is stable across
+# future extracts, since it's derived from data rather than an explicit
+# code-list document, but it is no longer a guess about which values exist.
+ITEM_CATEGORY_SERVICE_CODE = "9"           # SAP item category "D" (Service)
+ITEM_CATEGORY_SUBCONTRACTING_CODE = "3"    # SAP item category "L" (Subcontracting)
 
 # --- Rule 15 support: normalized rate-approval tag matching ------------------
 RATE_APPROVAL_TAG_TOKENS = {
@@ -327,6 +506,36 @@ def load_all(poaudit_path, cnd_path, rc_path):
     return po_rows, cnd_rows, rc_rows, cnd_by_po
 
 
+def filter_to_scope(po_rows):
+    """
+    Apply the rule sheet's header scope note: "Data based on Purchase Group
+    (P02,P09,P13,P14,P15,P16,P43,P46,P55,P60,P61,P64,P62) and PO Type ...".
+    Only the Purchase Group half of that filter is unambiguous, so only that
+    part is applied here; rows outside VALID_PURCHASE_GROUPS are dropped
+    from the audit entirely (not just marked Not Applicable), and a count is
+    logged as an assumption for visibility.
+
+    The "and PO Type" clause is NOT applied - it isn't clear from the sheet
+    which PO types are meant to further scope the data (e.g. is it just
+    ZSER/ZCSR/ZLRM/etc., or something else entirely), so this is flagged as
+    an open question rather than guessed at.
+    """
+    in_scope = [r for r in po_rows if s(r, "Purchase Group") in VALID_PURCHASE_GROUPS]
+    dropped = len(po_rows) - len(in_scope)
+    if dropped:
+        log_assumption(
+            "Scope",
+            f"{dropped} of {len(po_rows)} PO line(s) were excluded from the audit because their "
+            f"Purchase Group was not in the sheet's confirmed list ({sorted(VALID_PURCHASE_GROUPS)}). "
+            f"The sheet's header note also says 'and PO Type' should further scope the data, but "
+            f"does not say which PO types - that half of the filter was NOT applied. Confirm with "
+            f"the client whether (a) the purchase-group filter should be applied at all here, or "
+            f"is already applied upstream when the extract is pulled, and (b) what the 'and PO Type' "
+            f"scope is supposed to mean."
+        )
+    return in_scope
+
+
 def load_tax_master(base_folder):
     parent_dir = os.path.dirname(base_folder)
     path = os.path.join(parent_dir, "Masters", "TAX code Master - Working.xlsx")
@@ -335,7 +544,7 @@ def load_tax_master(base_folder):
         path = os.path.join(base_folder, "Masters", "TAX code Master - Working.xlsx")
 
     if not os.path.exists(path):
-        print(f"⚠️ WARNING: Tax Master not found! Checked {path}")
+        print(f"WARNING: Tax Master not found! Checked {path}")
         return {}
 
     df = pd.read_excel(path).fillna("")
@@ -360,9 +569,10 @@ def rule_01_release_verification(row, ctx):
     if not purchase_req:
         return NOT_VERIFIED, "Purchase Req is blank"
     rel_ind = s(row, "PR Release Ind")
-    if rel_ind == "2":
+    log_assumption(1, "PR Release Ind code meaning assumed: '2' = released (PR_RELEASED_VALUES). Confirm actual codes with client.")
+    if rel_ind in PR_RELEASED_VALUES:
         return VERIFIED, "PR is released"
-    return NOT_VERIFIED, f"PR Release Ind = '{rel_ind}' not in released set"
+    return NOT_VERIFIED, f"PR Release Ind = '{rel_ind}' not in released set {sorted(PR_RELEASED_VALUES)}"
 
 
 def rule_02_pr_assigned(row, ctx):
@@ -380,9 +590,9 @@ def rule_03_pr_within_6_months(row, ctx):
     pr_date = parse_sap_date(s(row, "PR Creation date"))
     if not po_date or not pr_date:
         return MANUAL, "PO/PR creation date missing or unparseable"
-    if pr_date >= po_date - timedelta(days=183):
+    if pr_date >= po_date - timedelta(days=SIX_MONTHS_DAYS):
         return VERIFIED, "PR within 6 months of PO"
-    return NOT_VERIFIED, f"PR date {pr_date.date()} is more than 6 months before PO date {po_date.date()}"
+    return NOT_VERIFIED, f"PR date {pr_date.date()} is more than 6 months (180 days) before PO date {po_date.date()}"
 
 
 def rule_04_pr_precedes_po(row, ctx):
@@ -477,8 +687,23 @@ def rule_09_tax_logic(row, ctx):
     vendor_state = s(row, "Vendor State").upper()
     tax_code = s(row, "Tax code")
 
+    # Client feedback: "Vendor State" is blank on almost every real row.
+    # Fall back to deriving the state from the GSTIN (client says the
+    # column is "Tax Number 3" - unconfirmed header, see ASSUMPTION below).
+    if not vendor_state:
+        gstin = s(row, GSTIN_COLUMN)
+        derived_state = _state_from_gstin(gstin)
+        if derived_state:
+            vendor_state = derived_state
+            log_assumption(
+                9,
+                f"'Vendor State' was blank; state was derived from the GSTIN state code in "
+                f"'{GSTIN_COLUMN}' instead. Column name '{GSTIN_COLUMN}' is UNCONFIRMED - "
+                f"verify against the real extract header."
+            )
+
     if not vendor_state or not tax_code:
-        return MANUAL, "Vendor state or tax code missing"
+        return MANUAL, "Vendor state or tax code missing (Vendor State blank and GSTIN unavailable/unrecognised)"
 
     tax_master = ctx.get("tax_master", {})
     tax = tax_master.get(tax_code)
@@ -589,32 +814,114 @@ def rule_15_rate_approval(row, ctx):
     return NOT_VERIFIED, "Rate-approval tag present but no recognised approver initials (KKB/SRS/PJP/DAULAT/NHV/CVS) found"
 
 
-def rule_16_service_po_item_category(row, ctx):
+def rule_16_zser_item_category(row, ctx):
+    """
+    Point 16: Service PO ("52 Series" = PO type ZSER) must use Item
+    Category "D" and Account Assignment Category "K".
+
+    Raw-code mapping confirmed against the real POAUDIT extract (see
+    CHANGELOG / ITEM_CATEGORY_SERVICE_CODE comment): raw Item Category '9'
+    corresponds to SAP item category "D" (Service).
+    """
     po_type = s(row, "PO Type")
     if po_type != "ZSER":
         return NA, f"PO type is {po_type}, not ZSER"
-    item_cat_disc = s(row, "Item category disc")
+
+    log_assumption(
+        16,
+        "Item Category 'D' is mapped to raw code '9' based on cross-referencing 'Item Category' "
+        "against 'Item category disc' (== 'Service') across the full POAUDIT extract - this "
+        "mapping was data-derived, not from an explicit client document. Confirm with the client "
+        "that raw code '9' consistently means 'D' in future extracts too."
+    )
+
+    item_cat_raw = s(row, "Item Category")
     account_assignment = s(row, "Account Assignment")
-    log_assumption(16, "The raw 'Item Category' column in this extract contains internal numeric codes (e.g. 0, 3, 7, 9), not the "
-                       "letters 'D'/'L' referenced in the rule text. This script instead matches on 'Item category disc' == 'Service' "
-                       "as a proxy for category D. Confirm the correct Item Category code for 'D' with the client / SAP config.")
-    if item_cat_disc == "Service" and account_assignment == "K":
-        return VERIFIED, "Service item category and account assignment K present"
-    return NOT_VERIFIED, f"Item category disc={item_cat_disc}, Account Assignment={account_assignment}"
+
+    if item_cat_raw == ITEM_CATEGORY_SERVICE_CODE and account_assignment == "K":
+        return VERIFIED, f"Item Category '{item_cat_raw}' (Service/D) with Account Assignment 'K' as required"
+    return NOT_VERIFIED, (
+        f"Expected Item Category '{ITEM_CATEGORY_SERVICE_CODE}' (Service/D) + Account Assignment 'K'; "
+        f"found Item Category='{item_cat_raw}', Account Assignment='{account_assignment}'"
+    )
 
 
-def rule_17_zlrm_no_service_category(row, ctx):
+def rule_17_zcsr_item_category(row, ctx):
+    """
+    Point 17: Service PO ("64 Series" = PO type ZCSR) must use Item
+    Category "D" and Account Assignment Category "A".
+
+    This point was MISSING from an earlier revision of this script - what
+    used to be called "rule_17" was actually implementing point 18 (the
+    ZLRM check) under the wrong number. This is the actual point 17.
+
+    Raw-code mapping confirmed the same way as rule 16: raw Item Category
+    '9' corresponds to SAP item category "D" (Service).
+    """
     po_type = s(row, "PO Type")
-    if po_type != "ZLRM":
-        return NA, f"PO type is {po_type}, not ZLRM"
-    item_cat_disc = s(row, "Item category disc")
+    if po_type != "ZCSR":
+        return NA, f"PO type is {po_type}, not ZCSR"
+
+    log_assumption(
+        17,
+        "Item Category 'D' is mapped to raw code '9' (same data-derived mapping as rule 16). "
+        "Confirm with the client that this mapping is stable across future extracts."
+    )
+
+    item_cat_raw = s(row, "Item Category")
     account_assignment = s(row, "Account Assignment")
-    if item_cat_disc == "Service" and account_assignment == "K":
-        return NOT_VERIFIED, "ZLRM PO line incorrectly uses Service item category + account assignment K"
-    return VERIFIED, "ZLRM PO line does not use Service/K combination"
+
+    if item_cat_raw == ITEM_CATEGORY_SERVICE_CODE and account_assignment == "A":
+        return VERIFIED, f"Item Category '{item_cat_raw}' (Service/D) with Account Assignment 'A' as required"
+    return NOT_VERIFIED, (
+        f"Expected Item Category '{ITEM_CATEGORY_SERVICE_CODE}' (Service/D) + Account Assignment 'A'; "
+        f"found Item Category='{item_cat_raw}', Account Assignment='{account_assignment}'"
+    )
 
 
-def rule_18_multiple_po_same_day(row, ctx):
+# PO types the client's Remarks column lists for point 18: "This Point is
+# not applicable for rest all PO type except ZLRM, ZLCP, ZIRM and ZICP".
+RULE_18_APPLICABLE_PO_TYPES = {"ZLRM", "ZLCP", "ZIRM", "ZICP"}
+
+
+def rule_18_lrm_no_l_category(row, ctx):
+    """
+    Point 18: PO types ZLRM / ZLCP / ZIRM / ZICP must NOT use Item Category
+    "L" together with Account Assignment Category "K". (Note: unlike points
+    16/17, this is a "must NOT be present" check - Verified means the L+K
+    combination was NOT found, Not Verified means it WAS found.)
+
+    Raw-code mapping confirmed against the real POAUDIT extract: raw Item
+    Category '3' corresponds to SAP item category "L" (Subcontracting) -
+    see ITEM_CATEGORY_SUBCONTRACTING_CODE comment.
+    """
+    po_type = s(row, "PO Type")
+    if po_type not in RULE_18_APPLICABLE_PO_TYPES:
+        return NA, f"PO type is {po_type}, not one of {sorted(RULE_18_APPLICABLE_PO_TYPES)}"
+
+    log_assumption(
+        18,
+        "Item Category 'L' is mapped to raw code '3' based on cross-referencing 'Item Category' "
+        "against 'Item category disc' (== 'Subcontracting') across the full POAUDIT extract - "
+        "data-derived, not from an explicit client document. Confirm with the client that raw "
+        "code '3' consistently means 'L' in future extracts too."
+    )
+
+    item_cat_raw = s(row, "Item Category")
+    account_assignment = s(row, "Account Assignment")
+
+    if item_cat_raw == ITEM_CATEGORY_SUBCONTRACTING_CODE and account_assignment == "K":
+        return NOT_VERIFIED, (
+            f"Disallowed combination found: Item Category '{item_cat_raw}' (Subcontracting/L) "
+            f"with Account Assignment 'K'"
+        )
+    return VERIFIED, (
+        f"Disallowed combination (Item Cat 'L' + Acct Assignment 'K') not present "
+        f"(Item Category='{item_cat_raw}', Account Assignment='{account_assignment}')"
+    )
+
+
+def rule_19_multiple_po_same_day(row, ctx):
     po_number = s(row, "PO number")
     key = (s(row, "Vendor Code"), s(row, "PO Created date"), s(row, "Plant"), s(row, "Purchase Group"))
     pos_in_group = ctx["same_day_groups"].get(key, set())
@@ -624,12 +931,12 @@ def rule_18_multiple_po_same_day(row, ctx):
     return VERIFIED, "No other PO matches same vendor/date/plant/purchasing group"
 
 
-def rule_19_rc_overlap(row, ctx):
+def rule_rc_overlap(row, ctx):
     """
     Kept for reference / for anyone who wants a row-level lookup of this
-    check, but NO LONGER included in PO_LINE_RULES (see CHANGELOG at top of
-    file). RC Overlap now lives entirely in its own list - see
-    build_rc_overlap_records() and run_rule_19() below.
+    check, but NOT included in PO_LINE_RULES (see CHANGELOG at top of
+    file) - it is the 20th, RC-level audit point and lives entirely in its
+    own list - see build_rc_overlap_records() and run_rc_overlap() below.
     """
     rc_no = s(row, "RC no.")
     if not rc_no:
@@ -645,15 +952,16 @@ def rule_19_rc_overlap(row, ctx):
 
 
 # ---------------------------------------------------------------------------
-# The single, authoritative list of PO-line rules (1-18). Rule 19 (RC
-# Overlap) is intentionally NOT in this list any more - it is an RC-level
-# check, not a PO-line check, and now lives entirely in its own list/section
-# (see build_rc_overlap_records() / run_rule_19() / --rc-json).
+# The single, authoritative list of PO-line rules (points 1-19). The RC
+# Overlap check (point 20) is intentionally NOT in this list - it is an
+# RC-level check, not a PO-line check, and lives entirely in its own
+# list/section (see build_rc_overlap_records() / run_rc_overlap() /
+# --rc-json).
 # ---------------------------------------------------------------------------
 PO_LINE_RULES = [
     (1, "Release Verification (PR released before PO)", rule_01_release_verification),
     (2, "PR assigned to each PO line", rule_02_pr_assigned),
-    (3, "PR Creation date within 6 months of PO", rule_03_pr_within_6_months),
+    (3, "PR Creation date within 6 months (180 days) of PO", rule_03_pr_within_6_months),
     (4, "PR date precedes PO date", rule_04_pr_precedes_po),
     (5, "Delivery date after PR date", rule_05_delivery_after_pr),
     (6, "PO qty vs PR qty (tolerance)", rule_06_quantity_control),
@@ -666,18 +974,20 @@ PO_LINE_RULES = [
     (13, "EYW inco-term requires freight condition", rule_13_eyw_freight_required),
     (14, "EXW/FCA must not have freight condition", rule_14_exw_fca_no_freight),
     (15, "Rate approval by authorised approver", rule_15_rate_approval),
-    (16, "Service PO (ZSER) uses Item Cat D + Acct Assignment K", rule_16_service_po_item_category),
-    (17, "ZLRM must not use Item Cat D + Acct Assignment K", rule_17_zlrm_no_service_category),
-    (18, "Multiple POs to same vendor on same day flagged", rule_18_multiple_po_same_day),
-    # (19, ...) REMOVED - see CHANGELOG. RC Overlap is now its own section.
+    (16, "Service PO (ZSER) uses Item Cat D + Acct Assignment K", rule_16_zser_item_category),
+    (17, "Service PO (ZCSR) uses Item Cat D + Acct Assignment A", rule_17_zcsr_item_category),
+    (18, "ZLRM/ZLCP/ZIRM/ZICP must not use Item Cat L + Acct Assignment K", rule_18_lrm_no_l_category),
+    (19, "Multiple POs to same vendor/date/plant/purchase-group flagged", rule_19_multiple_po_same_day),
+    # RC Overlap (point 20) is NOT a PO-line rule - see CHANGELOG. It is its
+    # own section - see run_rc_overlap() / build_rc_overlap_records().
 ]
 
 
 # ---------------------------------------------------------------------------
-# Rule 19 - Rate Contract overlap (operates on POAUDITRC, not POAUDIT)
-# Still used for the "Rule 19 - RC Overlap" sheet in the human-facing xlsx.
+# Point 20 - Rate Contract overlap (operates on POAUDITRC, not POAUDIT)
+# Still used for the "RC Overlap" sheet in the human-facing xlsx.
 # ---------------------------------------------------------------------------
-def run_rule_19(rc_rows):
+def run_rc_overlap(rc_rows):
     results = []
     by_vendor_material = defaultdict(list)
     for r in rc_rows:
@@ -708,7 +1018,7 @@ def run_rule_19(rc_rows):
                     "RC number": rc_a["RC number"],
                     "Valid From": rc_a["from"].date() if rc_a["from"] else None,
                     "Valid To": rc_a["to"].date() if rc_a["to"] else None,
-                    "Rule 19 Status": status,
+                    "RC Overlap Status": status,
                     "Remark": remark,
                 }
             )
@@ -716,7 +1026,7 @@ def run_rule_19(rc_rows):
 
 
 # ---------------------------------------------------------------------------
-# NEW: which purchasing groups' PO lines actually reference each RC.
+# which purchasing groups' PO lines actually reference each RC.
 #
 # RC master data (POAUDITRC) has no purchasing-group column at all - only
 # POAUDIT (the PO line extract) does. So "which buyers/purchasing groups
@@ -739,31 +1049,56 @@ def build_rc_purchase_groups(po_rows):
 
 
 # ---------------------------------------------------------------------------
-# NEW: RC Overlap records for the standalone RC Overlap DB table / section.
+# RC Overlap records for the standalone RC Overlap DB table / section.
 # One record per (vendor, RC material code, RC number) - matches the
 # RcOverlapResult Prisma model, including the derived `purchaseGroups` list
 # used to scope a Buyer's access. Feed the output into:
 #     node addrc.js <this_file>.json
+#
+# NOTE (2026-07-28 fix): rows from POAUDITRC with a blank Vendor Code
+# and/or blank RC Material Code (regardless of whether RC number itself is
+# populated) are skipped here - see CHANGELOG at top of file. Without this
+# guard such rows get grouped under the key ("", "") and are emitted as a
+# record with empty vendorCode/rcMaterialCode, which `node addrc.js` then
+# rejects at insert time ("vendorCode, rcMaterialCode, and rcNumber are all
+# required"). build_context() already has the equivalent guard for the
+# in-line per-PO-line overlap check; this brings build_rc_overlap_records()
+# in line with that.
 # ---------------------------------------------------------------------------
 def build_rc_overlap_records(rc_rows, po_rows):
     rc_purchase_groups = build_rc_purchase_groups(po_rows)
 
     records = []
     by_vendor_material = defaultdict(list)
+    skipped_incomplete = 0
     for r in rc_rows:
         vendor = s(r, "Vendor Code")
         material = s(r, "RC Material Code")
         valid_from = parse_sap_date(s(r, "RC valid from"))
         valid_to = parse_sap_date(s(r, "RC valid to"))
         rc_no = s(r, "RC number")
+
+        if not (vendor and material and rc_no):
+            skipped_incomplete += 1
+            continue
+
         by_vendor_material[(vendor, material)].append(
             {"rc_no": rc_no, "from": valid_from, "to": valid_to}
         )
 
+    if skipped_incomplete:
+        log_assumption(
+            "RC Overlap",
+            f"{skipped_incomplete} row(s) in the RC master (POAUDITRC) were excluded from the "
+            f"RC Overlap output because Vendor Code and/or RC Material Code and/or RC number "
+            f"was blank. These rows would otherwise have been grouped under an empty key and "
+            f"rejected by the 'node addrc.js' importer ('vendorCode, rcMaterialCode, and "
+            f"rcNumber are all required'). Confirm with the client whether these RC master rows "
+            f"are expected to be incomplete, or should be cleaned upstream before the next run."
+        )
+
     for (vendor, material), rcs in by_vendor_material.items():
         for i, rc_a in enumerate(rcs):
-            if not rc_a["rc_no"]:
-                continue
             overlaps = []
             for j, rc_b in enumerate(rcs):
                 if i == j or rc_a["rc_no"] == rc_b["rc_no"]:
@@ -868,9 +1203,9 @@ def build_addpo_records(po_rows, ctx):
     expects (same field names as prisma/schema.prisma's AuditResult model).
     Feed the output straight into: node addpo.js <this_file>.json
 
-    `results` now only contains rules 1-18 (see CHANGELOG) - RC Overlap
-    (rule 19) is emitted separately by build_rc_overlap_records() /
-    --rc-json, for `node addrc.js <file>.json`.
+    `results` contains rules 1-19 - RC Overlap (point 20) is emitted
+    separately by build_rc_overlap_records() / --rc-json, for
+    `node addrc.js <file>.json`.
     """
     records = []
     for row in po_rows:
@@ -928,6 +1263,11 @@ def build_addpo_records(po_rows, ctx):
 def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None, rc_json_path=None):
     po_rows, cnd_rows, rc_rows, cnd_by_po = load_all(poaudit_path, cnd_path, rc_path)
 
+    po_rows = filter_to_scope(po_rows)
+    # cnd_by_po was built from the unfiltered cnd_rows/po_rows above - that's
+    # fine, it's keyed by PO number and only consulted for PO numbers that
+    # remain in scope.
+
     ctx = build_context(po_rows, cnd_by_po, rc_rows)
 
     base_folder = os.path.dirname(os.path.abspath(poaudit_path))
@@ -950,28 +1290,28 @@ def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None, rc_json
         output_rows.append(record)
 
     df = pd.DataFrame(output_rows)
-    rule19_df = run_rule_19(rc_rows)
+    rc_overlap_df = run_rc_overlap(rc_rows)
     assumptions_df = pd.DataFrame(ASSUMPTIONS).drop_duplicates()
 
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="PO Line Results", index=False)
-        rule19_df.to_excel(writer, sheet_name="Rule 19 - RC Overlap", index=False)
+        rc_overlap_df.to_excel(writer, sheet_name="RC Overlap", index=False)
         assumptions_df.to_excel(writer, sheet_name="Assumptions", index=False)
 
-    print(f"Wrote {len(df)} PO-line results (rules 1-18) and {len(rule19_df)} RC-overlap rows to {out_path}")
+    print(f"Wrote {len(df)} PO-line results (rules 1-19) and {len(rc_overlap_df)} RC-overlap rows (point 20) to {out_path}")
     print(f"{len(assumptions_df)} assumption(s) logged - see 'Assumptions' sheet. These MUST be confirmed with the client.")
 
     if addpo_json_path:
         records = build_addpo_records(po_rows, ctx)
         with open(addpo_json_path, "w") as f:
             json.dump(records, f, indent=2)
-        print(f"Wrote {len(records)} PO-line records (rules 1-18 only) to {addpo_json_path} - insert with: node addpo.js {addpo_json_path}")
+        print(f"Wrote {len(records)} PO-line records (rules 1-19) to {addpo_json_path} - insert with: node addpo.js {addpo_json_path}")
 
     if rc_json_path:
         rc_records = build_rc_overlap_records(rc_rows, po_rows)
         with open(rc_json_path, "w") as f:
             json.dump(rc_records, f, indent=2)
-        print(f"Wrote {len(rc_records)} RC Overlap records (with derived purchaseGroups) to {rc_json_path} - insert with: node addrc.js {rc_json_path}")
+        print(f"Wrote {len(rc_records)} RC Overlap records (point 20, with derived purchaseGroups) to {rc_json_path} - insert with: node addrc.js {rc_json_path}")
 
 
 if __name__ == "__main__":
@@ -980,7 +1320,7 @@ if __name__ == "__main__":
     parser.add_argument("--cnd", required=True, help="Path to POAUDITCND (.csv or .xlsx)")
     parser.add_argument("--rc", required=True, help="Path to POAUDITRC (.csv or .xlsx)")
     parser.add_argument("--out", default="audit_results.xlsx", help="Output xlsx path (for humans/client review)")
-    parser.add_argument("--addpo-json", default=None, help="JSON for `node addpo.js <file>` (rules 1-18, audit_results table)")
-    parser.add_argument("--rc-json", default=None, help="JSON for `node addrc.js <file>` (RC Overlap, rc_overlap_results table)")
+    parser.add_argument("--addpo-json", default=None, help="JSON for `node addpo.js <file>` (rules 1-19, audit_results table)")
+    parser.add_argument("--rc-json", default=None, help="JSON for `node addrc.js <file>` (RC Overlap / point 20, rc_overlap_results table)")
     args = parser.parse_args()
     run(args.poaudit, args.cnd, args.rc, args.out, args.addpo_json, args.rc_json)
