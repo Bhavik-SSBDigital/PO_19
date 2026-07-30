@@ -22,7 +22,22 @@ Output:
         - "Assumptions"       : every assumption this script had to make.
                                  THESE MUST BE CONFIRMED WITH THE CLIENT.
 
-CHANGELOG (this revision - 2026-07-29, Item Category client table received):
+CHANGELOG (this revision - 2026-07-30, Rule 11 MSME payment-term list confirmed by client):
+    - The client confirmed the full list of valid MSME payment terms (all
+      <=45 days credit, satisfying the MSME Act requirement), replacing the
+      single hard-coded "Z102" check:
+          Z100  -> 15 days credit
+          Z101  -> 30 days credit
+          Z102  -> 45 days credit
+          Z146  -> 10 days credit
+          Z148  -> 21 days credit
+      MSME_PAYMENT_TERM (single value) was replaced with MSME_PAYMENT_TERMS
+      (a dict of term -> credit days). rule_11_msme_payment_term() now
+      verifies an MSME vendor's Payment Term against membership in this
+      dict instead of equality with a single code, and reports the credit
+      days in the remark. No other rule, constant, or behavior was changed.
+
+CHANGELOG (earlier revision - 2026-07-29, Item Category client table received):
     - The client sent the official Item Category reference table (No. /
       Disc. / SAP external letter). As pasted, the table listed 10
       description rows (codes 0-9) but only 9 letters - this is expected,
@@ -118,7 +133,19 @@ MANUAL = "Data Missing"
 # ---------------------------------------------------------------------------
 FREIGHT_CONDITION_TYPES = {"ZBF1", "ZBF2", "ZRA3", "ZRB3", "ZRE3"}
 DWS_APPROVERS = {"KKB", "SRS", "PJP", "DAULAT", "NHV", "CVS"}
-MSME_PAYMENT_TERM = "Z102"
+
+# --- Rule 11 support: MSME payment terms -----------------------------------
+# Confirmed by client (email, 2026-07-30): all valid MSME payment terms,
+# each within the <=45 days credit period required for MSME vendors, with
+# their corresponding credit-day period.
+MSME_PAYMENT_TERMS = {
+    "Z100": 15,   # 15 DAYS CREDIT
+    "Z101": 30,   # 30 DAYS CREDIT
+    "Z102": 45,   # 45 DAYS CREDIT
+    "Z146": 10,   # 10 DAYS CREDIT
+    "Z148": 21,   # 21 DAYS CREDIT
+}
+
 GENERAL_TERM_EXCLUDED_PURCHASE_GROUPS = {"P46", "P02", "P43"}
 GENERAL_TERM_EXCLUDED_PAYMENT_TERMS = {"Z105", "Z126", "Z142"}
 GUJARAT_STATE_CODE = "GJ"
@@ -616,13 +643,29 @@ def rule_10_vendor_material_tax_consistency(row, ctx):
 
 
 def rule_11_msme_payment_term(row, ctx):
+    """
+    Point 11: an MSME-registered vendor's Payment Term must be one of the
+    client-confirmed MSME payment terms (each <=45 days credit, per the
+    MSME Act requirement).
+
+    Confirmed by client (email, 2026-07-30):
+        Z100  15 DAYS CREDIT
+        Z101  30 DAYS CREDIT
+        Z102  45 DAYS CREDIT
+        Z146  10 DAYS CREDIT
+        Z148  21 DAYS CREDIT
+    """
     msme_status = s(row, "Vendor MSME Status")
     if not msme_status:
         return NA, "Vendor has no MSME certificate on file"
     payment_term = s(row, "Payment Term")
-    if payment_term == MSME_PAYMENT_TERM:
-        return VERIFIED, f"MSME vendor with payment term {MSME_PAYMENT_TERM} (<=45 days)"
-    return NOT_VERIFIED, f"MSME vendor with payment term {payment_term}, expected {MSME_PAYMENT_TERM}"
+    if payment_term in MSME_PAYMENT_TERMS:
+        days = MSME_PAYMENT_TERMS[payment_term]
+        return VERIFIED, f"MSME vendor with payment term {payment_term} ({days} days credit, <=45 days)"
+    return NOT_VERIFIED, (
+        f"MSME vendor with payment term '{payment_term}', expected one of "
+        f"{sorted(MSME_PAYMENT_TERMS)} (<=45 days credit)"
+    )
 
 
 def rule_12_general_payment_term(row, ctx):
@@ -817,7 +860,7 @@ PO_LINE_RULES = [
     (8, "RC assigned consistently across same-material lines", rule_08_rc_consistency),
     (9, "IGST only for non-Gujarat vendors", rule_09_tax_logic),
     (10, "Vendor-Material tax code consistency", rule_10_vendor_material_tax_consistency),
-    (11, "MSME payment term <=45 days (Z102)", rule_11_msme_payment_term),
+    (11, "MSME payment term <=45 days (Z100/Z101/Z102/Z146/Z148)", rule_11_msme_payment_term),
     (12, "General payment term >=21 days", rule_12_general_payment_term),
     (13, "EYW inco-term requires freight condition", rule_13_eyw_freight_required),
     (14, "EXW/FCA must not have freight condition", rule_14_exw_fca_no_freight),
