@@ -21,6 +21,10 @@ import {
   KPI_DEFINITIONS,
   CHART_DEFINITIONS,
 } from "../utility/point-reference.js";
+import {
+  HEADER_LEVEL_RULE_NOS,
+  LINE_TABLE_RULE_NOS,
+} from "../utility/point-scope.js";
 
 const PURCHASE_GROUPS = [
   "P02",
@@ -39,33 +43,19 @@ const PURCHASE_GROUPS = [
 ];
 
 /**
- * ACCESS CONTROL NOTE (this revision):
+ * ACCESS CONTROL NOTE:
  *
- * Previously buildWhere() only applied the filter-bar's own filters
- * (dates, PO type, plant, vendor, and an OPT-IN purchaseGroup filter) with
- * no role-based scoping at all - a Buyer hitting /reports/executive-summary
- * or /reports/executive-drilldown got company-wide numbers and could drill
- * into any PO in the system, unlike every other Buyer-facing page (PO Data,
- * RC Overlap) which locks them to their own purchasing group server-side.
- *
- * buildWhere() now takes the authenticated user (req.user) as well as the
+ * buildWhere() takes the authenticated user (req.user) as well as the
  * request body, and:
  *   - Buyer (and not also Admin/PM): purchase_group is forced to their own
  *     group via getPurchaseGroupCode(username), REGARDLESS of whatever
- *     purchaseGroup filter the client might have sent - a Buyer cannot
- *     widen their own scope by tampering with the filter payload.
- *   - Everyone else (Admin, Procurement Manager, and any other role that
- *     already has dashboard access per the nav config - head/auditor/
- *     executor/ssbd): unrestricted, exactly as before. They may still use
- *     the filter bar's optional purchaseGroup filter to narrow their own
- *     view voluntarily.
+ *     purchaseGroup filter the client might have sent.
+ *   - Everyone else (Admin, PM, and any other dashboard-visible role):
+ *     unrestricted, may still narrow voluntarily via the filter bar.
  *
- * Both getExecutiveSummary (top-line KPIs + every chart) and
- * getExecutiveDrilldown (the detail list behind any KPI/chart click) now
- * go through this same buildWhere(), so the numbers on the dashboard and
- * the rows you get by drilling into them are always drawn from the same
- * scoped dataset - a Buyer's KPIs and their drilldown lists agree with each
- * other, and neither leaks data outside their own purchasing group.
+ * Both getExecutiveSummary and getExecutiveDrilldown/getExecutiveHeaderDrilldown
+ * go through this same buildWhere(), so line-level AND header-level numbers
+ * are always drawn from the same scoped dataset.
  */
 function buildWhere(body = {}, user = {}) {
   const where = { type: "PO" };
@@ -91,14 +81,10 @@ function buildWhere(body = {}, user = {}) {
     user.isAdmin || user.isProcurementManager || !user.isBuyer;
 
   if (isUnrestricted) {
-    // Admin/PM/other dashboard-visible roles: honor an optional, voluntary
-    // purchaseGroup filter from the filter bar, but don't force one.
     if (Array.isArray(body.purchaseGroup) && body.purchaseGroup.length) {
       where.purchase_group = { in: body.purchaseGroup };
     }
   } else {
-    // Buyer: locked to their own purchasing group, full stop - any
-    // purchaseGroup value the client sent is ignored.
     const ownGroup = getPurchaseGroupCode(user.username);
     where.purchase_group = ownGroup || "__no_group_assigned__";
   }
@@ -205,11 +191,9 @@ function richBucketToJson(key, bucket) {
   };
 }
 
-// Compliance % helper shared by every "-wise compliance" chart below
-// (control-wise, PO-type-wise, purchasing-group-wise, plant-wise,
-// vendor-wise, PO-number-wise). na/manual points are excluded from the
-// denominator, same as every other compliance chart already on this
-// dashboard, so all of these charts stay apples-to-apples comparable.
+// Compliance % helper shared by every "-wise compliance" chart, LINE-LEVEL
+// and HEADER-LEVEL alike. na/manual points are excluded from the
+// denominator.
 function compliancePctOf(v) {
   return v.verified + v.notVerified > 0
     ? Number(((v.verified / (v.verified + v.notVerified)) * 100).toFixed(1))
@@ -238,9 +222,14 @@ export const getExecutiveSummary = async (req, res) => {
     let highRiskExceptions = 0;
     let exceptionValueExposure = 0;
 
+    // LINE-LEVEL control-wise tallies. Only LINE_TABLE_RULE_NOS (1-8, 10,
+    // 16-19) are seeded here - header-level points (9, 11, 12, 13, 14, 15)
+    // no longer live in AuditResult.results at all, so they're computed
+    // separately below (headerControlWise), once per PO instead of once
+    // per line.
     const controlWise = {};
-    for (let i = 1; i <= 19; i++) {
-      controlWise[String(i)] = {
+    for (const pointNo of LINE_TABLE_RULE_NOS) {
+      controlWise[String(pointNo)] = {
         verified: 0,
         notVerified: 0,
         manual: 0,
@@ -256,12 +245,6 @@ export const getExecutiveSummary = async (req, res) => {
     const byPoNumber = {};
     const monthlyExceptions = {};
 
-    // verified/notVerified counters keyed by plant / vendor / PO number, for
-    // the "-wise Compliance" charts. Unlike byPlant/byVendor/byPoNumber
-    // above (which only ever fill on an exception, for the exception-count
-    // charts), these accumulate on EVERY point so a proper
-    // verified-vs-notVerified % can be computed per plant/vendor/PO, exactly
-    // like controlWise / byPurchaseGroup / byPoType already do.
     const byPlantCompliance = {};
     const byVendorCompliance = {};
     const byPoNumberCompliance = {};
@@ -306,6 +289,12 @@ export const getExecutiveSummary = async (req, res) => {
       let lineHasException = false;
       for (const point of row.results || []) {
         const pointNo = String(point.pointNo);
+        // Defensive: header-level points should never be in row.results
+        // anymore (engine.py/addpo.js only write LINE_ONLY_RULES there),
+        // but skip them here too in case an older import still has them,
+        // so they never silently double-count into the line-level chart.
+        if (HEADER_LEVEL_RULE_NOS.includes(Number(pointNo))) continue;
+
         controlWise[pointNo] = controlWise[pointNo] || {
           verified: 0,
           notVerified: 0,
@@ -429,6 +418,76 @@ export const getExecutiveSummary = async (req, res) => {
       notVerified: notVerifiedCount,
     });
 
+    // ------------------------------------------------------------------
+    // HEADER-LEVEL block. Reuses the SAME scoped/filtered po_number set
+    // already collected above (poNumbers) so header compliance always
+    // agrees with whatever date/plant/vendor/purchase-group filters are
+    // active on the line-level charts - no separate filter-matching logic
+    // needed on PoHeaderResult itself. Each PO counts ONCE here, no
+    // matter how many line items it has.
+    // ------------------------------------------------------------------
+    const headerRecords = poNumbers.size
+      ? await prisma.poHeaderResult.findMany({
+          where: { po_number: { in: [...poNumbers] } },
+        })
+      : [];
+
+    const headerControlWise = {};
+    for (const pointNo of HEADER_LEVEL_RULE_NOS) {
+      headerControlWise[String(pointNo)] = {
+        verified: 0,
+        notVerified: 0,
+        manual: 0,
+        na: 0,
+      };
+    }
+    let headerVerifiedCount = 0;
+    let headerNotVerifiedCount = 0;
+    let headerNaCount = 0;
+    let headerManualCount = 0;
+    let headerClosedCount = 0;
+
+    for (const hr of headerRecords) {
+      if (hr.remarksLocked) headerClosedCount++;
+      for (const point of hr.results || []) {
+        const pointNo = String(point.pointNo);
+        if (!headerControlWise[pointNo]) continue; // ignore anything unexpected
+        const status = classifyPoint(point);
+        if (status === "na") {
+          headerNaCount++;
+          headerControlWise[pointNo].na++;
+        } else if (status === "manual") {
+          headerManualCount++;
+          headerControlWise[pointNo].manual++;
+        } else if (status === "verified") {
+          headerVerifiedCount++;
+          headerControlWise[pointNo].verified++;
+        } else {
+          headerNotVerifiedCount++;
+          headerControlWise[pointNo].notVerified++;
+        }
+      }
+    }
+
+    const headerControlWiseCompliance = Object.entries(headerControlWise)
+      .map(([pointNo, v]) => ({
+        pointNo,
+        scope: "header",
+        severity: severityOf(pointNo),
+        label: pointLabel(pointNo),
+        title: POINT_DEFINITIONS_BY_NO[pointNo]?.title || pointLabel(pointNo),
+        summary: POINT_DEFINITIONS_BY_NO[pointNo]?.summary || "",
+        compliancePct: compliancePctOf(v),
+        verified: v.verified,
+        notVerified: v.notVerified,
+      }))
+      .sort((a, b) => Number(a.pointNo) - Number(b.pointNo));
+
+    const headerCompliancePct = compliancePctOf({
+      verified: headerVerifiedCount,
+      notVerified: headerNotVerifiedCount,
+    });
+
     const topN = (obj, n = 10) =>
       Object.entries(obj)
         .sort((a, b) => b[1].count - a[1].count)
@@ -458,9 +517,6 @@ export const getExecutiveSummary = async (req, res) => {
         valueExposure: Number(v.valueExposure.toFixed(2)),
       }));
 
-    // Plant-Wise Compliance. Returns every plant (there are relatively
-    // few), worst compliance first, so the dashboard reads top-to-bottom
-    // as "which plants need attention".
     const plantWiseCompliance = Object.entries(byPlantCompliance)
       .map(([plant, v]) => ({
         plant,
@@ -471,9 +527,6 @@ export const getExecutiveSummary = async (req, res) => {
       }))
       .sort((a, b) => (a.compliancePct ?? 101) - (b.compliancePct ?? 101));
 
-    // Vendor-Wise Compliance. Vendor cardinality can be large, so this is
-    // capped to the 15 vendors with the most not-verified lines (i.e. the
-    // vendors contributing the most compliance risk).
     const vendorWiseCompliance = Object.entries(byVendorCompliance)
       .map(([vendorCode, v]) => {
         const vendor = getVendorInfo(vendorCode);
@@ -488,9 +541,6 @@ export const getExecutiveSummary = async (req, res) => {
       .sort((a, b) => b.notVerified - a.notVerified)
       .slice(0, 15);
 
-    // PO-Number-Wise Compliance. Same idea — PO cardinality is the largest
-    // of the group, so capped to the 15 worst-offending POs by not-verified
-    // line count.
     const poNumberWiseCompliance = Object.entries(byPoNumberCompliance)
       .map(([poNumber, v]) => ({
         poNumber,
@@ -501,14 +551,6 @@ export const getExecutiveSummary = async (req, res) => {
       .sort((a, b) => b.notVerified - a.notVerified)
       .slice(0, 15);
 
-    // NEW CHART: Purchase Group-Wise Compliance. byPurchaseGroup was already
-    // being accumulated (it feeds the older `purchaseGroupCompliance` shape
-    // below), but it was never surfaced on the dashboard as its own panel
-    // and wasn't sorted. This now mirrors plantWiseCompliance: every
-    // purchasing group (there are relatively few, per PURCHASE_GROUPS),
-    // worst compliance first, enriched with the master-data name via
-    // getPurchaseGroupName() so the chart/CSV/drilldown all read the same
-    // human-friendly label as every other "-wise" chart on this dashboard.
     const purchaseGroupWiseCompliance = Object.entries(byPurchaseGroup)
       .map(([group, v]) => ({
         purchaseGroup: group,
@@ -538,11 +580,25 @@ export const getExecutiveSummary = async (req, res) => {
         overallComplianceScore: complianceScore,
         highRiskExceptions,
         exceptionValueExposure: Number(exceptionValueExposure.toFixed(2)),
+        // NEW - header-level (PO-wide) KPIs, kept in their own nested
+        // object so nothing that reads the flat line-level keys above
+        // breaks. Each PO counts once regardless of line-item count.
+        header: {
+          totalPOsWithHeaderData: headerRecords.length,
+          verifiedCount: headerVerifiedCount,
+          notVerifiedCount: headerNotVerifiedCount,
+          notApplicableCount: headerNaCount,
+          manualReviewCount: headerManualCount,
+          overallComplianceScore: headerCompliancePct,
+          closedPOCount: headerClosedCount,
+          openPOCount: Math.max(headerRecords.length - headerClosedCount, 0),
+        },
       },
       charts: {
         controlWiseCompliance: Object.entries(controlWise)
           .map(([pointNo, v]) => ({
             pointNo,
+            scope: "line",
             severity: severityOf(pointNo),
             label: pointLabel(pointNo),
             title:
@@ -553,6 +609,14 @@ export const getExecutiveSummary = async (req, res) => {
             notVerified: v.notVerified,
           }))
           .sort((a, b) => Number(a.pointNo) - Number(b.pointNo)),
+        // NEW - header-level control-wise compliance. Same shape as
+        // controlWiseCompliance above (so it can reuse the same chart
+        // component), but each data point is ONE PO, not one PO line, and
+        // only covers points 9, 11, 12, 13, 14, 15. Render this as its own
+        // clearly-labeled panel - do NOT merge into controlWiseCompliance,
+        // since the denominators mean different things (line-count vs
+        // PO-count).
+        headerControlWiseCompliance,
         poWiseExceptions: poWiseExceptionsAll,
         exceptionBySeverity: SEVERITY_LEVELS.map((severity) => ({
           severity,
@@ -567,8 +631,6 @@ export const getExecutiveSummary = async (req, res) => {
                 )
               : 0,
         })),
-        // Legacy/unsorted shape kept intact in case any other consumer
-        // (e.g. an older client build) still reads it directly.
         purchaseGroupCompliance: Object.entries(byPurchaseGroup).map(
           ([group, v]) => ({
             purchaseGroup: group,
@@ -594,8 +656,6 @@ export const getExecutiveSummary = async (req, res) => {
         plantWiseCompliance,
         vendorWiseCompliance,
         poNumberWiseCompliance,
-        // NEW — sorted, master-data-enriched Purchase Group-Wise Compliance
-        // chart, rendered on the dashboard below Plant-Wise Compliance.
         purchaseGroupWiseCompliance,
         monthlyExceptionTrend: Object.entries(monthlyExceptions)
           .sort((a, b) => (a[0] < b[0] ? -1 : 1))
@@ -623,10 +683,6 @@ export const getFilterOptions = async (req, res) => {
     const isUnrestricted =
       user.isAdmin || user.isProcurementManager || !user.isBuyer;
 
-    // A Buyer's filter options are limited to their own purchasing group's
-    // data (they'd never usefully filter by another group's plant/vendor
-    // anyway, and this avoids exposing the full company's vendor/plant
-    // list to someone whose data access is otherwise scoped down).
     const scopeWhere = isUnrestricted
       ? {}
       : {
@@ -723,9 +779,6 @@ export const getExecutiveDrilldown = async (req, res) => {
     if (!dimension)
       return res.status(400).json({ message: "dimension is required" });
 
-    // Same scoping as getExecutiveSummary - a Buyer's drilldown can never
-    // show rows outside their own purchasing group, no matter which
-    // KPI/chart segment/dimension they clicked to get here.
     const where = buildWhere(filterBody, user);
     const rows = await prisma.auditResult.findMany({
       where,
@@ -737,14 +790,6 @@ export const getExecutiveDrilldown = async (req, res) => {
     const matchesDimension = (row) => {
       switch (dimension) {
         case "plant":
-          // FIX: previously this ALWAYS required rowHasException(row), so
-          // clicking the "Verified" segment of the Plant-Wise Compliance
-          // chart (statusFilter: "verified") returned zero rows. When a
-          // statusFilter is supplied, let matchesStatusFilter below do the
-          // verified/notVerified/na/manual split instead; only fall back
-          // to "exceptions only" when no statusFilter was given, which
-          // preserves the old behavior for any existing exception-only
-          // callers (e.g. plantWiseExceptions).
           return (
             (row.plant || "Unassigned") === value &&
             (statusFilter ? true : rowHasException(row))
@@ -760,11 +805,6 @@ export const getExecutiveDrilldown = async (req, res) => {
             (statusFilter ? true : rowHasException(row))
           );
         case "purchaseGroup":
-          // Same treatment as plant/vendor/poNumber above: a statusFilter
-          // (e.g. "verified" from clicking the verified segment of the new
-          // Purchase Group-Wise Compliance chart) is handled by
-          // matchesStatusFilter below, so this only needs to match the
-          // group itself.
           return (row.purchase_group || "Unassigned") === value;
         case "poType":
           return (row.po_type || "Unknown") === value;
@@ -873,6 +913,111 @@ export const getExecutiveDrilldown = async (req, res) => {
   } catch (error) {
     console.error("Error in getExecutiveDrilldown:", error);
     res.status(500).json({ message: "Failed to compute drilldown" });
+  }
+};
+
+/**
+ * POST /reports/executive-header-drilldown
+ *
+ * The HEADER-LEVEL counterpart to getExecutiveDrilldown. Clicking a bar
+ * on the "PO Header-Level Compliance" chart lands here instead - the
+ * result list is PO NUMBERS (one row per PO), not PO line items, because
+ * a header-level point's result belongs to the whole PO. Reuses the same
+ * buildWhere() scoping (dates/plant/vendor/purchase-group/role) by first
+ * collecting the in-scope PO numbers from AuditResult, then reading their
+ * po_header_results rows - identical scoping approach to the header block
+ * in getExecutiveSummary above.
+ */
+export const getExecutiveHeaderDrilldown = async (req, res) => {
+  try {
+    await ensureSeverityLoaded();
+    const user = req.user || {};
+    const {
+      pointNo,
+      statusFilter,
+      page = 1,
+      pageSize = 25,
+      ...filterBody
+    } = req.body || {};
+    if (!pointNo)
+      return res.status(400).json({ message: "pointNo is required" });
+
+    const where = buildWhere(filterBody, user);
+    const scopedRows = await prisma.auditResult.findMany({
+      where,
+      select: { po_number: true },
+    });
+    const poNumbers = [
+      ...new Set(scopedRows.map((r) => r.po_number).filter(Boolean)),
+    ];
+
+    if (!poNumbers.length) {
+      return res.status(200).json({
+        results: [],
+        total: 0,
+        page: Number(page),
+        pageSize: Number(pageSize) || 25,
+        pointNo,
+        scope: scopeOf(user),
+      });
+    }
+
+    const headerRows = await prisma.poHeaderResult.findMany({
+      where: { po_number: { in: poNumbers } },
+    });
+
+    const filtered = headerRows
+      .map((hr) => {
+        const point = (hr.results || []).find(
+          (p) => String(p.pointNo) === String(pointNo),
+        );
+        return { hr, point };
+      })
+      .filter(({ point }) => {
+        if (!point) return false;
+        const status = classifyPoint(point);
+        return statusFilter
+          ? status === statusFilter
+          : status === "notVerified";
+      });
+
+    const take = Math.min(Number(pageSize) || 25, 200);
+    const skip = (Math.max(Number(page) || 1, 1) - 1) * take;
+
+    const paged = filtered.slice(skip, skip + take).map(({ hr, point }) => {
+      const vendor = getVendorInfo(hr.vendor_code);
+      return {
+        po_number: hr.po_number,
+        vendorCode: hr.vendor_code,
+        vendorName: vendor?.name || getVendorName(hr.vendor_code),
+        poType: hr.po_type,
+        poTypeName: getPoTypeName(hr.po_type),
+        purchaseGroup: hr.purchase_group,
+        purchaseGroupName: getPurchaseGroupName(hr.purchase_group),
+        headerLocked: hr.remarksLocked,
+        headerLockedAt: hr.remarksLockedAt,
+        pointNo,
+        title: POINT_DEFINITIONS_BY_NO[String(pointNo)]?.title,
+        result: {
+          ...point,
+          severity: severityOf(pointNo),
+        },
+      };
+    });
+
+    return res.status(200).json({
+      results: paged,
+      total: filtered.length,
+      page: Number(page),
+      pageSize: take,
+      pointNo,
+      scope: scopeOf(user),
+    });
+  } catch (error) {
+    console.error("Error in getExecutiveHeaderDrilldown:", error);
+    return res
+      .status(500)
+      .json({ message: "Failed to compute header drilldown" });
   }
 };
 

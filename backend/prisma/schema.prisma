@@ -3,18 +3,24 @@
 // (or `npx prisma migrate dev`) against DATABASE_URL to create these tables -
 // you do not need to run schema.sql separately if you use this file.
 //
-// CHANGES IN THIS VERSION (RC Overlap access control):
-//   - RcOverlapResult gained a `purchaseGroups String[]` field: the set of
-//     purchasing groups whose PO lines actually reference this RC (derived
-//     by engine.py by cross-referencing POAUDIT against POAUDITRC at build
-//     time — RC master data has no purchasing-group column of its own).
-//     This is what lets the RC Overlap controller scope a Buyer's view down
-//     to "RCs relevant to my purchasing group", the same way PO Data scopes
-//     buyers by `purchase_group` on AuditResult.
-//   Nothing else changed — purely additive.
+// CHANGES IN THIS VERSION (Header-Level closing is now its own system):
+//   - PoHeaderResult gained remarksLocked/remarksLockedBy/remarksLockedAt -
+//     the SAME "checked" concept AuditResult already has for line items,
+//     but scoped to the whole PO. Closing header-level points (9, 11, 12,
+//     13, 14, 15) is now a PO-level action, completely independent of
+//     closing any individual line item. A buyer closes it ONCE per PO;
+//     every line item of that PO then shows "Header Checks: Closed" -
+//     they never re-review it.
+//   - NEW MODEL: PoHeaderRemark. Buyer remarks against a header-level point
+//     are now attached to (po_number, pointNo) instead of
+//     (auditResultId, pointNo) - there's no single "line item" a header
+//     remark belongs to. Mirrors PoRemark's shape/locking rules exactly,
+//     just keyed at PO level.
+//   Nothing else changed.
 //
-// (Earlier revisions — RC Overlap gets its own section; buyer remarks + PM
-// advanced filtering — are unchanged and still present below.)
+// (Earlier revisions - PoHeaderResult itself, RC Overlap access control,
+// buyer remarks + PM advanced filtering - are unchanged and still present
+// below.)
 
 generator client {
   provider = "prisma-client-js"
@@ -65,6 +71,7 @@ model User {
   workflowSteps     VerificationWorkflowStep[]
   verifiedManuals   ManualVerification[]
   poRemarks         PoRemark[] // remarks this user has submitted (buyers, mainly)
+  poHeaderRemarks   PoHeaderRemark[] // header-level (PO-wide) remarks this user has submitted
 
   @@map("users")
 }
@@ -199,8 +206,11 @@ model AuditResult {
   withHoldingTaxRate     String?   @map("with_holding_tax_rate")
   specialGlIndicator     String?   @map("special_gl_indicator")
 
-  // "checked" flag. Once true, no remarks can be added, edited, or
-  // deleted against ANY point on this line item, by anyone.
+  // LINE-ITEM "checked" flag. Once true, no LINE-LEVEL remarks can be
+  // added, edited, or deleted against ANY line-level point on this line
+  // item, by anyone. Completely independent of PoHeaderResult's
+  // remarksLocked below - closing a line item does NOT close the PO's
+  // header, and vice versa.
   remarksLocked           Boolean   @default(false) @map("remarks_locked")
   remarksLockedBy         String?   @map("remarks_locked_by")
   remarksLockedAt         DateTime? @map("remarks_locked_at")
@@ -222,6 +232,69 @@ model AuditResult {
   @@index([po_status])
   @@index([purchase_group])
   @@map("audit_results")
+}
+
+// ---------------------------------------------------------------------------
+// po_header_results — one row per PO NUMBER, holding only the HEADER-LEVEL
+// audit points (9, 11, 12, 13, 14, 15). Populated by engine.py's
+// --header-json output via `node addheader.js <file>`.
+//
+// remarksLocked/By/At — the PO-LEVEL "checked" flag. This is a SEPARATE
+// closing system from AuditResult.remarksLocked (line-level): a buyer
+// closes header checks ONCE for the whole PO; every line item of that PO
+// then reports "Header Checks: Closed" without re-review. Independent in
+// both directions - closing a line item never touches this, closing the
+// header never touches any line item's own remarksLocked.
+//
+// Not linked by foreign key to AuditResult (same pattern as
+// RcOverlapResult) — matched purely by po_number, since a single PO
+// number can correspond to many AuditResult line-item rows and this
+// table intentionally holds one row regardless of line count.
+// ---------------------------------------------------------------------------
+model PoHeaderResult {
+  id             String   @id @default(uuid())
+  po_number      String   @unique
+  vendor_code    String?
+  purchase_group String?
+  po_type        String?
+  results        Json     @default("[]") // header-level points: 9, 11, 12, 13, 14, 15
+
+  remarksLocked   Boolean   @default(false) @map("remarks_locked")
+  remarksLockedBy String?   @map("remarks_locked_by")
+  remarksLockedAt DateTime? @map("remarks_locked_at")
+
+  auditedOn      DateTime @default(now())
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  headerRemarks  PoHeaderRemark[]
+
+  @@index([po_number])
+  @@index([purchase_group])
+  @@map("po_header_results")
+}
+
+// ---------------------------------------------------------------------------
+// po_header_remarks — one row per remark a buyer (or admin/PM) leaves
+// against a specific HEADER-LEVEL audit point, for a specific PO NUMBER
+// (not a line item - there isn't one to attach to). Mirrors po_remarks
+// exactly, just keyed by po_number instead of auditResultId + po_line_item.
+// ---------------------------------------------------------------------------
+model PoHeaderRemark {
+  id            String   @id @default(uuid())
+  po_number     String
+  pointNo       Int      @map("point_no")
+  remark        String
+  submittedBy   String   @map("submitted_by")
+  submittedAt   DateTime @default(now()) @map("submitted_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  poHeaderResult PoHeaderResult @relation(fields: [po_number], references: [po_number], onDelete: Cascade)
+  submitter      User           @relation(fields: [submittedBy], references: [id])
+
+  @@unique([po_number, pointNo, submittedBy])
+  @@index([po_number])
+  @@map("po_header_remarks")
 }
 
 // ---------------------------------------------------------------------------
@@ -281,7 +354,7 @@ model ManualVerification {
 
 // ---------------------------------------------------------------------------
 // po_remarks — one row per remark a buyer (or admin/PM) leaves against
-// a specific audit point, on a specific PO line item.
+// a specific LINE-LEVEL audit point, on a specific PO line item.
 // ---------------------------------------------------------------------------
 model PoRemark {
   id            String   @id @default(uuid())
@@ -309,15 +382,6 @@ model PoRemark {
 // rc_overlap_results — Rule 19 (RC Overlap), at the RC level, keyed by
 // (vendor, RC material code, RC number). Backs the standalone "RC Overlap"
 // section/page instead of point #19 inside a PO line's `results` array.
-//
-// `purchaseGroups` is the derived set of purchasing groups whose PO lines
-// (in POAUDIT) actually reference this RC — computed by engine.py by
-// cross-referencing POAUDIT against POAUDITRC at build time, since RC
-// master data itself carries no purchasing-group column. This is what lets
-// a Buyer's RC Overlap view be scoped down to "RCs relevant to my group",
-// the same way PO Data scopes buyers by AuditResult.purchase_group.
-// An RC can reasonably belong to more than one purchasing group's POs, so
-// this is an array, not a single value.
 // ---------------------------------------------------------------------------
 model RcOverlapResult {
   id             String    @id @default(uuid())

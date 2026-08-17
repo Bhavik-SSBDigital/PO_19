@@ -10,19 +10,11 @@ import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
 import PanToolAltRoundedIcon from "@mui/icons-material/PanToolAltRounded";
 import TaskAltRoundedIcon from "@mui/icons-material/TaskAltRounded";
 import { post } from "utils/axiosApi";
+import PoHeaderChecksPanel from "./PoHeaderChecksPanel";
 
-// "results" and "exceptionPoints" are rendered by the dedicated block below,
-// not the generic array-of-objects dumper — so exclude both here.
-//
-// Everything in PO_SUMMARY_RAW_KEYS is ALSO excluded from the generic dump
-// below: those raw/duplicate fields (vendor_code, nameOfVendor,
-// GSTInOfVendor, plant, po_type, purchase_group, payment_term, tax_code,
-// plus their already-enriched vendorName/vendorGstin/plantName/... twins)
-// are shown exactly once, in the curated PoSummaryHeader instead. Before
-// this change they were ALSO showing up as separate, unlabeled tiles in the
-// generic grid below — so a blank raw "GSTInOfVendor" tile sat right next
-// to the correct enriched "vendorGstin" tile, which is what made GST look
-// wrong/inconsistent in this dialog specifically.
+// "results", "header" and "exceptionPoints" are rendered by dedicated
+// blocks below, not the generic array-of-objects dumper — so exclude all
+// three here.
 const PO_SUMMARY_RAW_KEYS = new Set([
   "vendor_code", "vendorCode", "nameOfVendor", "vendorName",
   "GSTInOfVendor", "vendorGstin",
@@ -36,14 +28,10 @@ const PO_SUMMARY_RAW_KEYS = new Set([
 ]);
 
 const PREVIEW_EXCLUDE_KEYS = new Set([
-  "_id", "__v", "processDocuments", "multipleMatches", "results", "exceptionPoints",
+  "_id", "__v", "processDocuments", "multipleMatches", "results", "header", "headerResults", "exceptionPoints",
   ...PO_SUMMARY_RAW_KEYS,
 ]);
 
-// Ordered, de-duplicated PO summary fields — same set shown on the search
-// page's PoSummaryHeader, tried through every field-name alias the backend
-// has used across controller versions so it degrades gracefully instead of
-// ever showing a stale/blank tile.
 const PO_SUMMARY_FIELDS = [
   ["PO Number", (d) => d.po_number || d.poNumber],
   ["Line Item", (d) => d.lineItem || d.po_line_item],
@@ -127,9 +115,6 @@ const getSeverityColor = (severity) => {
   }
 };
 
-// Same status chip used by the search page's results-table.jsx — kept local
-// here (rather than imported) since this dialog can be mounted from more
-// than one folder depth and the relative import path isn't guaranteed.
 const VerificationChip = ({ result }) => {
   if (result.manual_verification) {
     return (
@@ -153,16 +138,12 @@ const VerificationChip = ({ result }) => {
   return <Chip icon={<TaskAltRoundedIcon style={{ fontSize: "13px" }} />} size="small" label="Not Verified" color="error" sx={{ borderRadius: "20px", fontSize: "12px", fontWeight: "700" }} />;
 };
 
-// Curated, always-in-the-same-order PO summary strip. Renders exactly once
-// per field (no raw/enriched duplicates) so Vendor and GSTIN are
-// unambiguous — this is what replaces the old "dump every scalar field"
-// behavior for these particular fields.
 const PoSummaryHeader = ({ details }) => {
   if (!details) return null;
   return (
     <Box sx={{ mb: 3 }}>
       <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1.5, color: "text.secondary" }}>
-        PO Summary
+        Line Item Summary
       </Typography>
       <Grid container spacing={2}>
         {PO_SUMMARY_FIELDS.map(([label, getValue]) => {
@@ -186,15 +167,46 @@ const PoSummaryHeader = ({ details }) => {
 
 /**
  * Shared, dependency-free preview of a PO line's audit details/results.
- * Used by BOTH the Executive Dashboard's PO-Wise Exceptions table AND the
- * Drilldown dialog table (and any future table listing PO lines), so the
- * "Open in New Tab" / "View Details Here" behavior is not tied to a single
- * table anymore.
+ * Used by the Executive Dashboard's PO-Wise Exceptions table, the
+ * Drilldown dialog table, and the PO Data page.
+ *
+ * `details.header` (compact: { points, totalPoints, verifiedCount,
+ * notVerifiedCount, locked, lockedBy, lockedAt }) is rendered via the SAME
+ * PoHeaderChecksPanel used on the search page - compact by default here
+ * (a one-line "Header Checks: Closed" banner, expandable), so header
+ * status reads identically wherever it appears across the app. This
+ * dialog does NOT show its own separate header table anymore.
  */
 const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage }) => {
   const [loading, setLoading] = useState(false);
   const [details, setDetails] = useState(null);
   const [error, setError] = useState("");
+
+  const role = typeof window !== "undefined" ? localStorage.getItem("role") : "";
+  const currentUserId = typeof window !== "undefined" ? localStorage.getItem("userId") : null;
+  const roleFlags = {
+    isBuyer: role === "isBuyer",
+    isAdmin: role === "isAdmin",
+    isProcurementManager: role === "isProcurementManager",
+  };
+
+  const load = async () => {
+    if (!preview) return;
+    setLoading(true);
+    setError("");
+    setDetails(null);
+    try {
+      const res = await post("/getPOAuditResult", {
+        po_number: preview.poNumber,
+        po_line_item: preview.lineItem || undefined,
+      });
+      setDetails(res);
+    } catch (err) {
+      setError(err?.response?.data?.message || err?.message || "Failed to load PO details");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (!preview) {
@@ -203,51 +215,30 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage }) => {
       return;
     }
     let cancelled = false;
-    const load = async () => {
-      setLoading(true);
-      setError("");
-      setDetails(null);
-      try {
-        const res = await post("/getPOAuditResult", {
-          po_number: preview.poNumber,
-          po_line_item: preview.lineItem || undefined,
-        });
-        if (cancelled) return;
-        if (res?.multipleMatches) {
-          setError("This PO has multiple line items. Please open the full search page to choose one.");
-        } else {
-          setDetails(res);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err?.response?.data?.message || err?.message || "Failed to load PO details");
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-    load();
+    (async () => {
+      if (!cancelled) await load();
+    })();
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preview]);
 
-  // Everything EXCEPT the curated PO_SUMMARY_RAW_KEYS (those are rendered
-  // once, unambiguously, by PoSummaryHeader above). This is what stops the
-  // duplicate/blank "second GST tile" problem.
+  const isHeaderOnly = details?.scope === "po-header";
+
   const scalarEntries = useMemo(() => {
-    if (!details) return [];
+    if (!details || isHeaderOnly) return [];
     return Object.entries(details).filter(
       ([k, v]) => !PREVIEW_EXCLUDE_KEYS.has(k) && v !== null && v !== undefined && typeof v !== "object"
     );
-  }, [details]);
+  }, [details, isHeaderOnly]);
 
   const tableFields = useMemo(() => {
-    if (!details) return [];
+    if (!details || isHeaderOnly) return [];
     return Object.entries(details).filter(
       ([k, v]) => !PREVIEW_EXCLUDE_KEYS.has(k) && Array.isArray(v) && v.length && typeof v[0] === "object"
     );
-  }, [details]);
+  }, [details, isHeaderOnly]);
 
   return (
     <Dialog open={!!preview} onClose={onClose} maxWidth="md" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
@@ -276,9 +267,44 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage }) => {
             {error}
           </Typography>
         )}
-        {!loading && !error && details && (
+
+        {!loading && !error && details && isHeaderOnly && (
+          <Box>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              {details.vendorName || details.vendorCode} · {details.plantName || "—"} ·{" "}
+              {details.purchaseGroupName || details.purchaseGroup} · {details.lineItemCount} line item(s)
+            </Typography>
+            <PoHeaderChecksPanel
+              poNumber={details.po_number}
+              header={details.header}
+              currentUserId={currentUserId}
+              isBuyer={roleFlags.isBuyer}
+              isAdmin={roleFlags.isAdmin}
+              isProcurementManager={roleFlags.isProcurementManager}
+              variant="full"
+              onChanged={load}
+            />
+          </Box>
+        )}
+
+        {!loading && !error && details && !isHeaderOnly && (
           <Box>
             <PoSummaryHeader details={details} />
+
+            {/* Compact header-status banner - same component/behavior as
+                the search page, so status reads identically everywhere. */}
+            {details.header && (
+              <PoHeaderChecksPanel
+                poNumber={details.po_number}
+                header={details.header}
+                currentUserId={currentUserId}
+                isBuyer={roleFlags.isBuyer}
+                isAdmin={roleFlags.isAdmin}
+                isProcurementManager={roleFlags.isProcurementManager}
+                variant="compact"
+                onChanged={load}
+              />
+            )}
 
             {scalarEntries.length > 0 && (
               <Box sx={{ mb: 3 }}>
@@ -301,7 +327,7 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage }) => {
             {Array.isArray(details.results) && details.results.length > 0 && (
               <Box sx={{ mb: 3 }}>
                 <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
-                  Check PO Results
+                  Line-Level Checks
                 </Typography>
                 <TableContainer component={Paper} variant="outlined">
                   <Table size="small">
@@ -396,6 +422,7 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage }) => {
             ))}
           </Box>
         )}
+
         {!loading && !error && !details && (
           <Typography color="text.secondary" sx={{ py: 4, textAlign: "center" }}>
             No details found for this PO.
@@ -404,12 +431,16 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage }) => {
       </DialogContent>
       <DialogActions sx={{ p: 2 }}>
         <Button onClick={onClose}>Close</Button>
-        <Button variant="outlined" startIcon={<OpenInNewRoundedIcon />} onClick={() => onOpenFullPage(preview, true)}>
-          Open in New Tab
-        </Button>
-        <Button variant="contained" onClick={() => onOpenFullPage(preview, false)}>
-          Go to Full Search Page
-        </Button>
+        {!isHeaderOnly && (
+          <>
+            <Button variant="outlined" startIcon={<OpenInNewRoundedIcon />} onClick={() => onOpenFullPage(preview, true)}>
+              Open in New Tab
+            </Button>
+            <Button variant="contained" onClick={() => onOpenFullPage(preview, false)}>
+              Go to Full Search Page
+            </Button>
+          </>
+        )}
       </DialogActions>
     </Dialog>
   );

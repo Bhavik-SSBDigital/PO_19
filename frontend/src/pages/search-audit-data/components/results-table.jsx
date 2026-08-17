@@ -22,14 +22,21 @@ import LockOpenRoundedIcon from "@mui/icons-material/LockOpenRounded";
 import { toast } from "react-toastify";
 
 import PointRemarkPanel from "../../executive-dashboard/components/PointRemarkPanel";
-import { getPoRemarks, setAuditResultCheckedStatus } from "../../../api/api-functions";
+import {
+  getPoRemarks,
+  setAuditResultCheckedStatus,
+} from "../../../api/api-functions";
 
 // ── Shared chip exported so AuditResultReview can reuse it ──────────────────
 export const VerificationChip = ({ result }) => {
   if (result.manual_verification) {
     return (
       <Chip
-        icon={<PanToolAltRoundedIcon style={{ fontSize: "13px", color: "#b45309" }} />}
+        icon={
+          <PanToolAltRoundedIcon
+            style={{ fontSize: "13px", color: "#b45309" }}
+          />
+        }
         size="small"
         label="Manual Verify"
         sx={{
@@ -124,13 +131,17 @@ const getSeverityColor = (severity) => {
   }
 };
 
-// ==============================|| AUDIT RESULTS TABLE ||============================== //
-
+// ==============================|| AUDIT RESULTS TABLE (LINE-LEVEL ONLY) ||=
+//
+// This table shows ONLY line-item-level checks (searchData.results - the
+// 10 line-level points). It intentionally shows NOTHING header-level -
+// header-level points (7, 8, 9, 11, 12, 13, 14, 15, 19) belong to
+// PoHeaderChecksPanel, rendered by the PARENT page (search-audit-data's
+// index.jsx), not here. This keeps the two systems visually and
+// structurally separate, per design: a line item's results table is pure
+// line-item detail, full stop.
 const AuditResults = ({ searchData }) => {
   // Who's logged in.
-  // FIX — "userId" is now set as a flat key at login time (AuthLogin.jsx),
-  // so this simple read is correct again — no more digging into
-  // logsDetails.
   const role = localStorage.getItem("role");
   const currentUserId = localStorage.getItem("userId");
   const isBuyer = role === "isBuyer";
@@ -142,12 +153,13 @@ const AuditResults = ({ searchData }) => {
   const poNumber = searchData?.po_number;
   const poLineItem = searchData?.lineItem || searchData?.po_line_item;
 
-  // Whether this line item's remarks are locked ("checked"), and
-  // busy-state for the toggle button.
+  // Whether THIS LINE ITEM's remarks are locked ("checked"). This is the
+  // line-level lock (AuditResult.remarksLocked) - entirely separate from
+  // the PO's header lock, which is shown/controlled by
+  // PoHeaderChecksPanel elsewhere on the page.
   const [locked, setLocked] = useState(false);
   const [lockBusy, setLockBusy] = useState(false);
 
-  // Pull current lock state whenever we land on a different line item.
   useEffect(() => {
     if (!poNumber || !poLineItem) {
       setLocked(false);
@@ -178,21 +190,21 @@ const AuditResults = ({ searchData }) => {
       });
       setLocked(Boolean(res?.remarksLocked));
       toast.success(
-        res?.remarksLocked ? "Line item marked as checked" : "Line item reopened"
+        res?.remarksLocked
+          ? "Line item marked as checked"
+          : "Line item reopened",
       );
     } catch (error) {
       toast.error(
-        error?.response?.data?.message || error?.message || "Failed to update checked status"
+        error?.response?.data?.message ||
+          error?.message ||
+          "Failed to update checked status",
       );
     } finally {
       setLockBusy(false);
     }
   };
 
-  // If there is no data or no results array, do not render the table.
-  // (This check happens AFTER the hooks above on purpose — React requires
-  // hooks to run in the same order on every render, so an early return
-  // can never sit above a useState/useEffect.)
   if (!searchData || !searchData.results || searchData.results.length === 0) {
     return null;
   }
@@ -210,7 +222,7 @@ const AuditResults = ({ searchData }) => {
         }}
       >
         <Typography variant="h5" sx={{ fontWeight: 700 }}>
-          Check PO Results
+          Line-Level Checks
         </Typography>
 
         {poNumber && poLineItem && (
@@ -223,7 +235,7 @@ const AuditResults = ({ searchData }) => {
                   <LockOpenRoundedIcon fontSize="small" />
                 )
               }
-              label={locked ? "Checked — Remarks Locked" : "Open"}
+              label={locked ? "Line Item Checked — Remarks Locked" : "Open"}
               color={locked ? "warning" : "default"}
               size="small"
               sx={{ fontWeight: 700 }}
@@ -251,9 +263,15 @@ const AuditResults = ({ searchData }) => {
               <TableCell sx={{ fontWeight: 600, width: "22%" }}>
                 Title & Summary
               </TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "23%" }}>Logic</TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "7%" }}>Severity</TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "11%" }}>Status</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "23%" }}>
+                Logic
+              </TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "7%" }}>
+                Severity
+              </TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "11%" }}>
+                Status
+              </TableCell>
               <TableCell sx={{ fontWeight: 600, width: "13%" }}>
                 System Remarks
               </TableCell>

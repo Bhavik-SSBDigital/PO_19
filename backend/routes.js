@@ -23,14 +23,14 @@ import {
 import {
   getPoWiseExceptions,
   getPurchaseGroupsForFilter,
-  getPoTypesForFilter, // NEW
-  getPlantsForFilter, // NEW
+  getPoTypesForFilter,
+  getPlantsForFilter,
 } from "./controller/po-data-controller.js";
 import {
   getExecutiveSummary,
   getFilterOptions,
   getExecutiveDrilldown,
-  // getPointDefinitions,
+  getExecutiveHeaderDrilldown, // NEW - PO-level drilldown for the header chart
 } from "./controller/dashboard-controller.js";
 
 import {
@@ -52,6 +52,17 @@ import {
   getPoRemarksReportFilters,
 } from "./controller/po-remarks-report-controller.js";
 
+// NEW - the entire header-level (PO-wide) system: summary fetch, remarks
+// CRUD, and the PO-level close/reopen toggle. See po-header-controller.js.
+import {
+  getPoHeaderSummary,
+  getPoHeaderRemarks,
+  submitPoHeaderRemark,
+  updatePoHeaderRemark,
+  deletePoHeaderRemark,
+  setPoHeaderCheckedStatus,
+} from "./controller/po-header-controller.js";
+
 const router = express.Router();
 
 // --- Auth ---
@@ -66,25 +77,17 @@ router.post("/getPOAuditResults", get_po_audit_results);
 router.post("/getPOAuditResult", get_po_audit_result);
 
 // --- Dashboard (Executive P2P Compliance Control Tower) ---
-//
-// FIX: these three previously had NO requireAuth, so req.user was always
-// undefined here - dashboard-controller.js's Buyer-vs-everyone-else
-// purchase_group scoping silently never activated (a Buyer saw
-// company-wide numbers and could drill into any PO, same bug that PO Data
-// and RC Overlap were already fixed for).
-//
-// requireAuth ONLY (no requireAnyOf) is intentional: the Role model only
-// tracks isAdmin/isBuyer/isProcurementManager, but the dashboard is also
-// meant to stay reachable by other roles (head/auditor/executor/ssbd per
-// the sidebar nav config) that have none of those three flags set. Gating
-// with requireAnyOf(those three) would incorrectly 403 those roles.
-// dashboard-controller.js's own logic already does the right thing once
-// req.user is populated: only an actual Buyer gets scoped down; every
-// other authenticated role (including ones with all three flags false)
-// stays unrestricted, exactly as before.
 router.post("/reports/executive-summary", requireAuth, getExecutiveSummary);
 router.post("/reports/filter-options", requireAuth, getFilterOptions);
 router.post("/reports/executive-drilldown", requireAuth, getExecutiveDrilldown);
+// NEW - PO-level drilldown behind the "PO Header-Level Compliance" chart.
+// Separate from executive-drilldown on purpose: results here are PO
+// numbers, not PO line items.
+router.post(
+  "/reports/executive-header-drilldown",
+  requireAuth,
+  getExecutiveHeaderDrilldown,
+);
 
 router.get("/getRoles", getRoles);
 router.get("/getUsers", get_users);
@@ -109,9 +112,6 @@ router.post(
   getPurchaseGroupsForFilter,
 );
 
-// NEW — PO type and plant option lists for the advanced filter dropdowns.
-// Not purchasing-group scoped, so any of the three PO-Data-page roles can
-// fetch them.
 router.post(
   "/reports/po-types",
   requireAuth,
@@ -129,7 +129,7 @@ router.get("/reports/audit-point-config", getAuditPointConfig);
 router.post("/reports/audit-point-config", getAuditPointConfig);
 router.post("/risk-categorization/update-severity", updateAuditPointSeverity);
 
-// --- Buyer point-level remarks ---
+// --- Buyer point-level remarks (LINE-LEVEL) ---
 router.post(
   "/po-remarks/search",
   requireAuth,
@@ -163,10 +163,47 @@ router.post(
   setAuditResultCheckedStatus,
 );
 
+// --- HEADER-LEVEL (PO-wide) system - NEW ---
+// Completely separate closing/remarks system from the line-level one
+// above. getPoHeaderSummary is what the search page calls when a PO
+// number is searched WITHOUT a line item (header points + line-item
+// picker list). setPoHeaderCheckedStatus is the PO-level close/reopen -
+// independent of setAuditResultCheckedStatus (line-level) above.
+router.post("/getPOHeaderSummary", requireAuth, getPoHeaderSummary);
+
+router.post(
+  "/po-header-remarks/search",
+  requireAuth,
+  requireAnyOf("isBuyer", "isAdmin", "isProcurementManager"),
+  getPoHeaderRemarks,
+);
+router.post(
+  "/po-header-remarks",
+  requireAuth,
+  requireAnyOf("isBuyer"),
+  submitPoHeaderRemark,
+);
+router.post(
+  "/updatePoHeaderRemark",
+  requireAuth,
+  requireAnyOf("isBuyer"),
+  updatePoHeaderRemark,
+);
+router.delete(
+  "/po-header-remarks/:id",
+  requireAuth,
+  requireAnyOf("isBuyer"),
+  deletePoHeaderRemark,
+);
+router.post(
+  "/setPoHeaderCheckedStatus",
+  requireAuth,
+  requireAnyOf("isBuyer", "isAdmin", "isProcurementManager"),
+  setPoHeaderCheckedStatus,
+);
+
 // --- RC Overlap (Buyer scoped to own group via derived purchaseGroups[],
-// PM + Admin see all) --- rc-overlap-controller.js does its own internal
-// role checks (isAdmin/isBuyer/isProcurementManager) and 403s anyone else,
-// so no requireAnyOf is needed here beyond requireAuth populating req.user.
+// PM + Admin see all) ---
 router.post("/reports/rc-overlap", requireAuth, getRcOverlapResults);
 router.post("/reports/rc-overlap-detail", requireAuth, getRcOverlapDetail);
 router.post("/reports/rc-overlap-summary", requireAuth, getRcOverlapSummary);

@@ -15,6 +15,8 @@ import {
   getPoTypeName,
 } from "../utility/master-data.js";
 import { POINT_DEFINITIONS_BY_NO } from "../utility/point-reference.js";
+import { getHeaderForPo, getHeadersForPos } from "../utility/header-results.js";
+import { getPoHeaderSummary } from "./po-header-controller.js";
 
 function buildWhere(body = {}) {
   const and = [{ type: "PO" }];
@@ -136,6 +138,7 @@ const uniqueKeyOf = (row) =>
 function withPointReference(results) {
   return (results || []).map((p) => ({
     ...p,
+    scope: "line", // everything in AuditResult.results is line-level/"Others" now
     severity: severityOf(p.pointNo),
     ...(POINT_DEFINITIONS_BY_NO[String(p.pointNo)]
       ? {
@@ -147,8 +150,21 @@ function withPointReference(results) {
   }));
 }
 
-const withExceptionPoints = (row) => {
-  const vendor = getVendorInfo(row.vendor_code); // Look up vendor master info explicitly
+/**
+ * `results` holds ONLY the 13 line-level + "Others" points (1-8, 10,
+ * 16-19) - this is a LINE-ITEM view, and shows LINE-ITEM data only, per
+ * design. The PO's header-level points (9, 11, 12, 13, 14, 15) are
+ * attached separately as `header` - a compact status object
+ * ({ points, locked, lockedBy, lockedAt, verifiedCount, notVerifiedCount,
+ * totalPoints }), fetched ONCE for this PO number regardless of which
+ * line item is being viewed, and IDENTICAL across every line item of the
+ * same PO. This is what lets the frontend show a small "Header Checks:
+ * Closed" indicator on every line item without re-fetching/re-computing
+ * anything, and without mixing header rows into the line-item table.
+ */
+const withExceptionPoints = async (row) => {
+  const vendor = getVendorInfo(row.vendor_code);
+  const header = await getHeaderForPo(row.po_number);
 
   return {
     ...row,
@@ -156,6 +172,7 @@ const withExceptionPoints = (row) => {
       row.po_material_number || `${row.po_number}-${lineItemOf(row) ?? row.id}`,
     lineItem: lineItemOf(row),
     results: withPointReference(row.results),
+    header,
     exceptionPoints: exceptionPointsOf(row).map((ep) => ({
       ...ep,
       ...(POINT_DEFINITIONS_BY_NO[String(ep.pointNo)]
@@ -165,7 +182,6 @@ const withExceptionPoints = (row) => {
           }
         : {}),
     })),
-    // Fallback correctly applied for PO Search/Preview payloads
     vendorName:
       row.nameOfVendor || vendor?.name || getVendorName(row.vendor_code),
     vendorGstin: row.GSTInOfVendor || vendor?.gstin || "",
@@ -175,6 +191,51 @@ const withExceptionPoints = (row) => {
     paymentTermDescription: getPaymentTermDescription(row.payment_term),
   };
 };
+
+// Batch variant - used wherever a whole page of rows needs enriching at
+// once, so header status is fetched in a single query (getHeadersForPos)
+// instead of once per row, and each PO's header is computed once even if
+// several of its lines appear on the same page.
+async function withExceptionPointsBatch(rows) {
+  const headerMap = await getHeadersForPos(rows.map((r) => r.po_number));
+  return rows.map((row) => {
+    const vendor = getVendorInfo(row.vendor_code);
+    return {
+      ...row,
+      lineItemKey:
+        row.po_material_number ||
+        `${row.po_number}-${lineItemOf(row) ?? row.id}`,
+      lineItem: lineItemOf(row),
+      results: withPointReference(row.results),
+      header: headerMap.get(row.po_number) || {
+        poNumber: row.po_number,
+        points: [],
+        totalPoints: 0,
+        verifiedCount: 0,
+        notVerifiedCount: 0,
+        locked: false,
+        lockedBy: null,
+        lockedAt: null,
+      },
+      exceptionPoints: exceptionPointsOf(row).map((ep) => ({
+        ...ep,
+        ...(POINT_DEFINITIONS_BY_NO[String(ep.pointNo)]
+          ? {
+              title: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].title,
+              logic: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].logic,
+            }
+          : {}),
+      })),
+      vendorName:
+        row.nameOfVendor || vendor?.name || getVendorName(row.vendor_code),
+      vendorGstin: row.GSTInOfVendor || vendor?.gstin || "",
+      plantName: getPlantName(row.plant),
+      poTypeName: getPoTypeName(row.po_type),
+      purchaseGroupName: getPurchaseGroupName(row.purchase_group),
+      paymentTermDescription: getPaymentTermDescription(row.payment_term),
+    };
+  });
+}
 
 export const get_po_audit_results = async (req, res) => {
   try {
@@ -198,7 +259,8 @@ export const get_po_audit_results = async (req, res) => {
       const filtered = all.filter((row) =>
         matchesPointFilter(row, { severity, notVerifiedPointNo }),
       );
-      const rows = filtered.slice(skip, skip + take).map(withExceptionPoints);
+      const pageRows = filtered.slice(skip, skip + take);
+      const rows = await withExceptionPointsBatch(pageRows);
       return res.status(200).json({
         results: rows,
         total: filtered.length,
@@ -207,7 +269,7 @@ export const get_po_audit_results = async (req, res) => {
       });
     }
 
-    const [rows, total] = await Promise.all([
+    const [pageRows, total] = await Promise.all([
       prisma.auditResult.findMany({
         where,
         include: INCLUDE,
@@ -218,8 +280,9 @@ export const get_po_audit_results = async (req, res) => {
       prisma.auditResult.count({ where }),
     ]);
 
+    const rows = await withExceptionPointsBatch(pageRows);
     return res.status(200).json({
-      results: rows.map(withExceptionPoints),
+      results: rows,
       total,
       page: Number(page),
       pageSize: take,
@@ -232,34 +295,22 @@ export const get_po_audit_results = async (req, res) => {
   }
 };
 
-// Shared enrichment applied to every single-result response, so the shape
-// returned here always matches what PoDetailsPreviewDialog's field getters
-// expect (vendorName, vendorGstin, plantName, poTypeName,
-// purchaseGroupName, paymentTermDescription) — the SAME fields already
-// produced by getPoWiseExceptions / getExecutiveDrilldown, and previously
-// only produced by the "multipleMatches" branch of THIS controller.
-//
-// Root cause this fixes: the exact-match and single-broad-match paths were
-// returning the raw Prisma row as-is. Any field that only exists in
-// "resolved from master data" form (e.g. vendor name resolved from
-// vendor_code when nameOfVendor is null) was silently missing — the
-// frontend's `d.vendorName || d.nameOfVendor` fallback has nothing to fall
-// back TO if neither the enriched nor the raw field is on the payload.
-function enrichPoResult(result) {
-  if (!result) return result;
-  const vendor = getVendorInfo(result.vendor_code);
-  return {
-    ...result,
-    vendorName:
-      result.nameOfVendor || vendor?.name || getVendorName(result.vendor_code),
-    vendorGstin: result.GSTInOfVendor || vendor?.gstin || "",
-    plantName: getPlantName(result.plant),
-    poTypeName: getPoTypeName(result.po_type),
-    purchaseGroupName: getPurchaseGroupName(result.purchase_group),
-    paymentTermDescription: getPaymentTermDescription(result.payment_term),
-  };
-}
-
+/**
+ * POST /getPOAuditResult
+ *
+ * LINE-ITEM lookup (id, poMaterialNumber, or po_number + po_line_item):
+ *   Returns line-item data - `results` (13 line-level points),
+ *   `exceptionPoints`, plus a compact `header` status object for this
+ *   PO. This response contains LINE-ITEM detail; it does not carry the
+ *   full header points table by default beyond that compact status
+ *   (the frontend's header panel component fetches full header detail
+ *   itself, once, when the user expands it).
+ *
+ * PO-ONLY lookup (po_number given, no po_line_item, no id/material
+ * number): delegates entirely to getPoHeaderSummary - the header-level
+ * points + a line-item picker list, NOT a forced/guessed line item. This
+ * replaces the old "multipleMatches" picker modal.
+ */
 export const get_po_audit_result = async (req, res) => {
   try {
     await ensureSeverityLoaded();
@@ -272,8 +323,11 @@ export const get_po_audit_result = async (req, res) => {
         .json({ message: "id, poMaterialNumber, or po_number is required" });
     }
 
-    // 1. Exact Match (ID, Material Num, or PO + Line Item)
-    if (id || poMaterialNumber || (po_number && po_line_item)) {
+    const isLineItemLookup = Boolean(
+      id || poMaterialNumber || (po_number && po_line_item),
+    );
+
+    if (isLineItemLookup) {
       const where = { type: "PO" };
       if (id) where.id = id;
       if (poMaterialNumber) where.po_material_number = poMaterialNumber;
@@ -287,65 +341,36 @@ export const get_po_audit_result = async (req, res) => {
         where,
         include: RESULT_INCLUDE,
       });
-      if (result)
-        return res
-          .status(200)
-          .json(withExceptionPoints(enrichPoResult(result)));
 
-      if (po_line_item)
+      if (!result) {
         return res.status(404).json({
-          message: `Line item ${po_line_item} not found for PO ${po_number}`,
+          message: po_line_item
+            ? `Line item ${po_line_item} not found for PO ${po_number}`
+            : "PO audit result not found",
         });
+      }
+
+      const enriched = await withExceptionPoints(result);
+      return res.status(200).json(enriched);
     }
 
-    // 2. Broad Search (Just PO Number)
-    const where = { type: "PO", po_number };
-    if (fiscalYear) where.fiscalYear = fiscalYear;
-
-    const matches = await prisma.auditResult.findMany({
-      where,
-      include: RESULT_INCLUDE,
-      orderBy: { po_line_item: "asc" },
-    });
-
-    if (matches.length === 0)
-      return res.status(404).json({ message: "PO audit result not found" });
-    if (matches.length === 1)
-      return res
-        .status(200)
-        .json(withExceptionPoints(enrichPoResult(matches[0])));
-
-    // Multiple Matches found - Return array for Frontend Popup Modal
-    return res.status(200).json({
-      multipleMatches: true,
-      total: matches.length,
-      results: matches.map((r) => {
-        const vendor = getVendorInfo(r.vendor_code); // Make sure picker gets name fallback
-        return {
-          id: r.id,
-          po_number: r.po_number,
-          po_line_item: lineItemOf(r),
-          po_material_number: r.po_material_number,
-          material_code: r.material_code,
-          material_disc: r.material_disc,
-          plant: r.plant,
-          plantName: getPlantName(r.plant),
-          vendorName:
-            r.nameOfVendor || vendor?.name || getVendorName(r.vendor_code),
-          vendorGstin: r.GSTInOfVendor || vendor?.gstin || "",
-          poTypeName: getPoTypeName(r.po_type),
-          purchaseGroupName: getPurchaseGroupName(r.purchase_group),
-          net_value: r.net_value,
-          fiscalYear: r.fiscalYear,
-        };
-      }),
-    });
+    // PO-ONLY lookup - hand off entirely to the header-level system.
+    req.body = { ...req.body, po_number };
+    return getPoHeaderSummary(req, res);
   } catch (error) {
     console.error("Error in get_po_audit_result:", error);
     return res.status(500).json({ message: "Failed to fetch PO audit result" });
   }
 };
 
+/**
+ * POST /reports/po-lines
+ * Every line item of a PO, LINE-LEVEL data only (results = 13 line-level
+ * points per line, no header points mixed in). `header` is returned ONCE
+ * at the top level of the response, not duplicated per line - callers
+ * that need "does this PO's header show closed" read `header.locked`
+ * once, not per line item.
+ */
 export const get_po_lines = async (req, res) => {
   try {
     await ensureSeverityLoaded();
@@ -359,8 +384,37 @@ export const get_po_lines = async (req, res) => {
       orderBy: { po_line_item: "asc" },
     });
 
-    const lines = rows.map(withExceptionPoints);
-    return res.status(200).json({ poNumber, total: lines.length, lines });
+    const header = await getHeaderForPo(poNumber);
+
+    const lines = rows.map((row) => {
+      const vendor = getVendorInfo(row.vendor_code);
+      return {
+        ...row,
+        lineItemKey: uniqueKeyOf(row),
+        lineItem: lineItemOf(row),
+        results: withPointReference(row.results),
+        exceptionPoints: exceptionPointsOf(row).map((ep) => ({
+          ...ep,
+          ...(POINT_DEFINITIONS_BY_NO[String(ep.pointNo)]
+            ? {
+                title: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].title,
+                logic: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].logic,
+              }
+            : {}),
+        })),
+        vendorName:
+          row.nameOfVendor || vendor?.name || getVendorName(row.vendor_code),
+        vendorGstin: row.GSTInOfVendor || vendor?.gstin || "",
+        plantName: getPlantName(row.plant),
+        poTypeName: getPoTypeName(row.po_type),
+        purchaseGroupName: getPurchaseGroupName(row.purchase_group),
+        paymentTermDescription: getPaymentTermDescription(row.payment_term),
+      };
+    });
+
+    return res
+      .status(200)
+      .json({ poNumber, header, total: lines.length, lines });
   } catch (error) {
     console.error("Error in get_po_lines:", error);
     return res.status(500).json({ message: "Failed to fetch PO lines" });

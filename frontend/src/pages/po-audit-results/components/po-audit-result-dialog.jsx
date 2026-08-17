@@ -15,6 +15,7 @@ import {
   Typography,
 } from "@mui/material";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
+import LayersRoundedIcon from "@mui/icons-material/LayersRounded";
 import moment from "moment";
 import { toast } from "react-toastify";
 
@@ -40,6 +41,11 @@ const Field = ({ label, value }) => (
  * title/summary/severity to every entry in `results`, so this dialog no
  * longer needs to show bare SAP codes or a raw po_status "Status" field
  * anywhere.
+ *
+ * `headerResults` (new) holds the 6 header-level points (9, 11, 12, 13,
+ * 14, 15) fetched once per PO number - identical no matter which line
+ * item this dialog is showing. Rendered as its own section, above the
+ * per-line `results` breakdown, using the same AuditPointsBreakdown table.
  */
 const PoAuditResultDialog = ({ id, onClose }) => {
   const [loading, setLoading] = useState(false);
@@ -136,8 +142,31 @@ const PoAuditResultDialog = ({ id, onClose }) => {
 
             <Divider sx={{ my: 2 }} />
 
+            {/*
+              PO Header Checks — points 9, 11, 12, 13, 14, 15. Applies to
+              the whole PO, shown once here regardless of line item, backed
+              by result.headerResults from po-controller.js.
+            */}
+            {Array.isArray(result.headerResults) && result.headerResults.length > 0 && (
+              <>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}>
+                  <LayersRoundedIcon fontSize="small" sx={{ color: "#4f46e5" }} />
+                  <Typography variant="subtitle2">
+                    PO Header Checks ({result.headerResults.length})
+                  </Typography>
+                  <Chip
+                    size="small"
+                    label="Applies to whole PO"
+                    sx={{ height: 20, fontWeight: 700, bgcolor: "#eef2ff", color: "#4338ca" }}
+                  />
+                </Box>
+                <AuditPointsBreakdown results={result.headerResults} />
+                <Divider sx={{ my: 2 }} />
+              </>
+            )}
+
             <Typography variant="subtitle2" sx={{ mb: 1 }}>
-              Audit Points ({(result.results || []).length})
+              Line-Level Audit Points ({(result.results || []).length})
             </Typography>
             <AuditPointsBreakdown results={result.results || []} />
           </Box>

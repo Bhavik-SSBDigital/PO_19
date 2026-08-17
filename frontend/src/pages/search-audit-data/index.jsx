@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import {
-  Autocomplete,
   IconButton,
   InputAdornment,
   Typography,
@@ -27,27 +26,27 @@ import {
   DialogContent,
   Chip,
   Grid,
+  alpha,
 } from "@mui/material";
 import { toast } from "react-toastify";
 import { useSelector } from "react-redux";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
-import KeyboardBackspaceRoundedIcon from "@mui/icons-material/KeyboardBackspaceRounded";
 import CloseIcon from "@mui/icons-material/Close";
 import VisibilityIcon from "@mui/icons-material/Visibility";
+import LockRoundedIcon from "@mui/icons-material/LockRounded";
+import LockOpenRoundedIcon from "@mui/icons-material/LockOpenRounded";
+import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
+import LayersRoundedIcon from "@mui/icons-material/LayersRounded";
 import { get, post } from "utils/axiosApi";
 import { ViewDocumentProvider } from "./contexts";
 import AuditDetails from "./components/audit-details";
 import AuditResults from "./components/results-table";
 import AuditResultReview from "./components/audit-result-review";
+import PoHeaderChecksPanel from "../executive-dashboard/components/PoHeaderChecksPanel";
 
-// Shared "PO summary" strip — shows the same enrichment fields (vendor name,
-// GSTIN, plant, PO type, purchasing group, payment term, etc.) that the
-// Executive Dashboard's "View Details Here" preview dialog already shows.
-// Falls back through every alias the backend might return for a given
-// field, since different controllers/versions have named these slightly
-// differently over time (vendorGstin vs GSTInOfVendor, plantName vs plant,
-// etc.) — this way the strip degrades gracefully instead of showing blanks.
+// Shared "PO summary" strip — shown on the LINE-ITEM view only (the PO
+// header view has its own summary block built into the header response).
 const PO_SUMMARY_FIELDS = [
   ["PO Number", (d) => d.po_number],
   ["Line Item", (d) => d.lineItem || d.po_line_item],
@@ -71,7 +70,7 @@ const PoSummaryHeader = ({ data }) => {
         variant="subtitle2"
         sx={{ fontWeight: 700, mb: 1.5, color: "text.secondary" }}
       >
-        PO Summary
+        Line Item Summary
       </Typography>
       <Grid container spacing={2}>
         {PO_SUMMARY_FIELDS.map(([label, getValue]) => {
@@ -88,7 +87,10 @@ const PoSummaryHeader = ({ data }) => {
               >
                 {label}
               </Typography>
-              <Typography variant="body2" sx={{ fontWeight: 600, wordBreak: "break-word" }}>
+              <Typography
+                variant="body2"
+                sx={{ fontWeight: 600, wordBreak: "break-word" }}
+              >
                 {value === null || value === undefined || value === ""
                   ? "—"
                   : String(value)}
@@ -102,18 +104,227 @@ const PoSummaryHeader = ({ data }) => {
   );
 };
 
+// Row in the PO-header view's line-item picker list.
+const LineItemPickerRow = ({ item, onOpen }) => (
+  <TableRow
+    hover
+    sx={{ cursor: "pointer" }}
+    onClick={() => onOpen(item.lineItem)}
+  >
+    <TableCell sx={{ fontWeight: 700 }}>{item.lineItem}</TableCell>
+    <TableCell>{item.materialCode || "—"}</TableCell>
+    <TableCell>
+      <Typography
+        variant="body2"
+        color="text.secondary"
+        noWrap
+        sx={{ maxWidth: 260 }}
+      >
+        {item.materialDesc || "—"}
+      </Typography>
+    </TableCell>
+    <TableCell align="right">
+      {item.netValue ? Number(item.netValue).toLocaleString() : "—"}
+    </TableCell>
+    <TableCell>
+      {item.hasException ? (
+        <Chip
+          size="small"
+          label="Has Exception"
+          sx={{
+            fontWeight: 700,
+            bgcolor: alpha("#dc2626", 0.1),
+            color: "#dc2626",
+          }}
+        />
+      ) : (
+        <Chip
+          size="small"
+          label="Clean"
+          sx={{
+            fontWeight: 700,
+            bgcolor: alpha("#059669", 0.1),
+            color: "#059669",
+          }}
+        />
+      )}
+    </TableCell>
+    <TableCell>
+      {item.closed ? (
+        <Chip
+          size="small"
+          icon={<LockRoundedIcon fontSize="small" />}
+          label="Closed"
+          sx={{
+            fontWeight: 700,
+            bgcolor: alpha("#059669", 0.1),
+            color: "#059669",
+          }}
+        />
+      ) : (
+        <Chip
+          size="small"
+          icon={<LockOpenRoundedIcon fontSize="small" />}
+          label="Open"
+          sx={{
+            fontWeight: 700,
+            bgcolor: alpha("#d97706", 0.1),
+            color: "#d97706",
+          }}
+        />
+      )}
+    </TableCell>
+    <TableCell align="right">
+      <Button
+        size="small"
+        startIcon={<VisibilityIcon fontSize="small" />}
+        onClick={(e) => {
+          e.stopPropagation();
+          onOpen(item.lineItem);
+        }}
+      >
+        View
+      </Button>
+    </TableCell>
+  </TableRow>
+);
+
+/**
+ * PO HEADER VIEW - rendered when a PO number is searched WITHOUT a line
+ * item. Shows the PO's header-level checks (points 7, 8, 9, 11-15, 19,
+ * evaluated once for the whole PO) via PoHeaderChecksPanel, plus a picker
+ * list of the PO's line items - clicking one drills into the Line-Item
+ * view below.
+ */
+const PoHeaderView = ({
+  data,
+  roleFlags,
+  currentUserId,
+  onOpenLineItem,
+  onRefresh,
+}) => {
+  if (!data) return null;
+  return (
+    <Card
+      sx={{
+        mt: 1,
+        p: 2,
+        boxShadow: 0,
+        borderRadius: "10px",
+        border: "1px solid #e5e5e5",
+      }}
+    >
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: 1,
+          mb: 1,
+        }}
+      >
+        <Box>
+          <Typography variant="h5" sx={{ fontWeight: 800 }}>
+            PO {data.po_number}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            {data.vendorName || data.vendorCode || "—"} ·{" "}
+            {data.plantName || "—"} ·{" "}
+            {data.purchaseGroupName || data.purchaseGroup || "—"}
+          </Typography>
+        </Box>
+        <Chip
+          icon={<LayersRoundedIcon fontSize="small" />}
+          label={`${data.lineItemCount} line item${data.lineItemCount === 1 ? "" : "s"}`}
+          sx={{ fontWeight: 700, bgcolor: "#eef2ff", color: "#4338ca" }}
+        />
+      </Box>
+
+      <Divider sx={{ my: 2 }} />
+
+      <PoHeaderChecksPanel
+        poNumber={data.po_number}
+        header={data.header}
+        currentUserId={currentUserId}
+        isBuyer={roleFlags.isBuyer}
+        isAdmin={roleFlags.isAdmin}
+        isProcurementManager={roleFlags.isProcurementManager}
+        variant="full"
+        onChanged={onRefresh}
+      />
+
+      <Typography variant="h6" sx={{ fontWeight: 700, mb: 1.5 }}>
+        Line Items
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+        Click a line item to view its own line-level checks. The header checks
+        above already apply to every line item shown here — you won't be asked
+        to review them again.
+      </Typography>
+      <TableContainer component={Paper} variant="outlined">
+        <Table size="small">
+          <TableHead sx={{ bgcolor: "#f5f5f5" }}>
+            <TableRow>
+              <TableCell sx={{ fontWeight: 700 }}>Line Item</TableCell>
+              <TableCell sx={{ fontWeight: 700 }}>Material</TableCell>
+              <TableCell sx={{ fontWeight: 700 }}>Description</TableCell>
+              <TableCell sx={{ fontWeight: 700 }} align="right">
+                Net Value
+              </TableCell>
+              <TableCell sx={{ fontWeight: 700 }}>Line-Level Result</TableCell>
+              <TableCell sx={{ fontWeight: 700 }}>Line Status</TableCell>
+              <TableCell sx={{ fontWeight: 700 }} align="right">
+                Action
+              </TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {(data.lineItems || []).map((item) => (
+              <LineItemPickerRow
+                key={item.id || item.lineItem}
+                item={item}
+                onOpen={onOpenLineItem}
+              />
+            ))}
+            {(!data.lineItems || data.lineItems.length === 0) && (
+              <TableRow>
+                <TableCell
+                  colSpan={7}
+                  align="center"
+                  sx={{ color: "text.secondary", py: 3 }}
+                >
+                  No line items found for this PO.
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </Card>
+  );
+};
+
+const useRoleFlags = () => {
+  const role = localStorage.getItem("role") || "";
+  return {
+    isAdmin: role === "isAdmin",
+    isBuyer: role === "isBuyer",
+    isProcurementManager: role === "isProcurementManager",
+    isAuditor: role === "isAuditor",
+  };
+};
+
 const SearchAuditData = () => {
   const navigate = useNavigate();
-  const role = localStorage.getItem("role");
+  const roleFlags = useRoleFlags();
+  const currentUserId = localStorage.getItem("userId");
   const [searchParams] = useSearchParams();
   const { dataViewType } = useSelector((state) => state.menu);
 
   const [searchLoading, setSearchLoading] = useState(false);
   const [viewDocUrl, setViewDocUrl] = useState(null);
   const [searchData, setSearchData] = useState();
-
-  // State for multiple line items modal
-  const [multipleMatches, setMultipleMatches] = useState(null);
 
   const [searchInputs, setSearchInputs] = useState({
     documentNumber: "",
@@ -159,13 +370,14 @@ const SearchAuditData = () => {
     if (dataViewType === "PO") {
       payload = {
         po_number: PONumber?.trim(),
-        po_line_item: poLineItem?.trim(),
-        poMaterialNumber: poMaterialNumber?.trim(),
+        po_line_item: poLineItem?.trim() || undefined,
+        poMaterialNumber: poMaterialNumber?.trim() || undefined,
       };
     } else if (dataViewType === "BPV") {
       payload = {
         documentNumber: paymentDocumentNumber?.trim() || documentNumber?.trim(),
-        paymentDocumentNumber: paymentDocumentNumber?.trim() || documentNumber?.trim(),
+        paymentDocumentNumber:
+          paymentDocumentNumber?.trim() || documentNumber?.trim(),
       };
     } else {
       payload = {
@@ -176,40 +388,54 @@ const SearchAuditData = () => {
 
     try {
       const res = await post(`/${endpoint}`, payload);
-
-      if (res.multipleMatches) {
-        setMultipleMatches(res.results); // Open Modal
-        setSearchData(null);
-      } else {
-        setSearchData(res);
-        setMultipleMatches(null);
-        sessionStorage.setItem("searchInput-audit", JSON.stringify(inputs));
-        window.scrollTo({ top: 520, left: 0, behavior: "smooth" });
-      }
+      setSearchData(res);
+      sessionStorage.setItem("searchInput-audit", JSON.stringify(inputs));
+      window.scrollTo({ top: 520, left: 0, behavior: "smooth" });
     } catch (error) {
       setSearchData();
       toast.error(
         error?.response?.data?.message ||
           error?.message ||
-          "Error occured while fetching data"
+          "Error occured while fetching data",
       );
     } finally {
       setSearchLoading(false);
     }
   };
 
+  // Drill from the PO-header view into a specific line item — re-runs the
+  // same search with poLineItem set, which flips the backend response
+  // (and this page's render) into the Line-Item view.
+  const openLineItem = (lineItem) => {
+    const next = { ...searchInputs, poLineItem: String(lineItem) };
+    setSearchInputs(next);
+    handleSearch(next);
+  };
+
+  // From the Line-Item view, jump back to the PO-header view (clears the
+  // line item, re-searches by PO number only).
+  const backToHeaderView = () => {
+    const next = { ...searchInputs, poLineItem: "" };
+    setSearchInputs(next);
+    handleSearch(next);
+  };
+
   useEffect(() => {
     const documentNo = searchParams.get("documentNo")?.trim();
     const PONoParams = searchParams.get("PONo")?.trim();
-    // Line item passed from other tables/pages (e.g. the Executive Dashboard's
-    // PO-Wise Exceptions table) so the search page arrives fully pre-filled.
     const poLineItemParams = searchParams.get("poLineItem")?.trim();
     const poMaterialNo = searchParams.get("poMaterialNo")?.trim();
     const paymentDocumentNumber = searchParams.get("paymentDocumentNumber");
     const storedInput = sessionStorage.getItem("searchInput-audit");
     const searchInput = storedInput ? JSON.parse(storedInput) : null;
 
-    if (documentNo || poMaterialNo || PONoParams || poLineItemParams || paymentDocumentNumber) {
+    if (
+      documentNo ||
+      poMaterialNo ||
+      PONoParams ||
+      poLineItemParams ||
+      paymentDocumentNumber
+    ) {
       const inputs = {
         documentNumber: documentNo || "",
         PONumber: PONoParams || "",
@@ -220,7 +446,7 @@ const SearchAuditData = () => {
       handleSearch(inputs);
       setSearchInputs(inputs);
       sessionStorage.setItem("searchInput-audit", JSON.stringify(inputs));
-    } else if (searchInput && role !== "isAuditor") {
+    } else if (searchInput && !roleFlags.isAuditor) {
       const {
         documentNumber = "",
         grrNumber = "",
@@ -240,6 +466,7 @@ const SearchAuditData = () => {
       }
       setSearchInputs(searchInput);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -254,27 +481,24 @@ const SearchAuditData = () => {
       toast.error(
         error?.response?.data?.message ||
           error?.message ||
-          "Error occured while fetching data"
+          "Error occured while fetching data",
       );
     }
   };
 
+  const isPoHeaderView =
+    dataViewType === "PO" && searchData?.scope === "po-header";
+  const isPoLineView =
+    dataViewType === "PO" && searchData && searchData.scope !== "po-header";
+
   return (
     <ViewDocumentProvider>
       <Box sx={{ maxWidth: "xl", mx: "auto", p: 2 }}>
-        {/* <Button
-          onClick={() => navigate(-1)}
-          size="small"
-          sx={{ mb: 2, fontWeight: 700 }}
-          startIcon={<KeyboardBackspaceRoundedIcon />}
-        >
-          Back
-        </Button> */}
         <Typography variant="h4" sx={{ fontWeight: 800, mb: 3 }}>
           PO Data, Report, and Results
         </Typography>
 
-        {role !== "isAuditor" && (
+        {!roleFlags.isAuditor && (
           <Card
             elevation={0}
             sx={{
@@ -300,7 +524,9 @@ const SearchAuditData = () => {
             <Stack alignItems="center" gap={1} sx={{ mt: "15px" }}>
               {dataViewType === "PJV" && (
                 <Box sx={{ maxWidth: "400px", width: "100%" }}>
-                  <InputLabel sx={{ width: "100%" }}>Document Number :</InputLabel>
+                  <InputLabel sx={{ width: "100%" }}>
+                    Document Number :
+                  </InputLabel>
                   <TextField
                     disabled={searchLoading}
                     value={searchInputs.documentNumber}
@@ -337,7 +563,9 @@ const SearchAuditData = () => {
               )}
               {dataViewType === "NONPO" && (
                 <Box sx={{ maxWidth: "400px", width: "100%" }}>
-                  <InputLabel sx={{ width: "100%" }}>Document Number :</InputLabel>
+                  <InputLabel sx={{ width: "100%" }}>
+                    Document Number :
+                  </InputLabel>
                   <TextField
                     disabled={searchLoading}
                     value={searchInputs.documentNumber}
@@ -384,11 +612,12 @@ const SearchAuditData = () => {
                     }}
                   />
                   <InputLabel sx={{ width: "100%", mt: "10px" }}>
-                    Line Item (Optional) :
+                    Line Item (optional — leave blank to see PO Header Checks +
+                    every line item first):
                   </InputLabel>
                   <TextField
                     disabled={searchLoading}
-                    placeholder="e.g., 10"
+                    placeholder="e.g., 10 (optional)"
                     name="poLineItem"
                     value={searchInputs.poLineItem}
                     fullWidth
@@ -404,7 +633,9 @@ const SearchAuditData = () => {
               )}
               {dataViewType === "BPV" && (
                 <Box sx={{ maxWidth: "400px", width: "100%" }}>
-                  <InputLabel sx={{ width: "100%" }}>Payment Document Number :</InputLabel>
+                  <InputLabel sx={{ width: "100%" }}>
+                    Payment Document Number :
+                  </InputLabel>
                   <TextField
                     disabled={searchLoading}
                     value={searchInputs.paymentDocumentNumber}
@@ -437,7 +668,31 @@ const SearchAuditData = () => {
           </Card>
         )}
 
-        {!!searchData && (
+        {/*
+          ══════════════════════════════════════════════════════════════
+          PO HEADER VIEW - PO number searched WITHOUT a line item.
+          ══════════════════════════════════════════════════════════════
+        */}
+        {isPoHeaderView && (
+          <PoHeaderView
+            data={searchData}
+            roleFlags={roleFlags}
+            currentUserId={currentUserId}
+            onOpenLineItem={openLineItem}
+            onRefresh={() => handleSearch(searchInputs)}
+          />
+        )}
+
+        {/*
+          ══════════════════════════════════════════════════════════════
+          LINE-ITEM VIEW - PO number + line item searched (or resolved by
+          id/material number). Shows a compact header-status banner
+          (expandable into the full header panel) ABOVE the line-item
+          detail, so the two are visually separate but the header status
+          is never hidden.
+          ══════════════════════════════════════════════════════════════
+        */}
+        {(isPoLineView || (dataViewType !== "PO" && !!searchData)) && (
           <Card
             sx={{
               mt: 1,
@@ -447,10 +702,29 @@ const SearchAuditData = () => {
               border: "1px solid #e5e5e5",
             }}
           >
-            {/* PO summary strip: vendor name, GSTIN, plant, PO type,
-                purchasing group, payment term — same fields the dashboard's
-                "View Details Here" preview already shows, now visible here
-                too so this page isn't missing detail by comparison. */}
+            {dataViewType === "PO" && (
+              <Box sx={{ px: 1, pt: 1 }}>
+                <Button
+                  size="small"
+                  startIcon={<ArrowBackRoundedIcon fontSize="small" />}
+                  onClick={backToHeaderView}
+                  sx={{ textTransform: "none", fontWeight: 700, mb: 1 }}
+                >
+                  Back to PO Header &amp; All Line Items
+                </Button>
+                <PoHeaderChecksPanel
+                  poNumber={searchData.po_number}
+                  header={searchData.header}
+                  currentUserId={currentUserId}
+                  isBuyer={roleFlags.isBuyer}
+                  isAdmin={roleFlags.isAdmin}
+                  isProcurementManager={roleFlags.isProcurementManager}
+                  variant="compact"
+                  onChanged={() => handleSearch(searchInputs)}
+                />
+              </Box>
+            )}
+
             {dataViewType === "PO" && <PoSummaryHeader data={searchData} />}
 
             <AuditDetails auditDetails={searchData} />
@@ -509,7 +783,7 @@ const SearchAuditData = () => {
                                               —{" "}
                                               {sig.signedAt
                                                 ? new Date(
-                                                    sig.signedAt
+                                                    sig.signedAt,
                                                   ).toLocaleString()
                                                 : "No date"}
                                             </Typography>
@@ -539,25 +813,20 @@ const SearchAuditData = () => {
                                     variant="outlined"
                                     onClick={() => {
                                       const baseUrl =
-                                        import.meta.env
-                                          .VITE_APP_BACKEND_URL ||
+                                        import.meta.env.VITE_APP_BACKEND_URL ||
                                         "http://localhost:5000";
                                       const fileUrl = `${baseUrl}/getDocument/${encodeURIComponent(
-                                        doc.name
+                                        doc.name,
                                       )}?path=${encodeURIComponent(
-                                        doc.path || ""
+                                        doc.path || "",
                                       )}`;
                                       if (isPdf) {
                                         setViewDocUrl(fileUrl);
                                       } else {
-                                        const link = document.createElement(
-                                          "a"
-                                        );
+                                        const link =
+                                          document.createElement("a");
                                         link.href = fileUrl;
-                                        link.setAttribute(
-                                          "download",
-                                          doc.name
-                                        );
+                                        link.setAttribute("download", doc.name);
                                         document.body.appendChild(link);
                                         link.click();
                                         document.body.removeChild(link);
@@ -580,7 +849,7 @@ const SearchAuditData = () => {
                   </TableContainer>
                 </Box>
               )}
-            {role !== "isAuditor" ? (
+            {!roleFlags.isAuditor ? (
               <AuditResults
                 searchData={searchData}
                 setSearchData={() => setSearchData(null)}
@@ -593,158 +862,6 @@ const SearchAuditData = () => {
             )}
           </Card>
         )}
-
-        <Dialog
-          open={!!multipleMatches}
-          onClose={() => setMultipleMatches(null)}
-          maxWidth="lg"
-          fullWidth
-          PaperProps={{ sx: { borderRadius: 3 } }}
-        >
-          <DialogTitle
-            sx={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              bgcolor: "grey.50",
-              borderBottom: "1px solid",
-              borderColor: "divider",
-            }}
-          >
-            <Box>
-              <Typography variant="h5" fontWeight={800}>
-                Select Line Item
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                This PO has multiple items. Select one to view its audit.
-              </Typography>
-            </Box>
-            <IconButton onClick={() => setMultipleMatches(null)}>
-              <CloseIcon />
-            </IconButton>
-          </DialogTitle>
-          <DialogContent sx={{ p: 0 }}>
-            <TableContainer>
-              <Table stickyHeader>
-                <TableHead>
-                  <TableRow>
-                    <TableCell
-                      sx={{ fontWeight: 700, bgcolor: "background.paper" }}
-                    >
-                      PO Number
-                    </TableCell>
-                    <TableCell
-                      sx={{ fontWeight: 700, bgcolor: "background.paper" }}
-                    >
-                      Line Item
-                    </TableCell>
-                    <TableCell
-                      sx={{ fontWeight: 700, bgcolor: "background.paper" }}
-                    >
-                      Material
-                    </TableCell>
-                    <TableCell
-                      sx={{ fontWeight: 700, bgcolor: "background.paper" }}
-                    >
-                      Vendor
-                    </TableCell>
-                    <TableCell
-                      sx={{ fontWeight: 700, bgcolor: "background.paper" }}
-                    >
-                      GSTIN
-                    </TableCell>
-                    <TableCell
-                      sx={{ fontWeight: 700, bgcolor: "background.paper" }}
-                    >
-                      Plant
-                    </TableCell>
-                    <TableCell
-                      sx={{ fontWeight: 700, bgcolor: "background.paper" }}
-                    >
-                      Action
-                    </TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {multipleMatches?.map((item) => (
-                    <TableRow
-                      key={item.id}
-                      hover
-                      sx={{ "&:last-child td": { border: 0 } }}
-                    >
-                      <TableCell sx={{ fontWeight: 600 }}>
-                        {item.po_number}
-                      </TableCell>
-                      <TableCell>
-                        <Chip
-                          size="small"
-                          label={item.po_line_item}
-                          color="primary"
-                          variant="outlined"
-                          sx={{ fontWeight: 700 }}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Typography variant="body2" fontWeight={700}>
-                          {item.material_code}
-                        </Typography>
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          sx={{
-                            display: "block",
-                            maxWidth: 200,
-                            textOverflow: "ellipsis",
-                            overflow: "hidden",
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {item.material_disc || "N/A"}
-                        </Typography>
-                      </TableCell>
-                      <TableCell>
-                        <Typography variant="body2">
-                          {item.vendorName || item.vendor_code || "—"}
-                        </Typography>
-                      </TableCell>
-                      <TableCell>
-                        <Typography variant="body2">
-                          {item.vendorGstin || item.GSTInOfVendor || "—"}
-                        </Typography>
-                      </TableCell>
-                      <TableCell>
-                        <Typography variant="body2">
-                          {item.plantName || item.plant}
-                        </Typography>
-                      </TableCell>
-                      <TableCell>
-                        <Button
-                          size="small"
-                          variant="contained"
-                          disableElevation
-                          startIcon={<VisibilityIcon />}
-                          onClick={() => {
-                            setMultipleMatches(null);
-                            const exactPayload = {
-                              ...searchInputs,
-                              poMaterialNumber: item.po_material_number,
-                              PONumber: item.po_number,
-                              poLineItem: item.po_line_item,
-                            };
-                            setSearchInputs(exactPayload);
-                            handleSearch(exactPayload);
-                          }}
-                        >
-                          View PO
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          </DialogContent>
-        </Dialog>
 
         <Dialog
           open={!!viewDocUrl}
