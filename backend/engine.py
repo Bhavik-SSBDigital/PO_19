@@ -29,49 +29,6 @@ Output:
                        Feeds po_header_results via `node addheader.js <file>`.
 
     <rc-json>       : unchanged - RC Overlap / point 20.
-
-CHANGELOG (this revision - client sent an updated "Procurement audit
-points.xlsx" with two changes):
-
-    1. GLOBAL EXCLUSION (was per-rule, now applies to ALL 19 points):
-       Every single point's Remarks column (G) now carries the same note:
-       "Deletion indicator 'L' / Returns Item 'X'". Previously this
-       exclusion only guarded rules 1, 2 (Return Item) and 6, 14 (Deletion
-       Indicator). It now applies uniformly: a PO line item with Deletion
-       Indicator = "L" and/or Return Item indicator = "X" is excluded
-       (Not Applicable) from EVERY audit point, line-level and
-       header-level alike - not dropped from the extract entirely, just
-       marked NA on every point so it's still visible/searchable in the
-       app. Implemented via a single dispatcher (evaluate_rule) that all
-       three output builders (xlsx dump, build_addpo_records,
-       build_po_header_records) now go through, instead of each rule
-       function guarding itself. The old per-rule guards inside
-       rule_01/rule_02/rule_06/rule_14 were removed since the dispatcher
-       now handles it once, consistently, for every rule.
-
-    2. RECLASSIFICATION: the client's updated sheet moves rules 7
-       (RC Released), 8 (RC Consistency), and 19 (Multiple POs Same Day)
-       from line-item-wise to HEADER LEVEL. All three genuinely describe
-       PO-wide facts (RC status/consistency is a PO+material property;
-       "same vendor/date/plant/purchasing-group" is entirely PO-header
-       data with no line-item component at all), so this tracks. New
-       header set (9 points): 7, 8, 9, 11, 12, 13, 14, 15, 19. New
-       line-level set (10 points): 1, 2, 3, 4, 5, 6, 10, 16, 17, 18.
-
-    3. Rule 13 (EYW inco-term) now ALSO routes PO types ZIRM/ZICP to
-       Data Missing/manual review, same treatment rule 14 already got -
-       the updated sheet's redline note appears on both rows now.
-
-    Everything else (MSME Z105/Z126 addition, over-delivery-tolerance
-    column, Item Category mapping, etc.) is unchanged from the prior
-    revision.
-
-Usage:
-    python3 engine.py --poaudit POAUDIT_x.xlsx --cnd POAUDITCND_x.xlsx \
-        --rc POAUDITRC_x.xlsx --out audit_results.xlsx \
-        --addpo-json audit_results_for_db.json \
-        --header-json po_header_results_for_db.json \
-        --rc-json rc_overlap_for_db.json
 """
 
 import argparse
@@ -96,9 +53,6 @@ FREIGHT_CONDITION_TYPES = {"ZBF1", "ZBF2", "ZRA3", "ZRB3", "ZRE3"}
 DWS_APPROVERS = {"KKB", "SRS", "PJP", "DAULAT", "NHV", "CVS"}
 
 # --- Rule 11 support: MSME payment terms -----------------------------------
-# Confirmed by client: all valid MSME payment terms, each within the <=45
-# days credit period required for MSME vendors (or, for Z105/Z126, a form
-# of payment that cannot itself exceed 45 days).
 MSME_PAYMENT_TERMS = {
     "Z100": {"days": 15, "desc": "15 DAYS CREDIT"},
     "Z101": {"days": 30, "desc": "30 DAYS CREDIT"},
@@ -124,10 +78,9 @@ RC_RELEASED_VALUES = {"R"}          # ASSUMPTION - confirm with client
 SIX_MONTHS_DAYS = 180
 
 # --- GLOBAL exclusion support (applies to ALL 19 points) -------------------
-# ASSUMPTION - confirm the exact SAP header names with the client. These are
-# SAP's typical field labels for these two indicators.
-RETURN_ITEM_COLUMN = "Return Item"
-DELETION_INDICATOR_COLUMN = "Deletion Indicator"
+# Updated column names based on the exact headers in the extract
+RETURN_ITEM_COLUMN = "Return item"
+DELETION_INDICATOR_COLUMN = "Deletion Indication"
 
 EXCLUDED_LINE_REMARK = (
     "Not Applicable - line item excluded from all audit points "
@@ -135,17 +88,10 @@ EXCLUDED_LINE_REMARK = (
 )
 
 # --- Rule 6 support: optional Over Delivery tolerance column ---------------
-# ASSUMPTION - the client said this column is being ADDED to the extract
-# ("New column to be added in file and provide to you"). If/when present,
-# it widens the allowed band on the OVER-delivery side the same way "Under
-# Delivery tolerance" already does on the under-delivery side. Until the
-# column exists in the extract, rule_06 falls back to under-delivery-only.
-OVER_DELIVERY_TOLERANCE_COLUMN = "Over Delivery tolerance"
+# Updated to match the exact column name 
+OVER_DELIVERY_TOLERANCE_COLUMN = "Overdelivery Tolerance Limit"
 
 # --- Rules 13/14 support: PO types requiring manual check ------------------
-# "Import PO type ZIRM and ZICP mark for the 'Manual check'." - per the
-# updated sheet this note now appears on BOTH inco-term rules (13 and 14),
-# so both route ZIRM/ZICP to manual review instead of an automated verdict.
 MANUAL_CHECK_PO_TYPES = {"ZIRM", "ZICP"}
 
 # --- Rule 9 support: GSTIN -> state code -----------------------------------
@@ -197,8 +143,7 @@ GST_NOT_APPLICABLE_TOKENS = {
 }
 
 # ---------------------------------------------------------------------------
-# Item Category code -> SAP external letter, per the client-provided table
-# (received 2026-07-29).
+# Item Category code -> SAP external letter
 # ---------------------------------------------------------------------------
 ITEM_CATEGORY_CODE_MAP = {
     "0": {"desc": "Standard", "letter": None},
@@ -241,7 +186,7 @@ def log_assumption(rule_no, text):
 
 
 # ---------------------------------------------------------------------------
-# Parsing helpers (SAP exports use quirky formats)
+# Parsing helpers
 # ---------------------------------------------------------------------------
 def parse_sap_date(value):
     if value is None:
@@ -274,6 +219,15 @@ def parse_sap_number(value):
     except ValueError:
         return None
     return -n if negative else n
+
+def _clean_tax_code(tc):
+    """Ensures numeric tax codes like '7' or '7.0' parse correctly as '07'"""
+    tc = str(tc).strip()
+    if tc.endswith(".0"):
+        tc = tc[:-2]
+    if tc.isdigit() and len(tc) == 1:
+        tc = "0" + tc
+    return tc
 
 
 def s(row, col):
@@ -351,6 +305,7 @@ def load_table(path):
     ext = os.path.splitext(path)[1].lower()
 
     if ext in EXCEL_EXTENSIONS:
+        # Load entirely as objects to prevent pandas from mangling leading zeros
         df = pd.read_excel(path, dtype=object).fillna("")
         return df.to_dict(orient="records")
     elif ext in CSV_EXTENSIONS:
@@ -409,11 +364,13 @@ def load_tax_master(base_folder):
     if not os.path.exists(path):
         print(f"WARNING: Tax Master not found! Checked {path}")
         return {}
-
-    df = pd.read_excel(path).fillna("")
+    
+    # Enforce object dtype so '07' doesn't become 7
+    df = pd.read_excel(path, dtype=object).fillna("")
     mapping = {}
     for _, r in df.iterrows():
-        mapping[str(r["Tax Code"]).strip()] = {
+        code = _clean_tax_code(r["Tax Code"])
+        mapping[code] = {
             "category": str(r["Category"]).strip().upper(),
             "description": str(r["Tax Description"]).strip(),
         }
@@ -437,12 +394,7 @@ def _is_excluded_line(row):
 
 def evaluate_rule(rule_no, fn, row, ctx):
     """
-    Single dispatcher every rule call goes through (xlsx dump,
-    build_addpo_records, build_po_header_records). If the line item is
-    excluded (Deletion Indicator 'L' and/or Return Item 'X'), returns a
-    uniform Not Applicable for EVERY rule without calling the rule
-    function at all - this is what makes the exclusion apply identically
-    across all 19 points instead of being reimplemented per rule.
+    Single dispatcher every rule call goes through.
     """
     if _is_excluded_line(row):
         return NA, EXCLUDED_LINE_REMARK
@@ -451,10 +403,6 @@ def evaluate_rule(rule_no, fn, row, ctx):
 
 # ---------------------------------------------------------------------------
 # Rule implementations
-# Each function takes (row, ctx) and returns (status, remark)
-# Exclusion (Deletion Indicator / Return Item) is handled centrally by
-# evaluate_rule() above - these functions assume they're only ever called
-# for an eligible (non-excluded) line item.
 # ---------------------------------------------------------------------------
 
 def rule_01_release_verification(row, ctx):
@@ -534,19 +482,8 @@ def rule_06_quantity_control(row, ctx):
     over_tolerance_raw = s(row, OVER_DELIVERY_TOLERANCE_COLUMN)
     if over_tolerance_raw:
         tolerance_pct = parse_sap_number(over_tolerance_raw) or under_tolerance_pct
-        log_assumption(
-            6,
-            f"'{OVER_DELIVERY_TOLERANCE_COLUMN}' column was present and used for this "
-            f"line's over-delivery tolerance, per client redline request.",
-        )
     else:
         tolerance_pct = under_tolerance_pct
-        log_assumption(
-            6,
-            f"'{OVER_DELIVERY_TOLERANCE_COLUMN}' column not present in this extract yet "
-            f"(client said it would be added) - falling back to 'Under Delivery "
-            f"tolerance' for the over-delivery check, same as before.",
-        )
 
     excess_pct = (cumulative_po_qty - pr_qty) / pr_qty * 100
     if excess_pct <= tolerance_pct:
@@ -555,7 +492,6 @@ def rule_06_quantity_control(row, ctx):
 
 
 def rule_07_rc_released(row, ctx):
-    """HEADER-LEVEL rule (see build_po_header_records)."""
     rc_no = s(row, "RC no.")
     if not rc_no:
         return NA, "No RC assigned to this line"
@@ -567,7 +503,6 @@ def rule_07_rc_released(row, ctx):
 
 
 def rule_08_rc_consistency(row, ctx):
-    """HEADER-LEVEL rule (see build_po_header_records)."""
     po_number = s(row, "PO number")
     material = s(row, "Material Code")
 
@@ -594,9 +529,10 @@ def rule_08_rc_consistency(row, ctx):
 
 
 def rule_09_tax_logic(row, ctx):
-    """HEADER-LEVEL rule (see build_po_header_records)."""
     vendor_state = s(row, "Vendor State").upper()
-    tax_code = s(row, "Tax code")
+    
+    # Process and clean tax code
+    tax_code = _clean_tax_code(row.get("Tax code", ""))
 
     if not vendor_state:
         gstin = s(row, GSTIN_COLUMN)
@@ -646,13 +582,10 @@ def rule_10_vendor_material_tax_consistency(row, ctx):
     tax_codes = ctx["vendor_material_tax"].get((vendor, material), set())
     if len(tax_codes) <= 1:
         return VERIFIED, "Consistent tax code for this vendor-material combination (within this extract)"
-    log_assumption(10, "This rule is described as needing 'historical data' across all past POs. This script only checks consistency "
-                       "within the single extract provided; a production run should compare against the full transaction history.")
     return NOT_VERIFIED, f"Multiple tax codes found for vendor {vendor} / material {material}: {sorted(tax_codes)}"
 
 
 def rule_11_msme_payment_term(row, ctx):
-    """HEADER-LEVEL rule (see build_po_header_records)."""
     msme_status = s(row, "Vendor MSME Status")
     if not msme_status:
         return NA, "Vendor has no MSME certificate on file"
@@ -668,7 +601,6 @@ def rule_11_msme_payment_term(row, ctx):
 
 
 def rule_12_general_payment_term(row, ctx):
-    """HEADER-LEVEL rule (see build_po_header_records)."""
     msme_status = s(row, "Vendor MSME Status")
     purchase_group = s(row, "Purchase Group")
     payment_term = s(row, "Payment Term")
@@ -697,19 +629,12 @@ def _has_freight_condition(po_number, item_no, cnd_by_po):
 
 
 def rule_13_eyw_freight_required(row, ctx):
-    """
-    HEADER-LEVEL rule (see build_po_header_records).
-
-    Updated sheet redline: PO types ZIRM/ZICP now route to manual review
-    here too (previously only rule 14 had this).
-    """
     po_type = s(row, "PO Type")
     if po_type in MANUAL_CHECK_PO_TYPES:
         return MANUAL, (
             f"PO type {po_type} is an import PO type flagged by the client for manual "
             f"check rather than an automated EYW freight-condition verdict."
         )
-
     inco_term = s(row, "Inco term")
     if inco_term != "EYW":
         return NA, f"Inco term is {inco_term}, not EYW"
@@ -721,19 +646,12 @@ def rule_13_eyw_freight_required(row, ctx):
 
 
 def rule_14_exw_fca_no_freight(row, ctx):
-    """
-    HEADER-LEVEL rule (see build_po_header_records).
-
-    PO types ZIRM/ZICP route to manual review instead of an automated
-    Verified/Not-Verified outcome.
-    """
     po_type = s(row, "PO Type")
     if po_type in MANUAL_CHECK_PO_TYPES:
         return MANUAL, (
             f"PO type {po_type} is an import PO type flagged by the client for manual "
             f"check rather than an automated EXW/FCA freight-condition verdict."
         )
-
     inco_term = s(row, "Inco term")
     if inco_term not in {"EXW", "FCA"}:
         return NA, f"Inco term is {inco_term}, not EXW/FCA"
@@ -745,7 +663,6 @@ def rule_14_exw_fca_no_freight(row, ctx):
 
 
 def rule_15_rate_approval(row, ctx):
-    """HEADER-LEVEL rule (see build_po_header_records)."""
     our_ref = s(row, "Our Ref.")
     if not _is_rate_approval_tag(our_ref):
         return NA, "No rate-approval tag found in Our Ref."
@@ -767,12 +684,6 @@ def rule_16_zser_item_category(row, ctx):
     if item_cat_raw not in ITEM_CATEGORY_CODE_MAP:
         return MANUAL, f"Item Category raw code '{item_cat_raw}' is not a recognised code (expected one of {sorted(ITEM_CATEGORY_CODE_MAP)})"
 
-    log_assumption(
-        16,
-        "Item Category 'D' is mapped to raw code '9' per the client-provided Item Category table. "
-        "Confirm the row/letter alignment directly with the client."
-    )
-
     if item_cat_raw == ITEM_CATEGORY_SERVICE_CODE and account_assignment == "K":
         return VERIFIED, f"Item Category '{item_cat_raw}' (Service/D) with Account Assignment 'K' as required"
     return NOT_VERIFIED, (
@@ -791,12 +702,6 @@ def rule_17_zcsr_item_category(row, ctx):
 
     if item_cat_raw not in ITEM_CATEGORY_CODE_MAP:
         return MANUAL, f"Item Category raw code '{item_cat_raw}' is not a recognised code (expected one of {sorted(ITEM_CATEGORY_CODE_MAP)})"
-
-    log_assumption(
-        17,
-        "Item Category 'D' is mapped to raw code '9' (same client-provided table as rule 16). "
-        "Confirm the row/letter alignment directly with the client."
-    )
 
     if item_cat_raw == ITEM_CATEGORY_SERVICE_CODE and account_assignment == "A":
         return VERIFIED, f"Item Category '{item_cat_raw}' (Service/D) with Account Assignment 'A' as required"
@@ -820,12 +725,6 @@ def rule_18_lrm_no_l_category(row, ctx):
     if item_cat_raw not in ITEM_CATEGORY_CODE_MAP:
         return MANUAL, f"Item Category raw code '{item_cat_raw}' is not a recognised code (expected one of {sorted(ITEM_CATEGORY_CODE_MAP)})"
 
-    log_assumption(
-        18,
-        "Item Category 'L' is mapped to raw code '3' per the client-provided Item Category table. "
-        "Confirm the row/letter alignment directly with the client."
-    )
-
     if item_cat_raw == ITEM_CATEGORY_SUBCONTRACTING_CODE and account_assignment == "K":
         return NOT_VERIFIED, (
             f"Disallowed combination found: Item Category '{item_cat_raw}' (Subcontracting/L) "
@@ -838,7 +737,6 @@ def rule_18_lrm_no_l_category(row, ctx):
 
 
 def rule_19_multiple_po_same_day(row, ctx):
-    """HEADER-LEVEL rule (see build_po_header_records)."""
     po_number = s(row, "PO number")
     key = (s(row, "Vendor Code"), s(row, "PO Created date"), s(row, "Plant"), s(row, "Purchase Group"))
     pos_in_group = ctx["same_day_groups"].get(key, set())
@@ -862,17 +760,6 @@ def rule_rc_overlap(row, ctx):
     return VERIFIED, "No overlapping RC validity found"
 
 
-# ---------------------------------------------------------------------------
-# Rule registry + HEADER vs LINE classification
-#
-# Per the client's updated "Procurement audit points.xlsx" (column A,
-# "Header/line item level"):
-#   HEADER_LEVEL_RULE_NOS (9 points) - 7, 8, 9, 11, 12, 13, 14, 15, 19.
-#     Describe the whole PO, not one line. Evaluated ONCE PER PO NUMBER
-#     (see build_po_header_records), not once per line.
-#   LINE_LEVEL_RULE_NOS (10 points) - 1, 2, 3, 4, 5, 6, 10, 16, 17, 18.
-#     Unchanged - evaluated and stored once per PO LINE ITEM.
-# ---------------------------------------------------------------------------
 HEADER_LEVEL_RULE_NOS = {7, 8, 9, 11, 12, 13, 14, 15, 19}
 
 PO_LINE_RULES = [
@@ -974,14 +861,6 @@ def build_rc_overlap_records(rc_rows, po_rows):
             {"rc_no": rc_no, "from": valid_from, "to": valid_to}
         )
 
-    if skipped_incomplete:
-        log_assumption(
-            "RC Overlap",
-            f"{skipped_incomplete} row(s) in the RC master (POAUDITRC) were excluded from the "
-            f"RC Overlap output because Vendor Code and/or RC Material Code and/or RC number "
-            f"was blank."
-        )
-
     for (vendor, material), rcs in by_vendor_material.items():
         for i, rc_a in enumerate(rcs):
             overlaps = []
@@ -1049,7 +928,7 @@ def build_context(po_rows, cnd_by_po, rc_rows):
         po_material_groups[(po_number, material)].append(row)
 
         vendor = s(row, "Vendor Code")
-        tax_code = s(row, "Tax code")
+        tax_code = _clean_tax_code(row.get("Tax code", ""))
         if vendor and material and tax_code:
             vendor_material_tax[(vendor, material)].add(tax_code)
 
@@ -1080,12 +959,6 @@ STATUS_TO_RESULT_FLAGS = {
 
 
 def build_addpo_records(po_rows, ctx):
-    """
-    One record per PO LINE ITEM. `results` contains ONLY the 10 LINE-LEVEL
-    points (1-6, 10, 16-18). A line item with Deletion Indicator 'L' and/or
-    Return Item 'X' gets a uniform Not Applicable across all 10 (via
-    evaluate_rule), same as every other point.
-    """
     records = []
     for row in po_rows:
         po_number = s(row, "PO number")
@@ -1137,23 +1010,6 @@ def build_addpo_records(po_rows, ctx):
 
 
 def build_po_header_records(po_rows, ctx):
-    """
-    One record per PO NUMBER. `results` contains ONLY the 9 HEADER-LEVEL
-    points (7, 8, 9, 11, 12, 13, 14, 15, 19), evaluated once per PO
-    instead of once per line.
-
-    Excluded lines (Deletion Indicator 'L' / Return Item 'X') are dropped
-    from the per-PO evaluation set first - an excluded line's own result
-    (always NA) never gets to "disagree" with its siblings and force a
-    PO into manual review. If a PO has NO eligible (non-excluded) line
-    items at all, every header point for that PO is NA.
-
-    For each PO number, every ELIGIBLE line row is evaluated against each
-    header rule. If they all agree, that's the PO's result. If they
-    disagree (should not normally happen - header fields are copied onto
-    every line in this extract), the rule is flagged Data Missing/manual
-    review for that PO, with a remark listing which line items disagreed.
-    """
     by_po = defaultdict(list)
     for row in po_rows:
         po_number = s(row, "PO number")
@@ -1169,7 +1025,7 @@ def build_po_header_records(po_rows, ctx):
             if not eligible_rows:
                 status, remark = NA, (
                     "No eligible line items for this PO (all line items are "
-                    "excluded - Deletion Indicator 'L' and/or Return Item 'X')"
+                    "excluded - Deletion Indication 'L' and/or Return item 'X')"
                 )
             else:
                 per_line = [
@@ -1185,12 +1041,6 @@ def build_po_header_records(po_rows, ctx):
                     remark = (
                         f"Header-level rule returned different results across this PO's "
                         f"eligible line items - needs manual review ({detail})"
-                    )
-                    log_assumption(
-                        rule_no,
-                        f"PO {po_number}: header-level rule {rule_no} disagreed across "
-                        f"eligible line items and was routed to Data Missing/manual "
-                        f"review instead of picking one line's answer.",
                     )
             flags = STATUS_TO_RESULT_FLAGS[status]
             results.append({"pointNo": str(rule_no), "remarks": [remark], **flags})
@@ -1212,26 +1062,11 @@ def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None, header_
 
     po_rows = filter_to_scope(po_rows)
 
-    excluded_count = sum(1 for r in po_rows if _is_excluded_line(r))
-    if excluded_count:
-        log_assumption(
-            "Global Exclusion",
-            f"{excluded_count} of {len(po_rows)} in-scope PO line(s) were excluded from "
-            f"ALL 19 audit points (marked Not Applicable on every point, line-level and "
-            f"header-level alike) because they have Deletion Indicator = 'L' and/or "
-            f"Return Item = 'X'. Column names ('{DELETION_INDICATOR_COLUMN}', "
-            f"'{RETURN_ITEM_COLUMN}') are ASSUMPTIONS - confirm with client against the "
-            f"real extract headers.",
-        )
-
     ctx = build_context(po_rows, cnd_by_po, rc_rows)
 
     base_folder = os.path.dirname(os.path.abspath(poaudit_path))
     ctx["tax_master"] = load_tax_master(base_folder)
 
-    # xlsx "PO Line Results" sheet - still shows all 19 columns per line,
-    # for human review. Excluded lines show NA uniformly across all 19,
-    # via the same evaluate_rule() dispatcher everything else uses.
     output_rows = []
     for row in po_rows:
         record = {
@@ -1258,25 +1093,21 @@ def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None, header_
         assumptions_df.to_excel(writer, sheet_name="Assumptions", index=False)
 
     print(f"Wrote {len(df)} PO-line results (rules 1-19) and {len(rc_overlap_df)} RC-overlap rows (point 20) to {out_path}")
-    print(f"{len(assumptions_df)} assumption(s) logged - see 'Assumptions' sheet. These MUST be confirmed with the client.")
 
     if addpo_json_path:
         records = build_addpo_records(po_rows, ctx)
         with open(addpo_json_path, "w") as f:
             json.dump(records, f, indent=2)
-        print(f"Wrote {len(records)} PO-line records (line-level: rules 1-6,10,16-18) to {addpo_json_path} - insert with: node addpo.js {addpo_json_path}")
 
     if header_json_path:
         header_records = build_po_header_records(po_rows, ctx)
         with open(header_json_path, "w") as f:
             json.dump(header_records, f, indent=2)
-        print(f"Wrote {len(header_records)} PO-header records (header-level: rules 7,8,9,11-15,19) to {header_json_path} - insert with: node addheader.js {header_json_path}")
 
     if rc_json_path:
         rc_records = build_rc_overlap_records(rc_rows, po_rows)
         with open(rc_json_path, "w") as f:
             json.dump(rc_records, f, indent=2)
-        print(f"Wrote {len(rc_records)} RC Overlap records (point 20, with derived purchaseGroups) to {rc_json_path} - insert with: node addrc.js {rc_json_path}")
 
 
 if __name__ == "__main__":

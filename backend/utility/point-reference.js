@@ -61,11 +61,11 @@ export const POINT_DEFINITIONS = [
     pointNo: "6",
     title: "PO Quantity vs PR Quantity (Tolerance)",
     summary:
-      "Confirms cumulative PO quantity raised against a PR line (across every partial PO, not just this one) does not exceed the PR quantity beyond the allowed under-delivery tolerance.",
+      "Confirms cumulative PO quantity raised against a PR line (across every partial PO, not just this one) does not exceed the PR quantity beyond the allowed under-delivery or over-delivery tolerance.",
     logic:
-      "Not Applicable for PO types ZSER/ZCSR or when PR qty is unavailable. Sums PO Qty across every PO line referencing the same PR+PR-line, compares against PR Qty, and allows the % in 'Under Delivery tolerance'.",
+      "Not Applicable for PO types ZSER/ZCSR or when PR qty is unavailable. Sums PO Qty across every PO line referencing the same PR+PR-line, compares against PR Qty, and allows the % in 'Under Delivery tolerance' or 'Overdelivery Tolerance Limit'.",
     dataPoints:
-      "PO Type, Purchase Req, PR line Item no., PR Qty., PO Qty., Under Delivery tolerance",
+      "PO Type, Purchase Req, PR line Item no., PR Qty., PO Qty., Under Delivery tolerance, Overdelivery Tolerance Limit",
   },
   {
     pointNo: "7",
