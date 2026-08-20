@@ -19,7 +19,14 @@ const PAGE_SIZE = 25;
 // SAP Hold, etc.) is raw backend data, not a display field - it was
 // previously being rendered here as "PO HOLD" and the client does not want
 // that column anywhere in the app's drilldown tables.
-const DrilldownDialog = ({ drilldown, appliedFilters, onClose }) => {
+//
+// `onDataChanged` (optional): forwarded down to the row-preview dialog's
+// `onHeaderChanged` hook. Fired whenever a header lock/unlock happens from
+// within this drilldown's preview dialog, so the parent (Executive
+// Dashboard) can refetch its own summary and keep every KPI/chart on the
+// page in sync with the header's actual DB state - not just this dialog's
+// own row list.
+const DrilldownDialog = ({ drilldown, appliedFilters, onClose, onDataChanged }) => {
   const navigate = useNavigate();
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
@@ -207,6 +214,7 @@ const DrilldownDialog = ({ drilldown, appliedFilters, onClose }) => {
         preview={poPreview}
         onClose={() => setPoPreview(null)}
         onOpenFullPage={openFullSearchPage}
+        onHeaderChanged={onDataChanged}
       />
     </Dialog>
   );

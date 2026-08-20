@@ -43,6 +43,7 @@ import { post } from "utils/axiosApi";
 import FilterBar, { DEFAULT_FILTERS } from "./components/FilterBar";
 import DrilldownDialog from "./components/DrilldownDialog";
 import HeaderDrilldownDialog from "./components/HeaderDrilldownDialog";
+import HeaderKpiDrilldownDialog from "./components/HeaderKpiDrilldownDialog";
 import {
   ControlWiseTooltip,
   SeverityTooltip,
@@ -475,6 +476,10 @@ const ExecutiveDashboard = () => {
 
   const [drilldown, setDrilldown] = useState(null);
   const [headerDrilldown, setHeaderDrilldown] = useState(null);
+  // NEW — driven by the 4 header-level KPI cards (Header Compliance / POs
+  // Closed / Verified (Header) / Not Verified (Header)). Separate from
+  // headerDrilldown above, which is scoped to a single chart POINT.
+  const [headerKpiDrilldown, setHeaderKpiDrilldown] = useState(null);
   const [poPreview, setPoPreview] = useState(null);
   const abortRef = useRef(null);
 
@@ -539,6 +544,11 @@ const ExecutiveDashboard = () => {
     setDrilldown({ dimension, value, title, ...extra });
   const openHeaderDrilldown = (pointNo, title, extra = {}) =>
     setHeaderDrilldown({ pointNo, title, ...extra });
+  // NEW — opens the "all POs matching this KPI" list dialog. `dimension`
+  // is one of "all" | "closed" | "open" | "verifiedAny" | "notVerifiedAny",
+  // matching getExecutiveHeaderKpiDrilldown on the backend.
+  const openHeaderKpiDrilldown = (dimension, title) =>
+    setHeaderKpiDrilldown({ dimension, title });
 
   const handleRowAction = (row, mode) => {
     if (!row) return;
@@ -960,7 +970,12 @@ const ExecutiveDashboard = () => {
         ══════════════════ HEADER-LEVEL (distinct indigo styling) ══════════════════
         Moved ahead of Line-Item Level per request: header-level detail
         should render first on the page, both in the KPI cards and in
-        the charts grid below.
+        the charts grid below. All 4 KPI cards below are now clickable —
+        each opens HeaderKpiDrilldownDialog with a `dimension` matching
+        getExecutiveHeaderKpiDrilldown on the backend, listing PO numbers.
+        Clicking a PO in that list opens the SAME header-only preview
+        (PoDetailsPreviewDialog's isHeaderOnly branch) the line-item table
+        already uses, via setPoPreview({ poNumber }) with no lineItem.
       */}
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1.5 }}>
         <LayersRoundedIcon sx={{ color: HEADER_ACCENT, fontSize: 20 }} />
@@ -982,7 +997,16 @@ const ExecutiveDashboard = () => {
                 : "—"
             }
             loading={loading}
-            sublabel="Verified ÷ (Verified + Not Verified), per PO"
+            sublabel="Verified ÷ (Verified + Not Verified), per PO. Click to view all POs with header data."
+            onClick={
+              headerKpis.totalPOsWithHeaderData
+                ? () =>
+                    openHeaderKpiDrilldown(
+                      "all",
+                      "All POs — Header-Level Detail",
+                    )
+                : undefined
+            }
           />
         </Grid>
         <Grid item xs={12} sm={6} md={3}>
@@ -992,7 +1016,16 @@ const ExecutiveDashboard = () => {
             value={headerKpis.closedPOCount ?? "—"}
             valueColor="#059669"
             loading={loading}
-            sublabel={`${headerKpis.openPOCount ?? 0} still open — out of the same Total POs above`}
+            sublabel={`${headerKpis.openPOCount ?? 0} still open — out of the same Total POs above. Click to view closed POs.`}
+            onClick={
+              headerKpis.closedPOCount
+                ? () =>
+                    openHeaderKpiDrilldown(
+                      "closed",
+                      "PO Headers — Closed",
+                    )
+                : undefined
+            }
           />
         </Grid>
         <Grid item xs={12} sm={6} md={3}>
@@ -1002,7 +1035,16 @@ const ExecutiveDashboard = () => {
             value={headerKpis.verifiedCount ?? "—"}
             valueColor="#059669"
             loading={loading}
-            sublabel="Across all header points, all in-scope POs"
+            sublabel="Across all header points, all in-scope POs. Click to view POs with a verified header point."
+            onClick={
+              headerKpis.verifiedCount
+                ? () =>
+                    openHeaderKpiDrilldown(
+                      "verifiedAny",
+                      "POs with at Least One Verified Header Point",
+                    )
+                : undefined
+            }
           />
         </Grid>
         <Grid item xs={12} sm={6} md={3}>
@@ -1012,7 +1054,16 @@ const ExecutiveDashboard = () => {
             value={headerKpis.notVerifiedCount ?? "—"}
             valueColor="#dc2626"
             loading={loading}
-            sublabel="Across all header points, all in-scope POs"
+            sublabel="Across all header points, all in-scope POs. Click to view POs with a not-verified header point."
+            onClick={
+              headerKpis.notVerifiedCount
+                ? () =>
+                    openHeaderKpiDrilldown(
+                      "notVerifiedAny",
+                      "POs with at Least One Not-Verified Header Point",
+                    )
+                : undefined
+            }
           />
         </Grid>
       </Grid>
@@ -1999,20 +2050,42 @@ const ExecutiveDashboard = () => {
         Risk Categorization Master page.
       </Typography>
 
-      <DrilldownDialog
+            <DrilldownDialog
         drilldown={drilldown}
         appliedFilters={buildSummaryBody(filters)}
         onClose={() => setDrilldown(null)}
+        onDataChanged={() => fetchSummary(filters)}
       />
       <HeaderDrilldownDialog
         drilldown={headerDrilldown}
         appliedFilters={buildSummaryBody(filters)}
         onClose={() => setHeaderDrilldown(null)}
       />
+      {/*
+        NEW — the general "list POs matching this header KPI" dialog.
+        Picking a row hands the PO number to setPoPreview({ poNumber })
+        below (no lineItem), which is EXACTLY what already drives the
+        header-only branch of PoDetailsPreviewDialog for line items that
+        have no lineItem set — same component, same behavior, reused.
+      */}
+      <HeaderKpiDrilldownDialog
+        drilldown={headerKpiDrilldown}
+        appliedFilters={buildSummaryBody(filters)}
+        onClose={() => setHeaderKpiDrilldown(null)}
+        onViewHeader={(poNumber) => setPoPreview({ poNumber })}
+      />
+      {/*
+        onHeaderChanged: closing/reopening a PO header from THIS dialog
+        (reached via any KPI card, chart drilldown, or PO-Wise Exceptions
+        row click) changes PO-wide compliance numbers - refetch the whole
+        executive summary so every KPI card and chart above reflects the
+        new state immediately, instead of only the dialog itself updating.
+      */}
       <PoDetailsPreviewDialog
         preview={poPreview}
         onClose={() => setPoPreview(null)}
         onOpenFullPage={openFullSearchPage}
+        onHeaderChanged={() => fetchSummary(filters)}
       />
     </Box>
   );

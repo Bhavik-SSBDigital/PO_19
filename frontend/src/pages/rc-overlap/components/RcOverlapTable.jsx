@@ -52,21 +52,21 @@ const overlapStickySx = {
  *
  * The "Purchase Group(s)" column shows which purchasing group(s)' PO lines
  * actually reference each RC (derived server-side — see
- * engine.py's build_rc_purchase_groups()). For an Admin/PM this is useful
- * context across the whole company; for a Buyer it'll just confirm their
- * own group, which is harmless. Each chip now prints BOTH the code and the
- * resolved name directly ("P15 — Packaging") instead of hiding the name
- * behind a hover tooltip, so it's visible at a glance.
+ * engine.py's build_rc_purchase_groups()). Each chip prints BOTH the code
+ * and the resolved name directly ("P15 — Packaging").
  *
- * Vendor is now shown as code + resolved name (with GSTIN on hover), and
+ * Vendor is shown as code + resolved name (with GSTIN on hover), and
  * Purchase Group chips show resolved names — both sourced from
- * master-data.js via rc-overlap-controller.js's enrichRcOverlapRow(), same
- * enrichment pattern as PO Data / PO Remarks Report.
+ * master-data.js via rc-overlap-controller.js's enrichRcOverlapRow().
  *
- * "Overlapping RC(s)" is now the FIRST column (and sticky-pinned to the
- * left edge of the scroll area) so it's visible without any horizontal
- * scrolling — this is the column that actually flags a problem, so it
- * shouldn't be the one hidden off-screen.
+ * "Overlapping RC(s)" is the FIRST column (sticky-pinned to the left edge
+ * of the scroll area) so it's visible without any horizontal scrolling.
+ *
+ * "Status" now shows the WHY inline for Not Verified rows, not just on
+ * hover: r.remark (e.g. "Overlaps with RC(s): [...]") is rendered as a
+ * small caption directly under the chip, so the reason is visible at a
+ * glance without any interaction. A tooltip on the chip repeats the same
+ * text for accessibility/mobile, but the caption is the primary surface.
  *
  * Sorting/searching here is client-side over the current page only, since
  * the backend already paginates and filters server-side (search box /
@@ -128,7 +128,7 @@ const RcOverlapTable = ({
     { key: "purchaseGroups", label: "Purchase Group(s)", minWidth: 240 },
     { key: "validFrom", label: "Valid From", minWidth: 130 },
     { key: "validTo", label: "Valid To", minWidth: 130 },
-    { key: "status", label: "Status", minWidth: 130 },
+    { key: "status", label: "Status", minWidth: 220 },
   ];
 
   const formatDate = (v) => {
@@ -145,6 +145,17 @@ const RcOverlapTable = ({
       return r.purchaseGroupNames;
     }
     return (r.purchaseGroups || []).map((code) => ({ code, name: code }));
+  };
+
+  // Human-readable fallback if the backend's `remark` is ever missing but
+  // we still know what it overlaps with — so there's always SOME reason
+  // shown, never a bare "Not Verified" with no explanation.
+  const notVerifiedReason = (r) => {
+    if (r.remark) return r.remark;
+    if (r.overlappingRcs && r.overlappingRcs.length > 0) {
+      return `Validity period overlaps with RC(s): ${r.overlappingRcs.join(", ")}`;
+    }
+    return "Could not be verified — reason not recorded.";
   };
 
   const renderCell = (col, r) => {
@@ -193,12 +204,32 @@ const RcOverlapTable = ({
       }
       case "status": {
         const style = STATUS_COLORS[r.status] || { bg: "grey.100", color: "text.secondary" };
-        return (
+        const chip = (
           <Chip
             size="small"
             label={r.status || "—"}
             sx={{ height: 24, fontWeight: 700, fontSize: "0.75rem", bgcolor: style.bg, color: style.color }}
           />
+        );
+        if (r.status !== "Not Verified") {
+          return chip;
+        }
+        // Not Verified: show the WHY as a visible caption directly under
+        // the chip, not only on hover — reason should be readable at a
+        // glance while scanning the table.
+        const reason = notVerifiedReason(r);
+        return (
+          <Box>
+            <MuiTooltip title={reason} placement="top" arrow>
+              <span>{chip}</span>
+            </MuiTooltip>
+            <Typography
+              variant="caption"
+              sx={{ display: "block", color: "#b91c1c", mt: 0.5, maxWidth: 200, lineHeight: 1.3 }}
+            >
+              {reason}
+            </Typography>
+          </Box>
         );
       }
       case "overlappingRcs":
@@ -272,7 +303,7 @@ const RcOverlapTable = ({
         <Box sx={{ p: 3 }}><Skeleton variant="rectangular" height={320} sx={{ borderRadius: 2 }} /></Box>
       ) : (
         <Box sx={{ overflowX: "auto" }}>
-          <Table size="medium" sx={{ minWidth: 1350 }}>
+          <Table size="medium" sx={{ minWidth: 1400 }}>
             <TableHead>
               <TableRow>
                 {columns.map((c) => (
@@ -307,7 +338,9 @@ const RcOverlapTable = ({
                     <TableCell
                       key={c.key}
                       sx={{
-                        whiteSpace: c.key === "purchaseGroups" || c.key === "vendorCode" ? "normal" : "nowrap",
+                        whiteSpace: c.key === "purchaseGroups" || c.key === "vendorCode" || c.key === "status" ? "normal" : "nowrap",
+                        verticalAlign: "top",
+                        py: 1.25,
                         ...(c.key === "overlappingRcs" ? overlapStickySx : {}),
                       }}
                     >

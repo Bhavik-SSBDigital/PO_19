@@ -4,6 +4,7 @@ import {
   classifyPoint,
   severityOf,
 } from "../utility/severity.js";
+import { RC_PLACEHOLDER_PO_TYPES } from "../utility/rc-placeholder.js";
 import {
   getVendorName,
   getVendorInfo,
@@ -32,15 +33,6 @@ const lineItemOf = (row) => {
   return null;
 };
 
-// A line item counts as CLOSED once `remarksLocked` is true on the
-// AuditResult row itself — this is the actual "checked" flag the app sets
-// (see schema comment: "Once true, no remarks can be added, edited, or
-// deleted against ANY point on this line item"). NOTE: this deliberately
-// does NOT look at `verificationWorkflow` — in real data that relation is
-// consistently null (no VerificationWorkflow rows are being created), so
-// keying off it made every PO permanently "open" regardless of how many
-// lines were actually locked/reviewed. remarksLocked is the field that is
-// actually populated and actually reflects reviewer sign-off.
 const rowIsClosed = (row) => row.remarksLocked === true;
 
 const ROW_SELECT = {
@@ -61,19 +53,11 @@ const ROW_SELECT = {
   results: true,
   tax_code: true,
   GSTInOfVendor: true,
-  // This is what lets us tell CLOSED vs OPEN per line item, and roll that
-  // up into a per-PO "3/8 closed" progress figure + line-item breakdown
-  // below. See rowIsClosed above for why remarksLocked (not
-  // verificationWorkflow) is the source.
   remarksLocked: true,
   remarksLockedBy: true,
   remarksLockedAt: true,
 };
 
-// Fields returned for the HEADER-LEVEL-ONLY endpoint. Deliberately does
-// NOT include po_line_item, po_material_number, or anything else that
-// identifies a specific line — header-level data is one row per PO
-// NUMBER, full stop. See getPoHeaderWiseDetails below.
 const HEADER_ROW_SELECT = {
   id: true,
   po_number: true,
@@ -88,7 +72,7 @@ const HEADER_ROW_SELECT = {
 };
 
 function buildBaseWhere(body = {}) {
-  const where = { type: "PO" };
+  const where = { type: "PO", po_type: { notIn: RC_PLACEHOLDER_PO_TYPES } };
 
   if (body.poDateFrom || body.poDateTo) {
     where.po_created_date = {};
@@ -114,13 +98,9 @@ function buildBaseWhere(body = {}) {
   if (body.poNumberSearch) {
     where.po_number = { contains: body.poNumberSearch, mode: "insensitive" };
   }
-  if (body.vendorSearch) {
-    where.OR = [
-      ...(where.OR || []),
-      { vendor_code: { contains: body.vendorSearch, mode: "insensitive" } },
-      { nameOfVendor: { contains: body.vendorSearch, mode: "insensitive" } },
-    ];
-  }
+  // Note: vendorSearch has been removed from Prisma's buildBaseWhere.
+  // It is now handled cleanly as a post-filter once vendor names are mapped
+  // from the master data.
 
   return where;
 }
@@ -129,11 +109,6 @@ function rowHasException(row) {
   return (row.results || []).some((p) => classifyPoint(p) === "notVerified");
 }
 
-// Used ONLY when the advanced filter bar supplies a severity/pointNo — in
-// that case we still only want to surface exception points matching that
-// specific severity/point (that's the whole point of the filter), so a PO
-// with no matching exception point correctly drops out even in "all POs"
-// mode.
 function pointMatchesAdvancedFilters(p, { severity, pointNo }) {
   if (classifyPoint(p) !== "notVerified") return false;
   if (pointNo && String(p.pointNo) !== String(pointNo)) return false;
@@ -149,21 +124,18 @@ function pointMatchesAdvancedFilters(p, { severity, pointNo }) {
 
 function newBucket() {
   return {
-    totalLines: 0, // every PO line seen for this PO (compliant + exception)
-    exceptionLines: 0, // lines with at least one notVerified point
-    verifiedPoints: 0, // point-level tally, across every line, for compliance %
+    totalLines: 0,
+    exceptionLines: 0,
+    verifiedPoints: 0,
     notVerifiedPoints: 0,
-    closedLines: 0, // lines whose remarksLocked === true
-    openLines: 0, // every other line (remarksLocked !== true)
+    closedLines: 0,
+    openLines: 0,
     lineItems: new Set(),
-    // Per-line-item breakdown, so the frontend's "click PO -> see which
-    // line item is closed and which isn't" dialog doesn't need a second
-    // round-trip. One entry per AuditResult row folded into this PO.
     lineItemDetails: [],
     prs: new Set(),
     taxCodes: new Set(),
     gstins: new Set(),
-    valueExposure: 0, // sum of net_value across ALL lines of this PO
+    valueExposure: 0,
     vendorCode: null,
     vendorName: null,
     poType: null,
@@ -180,43 +152,18 @@ function compliancePctOf(b) {
     : null;
 }
 
-// Distinct from compliancePct (which is point-level "verified vs
-// notVerified" across audit checks). This is the review/closure progress —
-// how many of the PO's line items have remarksLocked === true — which is
-// what the frontend's three tabs and progress bar are driven by.
 function closedPctOf(b) {
   return b.totalLines > 0
     ? Number(((b.closedLines / b.totalLines) * 100).toFixed(1))
     : null;
 }
 
-// Three-way status for a PO, based on how many of its line items are
-// closed (remarksLocked === true) out of its total line count:
-//   - "pending"     : closedLines === 0        -> nothing started yet
-//   - "in_progress" : 0 < closedLines < total   -> e.g. 3/8 closed
-//   - "reviewed"    : closedLines === total     -> fully closed
-// A PO with zero lines (shouldn't normally happen) falls back to "pending".
 function reviewStatusOf(b) {
   if (b.totalLines === 0 || b.closedLines === 0) return "pending";
   if (b.closedLines === b.totalLines) return "reviewed";
   return "in_progress";
 }
 
-/**
- * PO-wise data for the standalone PO Data page (/po-data).
- *
- * Returns EVERY PO line under `where` — compliant or not — unlike the
- * dashboard's embedded table (fed separately by getExecutiveSummary's
- * `charts.poWiseExceptions`, which is untouched and still exception-only).
- * If the advanced filter bar sends a severity/pointNo, a PO is only kept
- * when it has a matching exception point (see pointMatchesAdvancedFilters);
- * with no such filter, every PO in scope is returned regardless of its
- * compliance status.
- *
- * This is the LINE-ITEM view — each PO carries lineItemDetails with a
- * po_line_item per entry. For a header-only view (no line item anywhere in
- * the response), use getPoHeaderWiseDetails below instead.
- */
 export const getPoWiseExceptions = async (req, res) => {
   try {
     await ensureSeverityLoaded();
@@ -259,11 +206,6 @@ export const getPoWiseExceptions = async (req, res) => {
 
     const byPo = {};
     for (const row of rows) {
-      // Only skip a row when the user explicitly asked to filter by
-      // severity/pointNo and this row has no exception point matching it.
-      // Otherwise every row — compliant or not — is folded into its PO's
-      // bucket, which is what makes this "all POs" instead of
-      // "exceptions only".
       if (hasPointFilter) {
         const anyMatch = (row.results || []).some((p) =>
           pointMatchesAdvancedFilters(p, { severity, pointNo }),
@@ -316,9 +258,7 @@ export const getPoWiseExceptions = async (req, res) => {
       b.paymentTerm = b.paymentTerm || row.payment_term || null;
     }
 
-    const results = Object.entries(byPo)
-      // Worst-compliance / most-exceptions first, same ordering feel as
-      // before, just no longer excluding clean POs.
+    let finalResults = Object.entries(byPo)
       .sort((a, b) => b[1].exceptionLines - a[1].exceptionLines)
       .map(([poNumber, v]) => ({
         poNumber,
@@ -335,12 +275,11 @@ export const getPoWiseExceptions = async (req, res) => {
         totalLineCount: v.totalLines,
         exceptionLineCount: v.exceptionLines,
         compliancePct: compliancePctOf(v),
-        // Review-workflow progress (per PO), NOT audit compliance:
         closedLineCount: v.closedLines,
         openLineCount: v.openLines,
         closedPct: closedPctOf(v),
-        reviewStatus: reviewStatusOf(v), // "pending" | "in_progress" | "reviewed"
-        isFullyClosed: v.totalLines > 0 && v.closedLines === v.totalLines, // back-compat alias
+        reviewStatus: reviewStatusOf(v),
+        isFullyClosed: v.totalLines > 0 && v.closedLines === v.totalLines,
         lineItemDetails: [...v.lineItemDetails].sort((a, c) =>
           String(a.lineItem).localeCompare(String(c.lineItem), undefined, {
             numeric: true,
@@ -354,9 +293,19 @@ export const getPoWiseExceptions = async (req, res) => {
         valueExposure: Number(v.valueExposure.toFixed(2)),
       }));
 
+    // Post-filter logic for Vendor Search (handles dynamic master data lookups)
+    if (body.vendorSearch) {
+      const vSearchLower = body.vendorSearch.toLowerCase();
+      finalResults = finalResults.filter(
+        (r) =>
+          (r.vendorCode && r.vendorCode.toLowerCase().includes(vSearchLower)) ||
+          (r.vendorName && r.vendorName.toLowerCase().includes(vSearchLower)),
+      );
+    }
+
     return res.status(200).json({
-      total: results.length,
-      results,
+      total: finalResults.length,
+      results: finalResults,
       scope:
         user.isBuyer && !(user.isAdmin || user.isProcurementManager)
           ? { restrictedToPurchaseGroup: user.username }
@@ -368,31 +317,13 @@ export const getPoWiseExceptions = async (req, res) => {
   }
 };
 
-/**
- * NEW — PO Header-Level Details, PO-Number-wise, with NO po_line_item
- * anywhere in the request or response. One row per PO number, sourced
- * entirely from PoHeaderResult (which is itself already one-row-per-PO —
- * see prisma schema). This is what the search page / any "header level"
- * navigation should call instead of getPoWiseExceptions whenever the user
- * is looking at header-level detail, so a line item can never leak in.
- *
- * Same purchase-group scoping rules as getPoWiseExceptions (Buyer locked
- * to own group; Admin/PM can see all or narrow by group).
- *
- * Body accepts: poNumber (exact or partial via poNumberSearch), vendorCode,
- * purchaseGroup[], poType[]. No line-item-shaped filters (materialCode,
- * poDateFrom/To acting on line data, etc.) are accepted here on purpose —
- * PoHeaderResult doesn't carry those columns. If you need date-range
- * filtering on header data, that requires adding those columns to
- * PoHeaderResult first (not present in the schema I was given).
- */
 export const getPoHeaderWiseDetails = async (req, res) => {
   try {
     await ensureSeverityLoaded();
 
     const body = req.body || {};
     const user = req.user || {};
-    const where = {};
+    const where = { po_type: { notIn: RC_PLACEHOLDER_PO_TYPES } };
 
     if (user.isAdmin || user.isProcurementManager) {
       const groupCodes = new Set();
@@ -413,13 +344,15 @@ export const getPoHeaderWiseDetails = async (req, res) => {
     }
 
     if (body.poNumber) {
-      where.po_number = body.poNumber; // exact match - header table is unique per po_number
+      where.po_number = body.poNumber;
     } else if (body.poNumberSearch) {
       where.po_number = { contains: body.poNumberSearch, mode: "insensitive" };
     }
     if (body.vendorCode) where.vendor_code = body.vendorCode;
     if (Array.isArray(body.poType) && body.poType.length) {
-      where.po_type = { in: body.poType };
+      where.po_type = {
+        in: body.poType.filter((t) => !RC_PLACEHOLDER_PO_TYPES.includes(t)),
+      };
     }
 
     const rows = await prisma.poHeaderResult.findMany({
@@ -428,7 +361,7 @@ export const getPoHeaderWiseDetails = async (req, res) => {
       orderBy: { po_number: "asc" },
     });
 
-    const results = rows.map((row) => {
+    let results = rows.map((row) => {
       const verifiedPoints = (row.results || []).filter(
         (p) => classifyPoint(p) === "verified",
       ).length;
@@ -446,9 +379,6 @@ export const getPoHeaderWiseDetails = async (req, res) => {
         poTypeName: getPoTypeName(row.po_type),
         purchaseGroup: row.purchase_group,
         purchaseGroupName: getPurchaseGroupName(row.purchase_group),
-        // Header-level points only (see utility/point-scope.js) - every
-        // entry here already excludes any concept of a line item, because
-        // PoHeaderResult.results only ever holds header points.
         points: (row.results || []).map((p) => ({
           pointNo: p.pointNo,
           status: classifyPoint(p),
@@ -468,6 +398,16 @@ export const getPoHeaderWiseDetails = async (req, res) => {
       };
     });
 
+    // Post-filter logic added here as well, to keep both endpoints aligned
+    if (body.vendorSearch) {
+      const vSearchLower = body.vendorSearch.toLowerCase();
+      results = results.filter(
+        (r) =>
+          (r.vendorCode && r.vendorCode.toLowerCase().includes(vSearchLower)) ||
+          (r.vendorName && r.vendorName.toLowerCase().includes(vSearchLower)),
+      );
+    }
+
     return res.status(200).json({
       total: results.length,
       results,
@@ -482,11 +422,6 @@ export const getPoHeaderWiseDetails = async (req, res) => {
   }
 };
 
-/**
- * Purchasing-group {code, name} list — Admin/PM only, feeds the group
- * Autocomplete. A Buyer's group is fixed server-side regardless, so they
- * have no use for (and shouldn't be able to enumerate) the full list.
- */
 export const getPurchaseGroupsForFilter = async (req, res) => {
   const user = req.user || {};
   if (!(user.isAdmin || user.isProcurementManager)) {
@@ -495,20 +430,10 @@ export const getPurchaseGroupsForFilter = async (req, res) => {
   return res.status(200).json({ groups: getPurchaseGroupsList() });
 };
 
-/**
- * PO Type {code, name} list, sourced from the real PO_TYPE_NAMES map in
- * master-data.js. Available to anyone who can reach the PO Data page
- * (Buyer/Admin/PM) since PO type isn't a scoped/sensitive dimension the
- * way purchasing group is.
- */
 export const getPoTypesForFilter = async (req, res) => {
   return res.status(200).json({ poTypes: getPoTypesList() });
 };
 
-/**
- * Plant {code, name} list, sourced from the real Plant Master file. Same
- * availability as PO types — not scoped/sensitive.
- */
 export const getPlantsForFilter = async (req, res) => {
   return res.status(200).json({ plants: getPlantsList() });
 };

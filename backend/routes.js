@@ -32,6 +32,7 @@ import {
   getFilterOptions,
   getExecutiveDrilldown,
   getExecutiveHeaderDrilldown, // NEW - PO-level drilldown for the header chart
+  getExecutiveHeaderKpiDrilldown,
 } from "./controller/dashboard-controller.js";
 
 import {
@@ -81,6 +82,11 @@ router.post("/getPOAuditResult", requireAuth, get_po_audit_result);
 router.post("/reports/executive-summary", requireAuth, getExecutiveSummary);
 router.post("/reports/filter-options", requireAuth, getFilterOptions);
 router.post("/reports/executive-drilldown", requireAuth, getExecutiveDrilldown);
+router.post(
+  "/reports/executive-header-kpi-drilldown",
+  requireAuth,
+  getExecutiveHeaderKpiDrilldown,
+);
 // PO-level drilldown behind the "PO Header-Level Compliance" chart.
 // Separate from executive-drilldown on purpose: results here are PO
 // numbers, not PO line items.

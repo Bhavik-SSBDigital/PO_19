@@ -16,6 +16,7 @@ import {
   getPaymentTermDescription,
   getPoTypeName,
 } from "../utility/master-data.js";
+import { RC_PLACEHOLDER_PO_TYPES } from "../utility/rc-placeholder.js";
 // CHANGED: point content (title/summary/logic) now comes from the DB, not
 // a file - see utility/point-definitions.js. ensurePointDefinitionsLoaded()
 // must be awaited before getPointDefinition() is used, same pattern as
@@ -58,12 +59,13 @@ const PURCHASE_GROUPS = [
  *   - Everyone else (Admin, PM, and any other dashboard-visible role):
  *     unrestricted, may still narrow voluntarily via the filter bar.
  *
- * Both getExecutiveSummary and getExecutiveDrilldown/getExecutiveHeaderDrilldown
- * go through this same buildWhere(), so line-level AND header-level numbers
- * are always drawn from the same scoped dataset.
+ * getExecutiveSummary, getExecutiveDrilldown, getExecutiveHeaderDrilldown,
+ * and getExecutiveHeaderKpiDrilldown all go through this same buildWhere(),
+ * so line-level AND header-level numbers are always drawn from the same
+ * scoped dataset.
  */
 function buildWhere(body = {}, user = {}) {
-  const where = { type: "PO" };
+  const where = { type: "PO", po_type: { notIn: RC_PLACEHOLDER_PO_TYPES } };
 
   if (body.poDateFrom || body.poDateTo) {
     where.po_created_date = {};
@@ -935,6 +937,10 @@ export const getExecutiveDrilldown = async (req, res) => {
  * collecting the in-scope PO numbers from AuditResult, then reading their
  * po_header_results rows - identical scoping approach to the header block
  * in getExecutiveSummary above.
+ *
+ * SCOPED TO ONE HEADER POINT (`pointNo` is required). For a general
+ * "list all POs matching this overall KPI" view with no specific point,
+ * see getExecutiveHeaderKpiDrilldown below instead.
  */
 export const getExecutiveHeaderDrilldown = async (req, res) => {
   try {
@@ -1026,6 +1032,136 @@ export const getExecutiveHeaderDrilldown = async (req, res) => {
     return res
       .status(500)
       .json({ message: "Failed to compute header drilldown" });
+  }
+};
+
+/**
+ * POST /reports/executive-header-kpi-drilldown
+ *
+ * Backs the 4 header-level KPI CARDS on the Executive Dashboard (Header
+ * Compliance / POs Closed / Verified (Header) / Not Verified (Header)).
+ * Unlike getExecutiveHeaderDrilldown above (scoped to ONE header POINT,
+ * from clicking a bar on the "PO Header-Level Compliance" chart), this
+ * has no pointNo - it lists PO numbers filtered by an overall
+ * `dimension`:
+ *
+ *   - "all"            : every in-scope PO that has header data loaded
+ *   - "closed"         : header remarksLocked === true
+ *   - "open"           : header remarksLocked === false
+ *   - "verifiedAny"    : PO has at least one Verified header point
+ *   - "notVerifiedAny" : PO has at least one Not Verified header point
+ *
+ * Same buildWhere()/scopeOf() scoping as the rest of this controller, so
+ * results always agree with the dashboard's active filters and the
+ * user's purchase-group restriction. Each row IS a whole PO - clicking it
+ * on the frontend opens the same header-only preview
+ * (PoDetailsPreviewDialog's isHeaderOnly branch) that line items use.
+ */
+export const getExecutiveHeaderKpiDrilldown = async (req, res) => {
+  try {
+    await Promise.all([ensureSeverityLoaded(), ensurePointDefinitionsLoaded()]);
+    const user = req.user || {};
+    const {
+      dimension = "all",
+      page = 1,
+      pageSize = 25,
+      ...filterBody
+    } = req.body || {};
+
+    const where = buildWhere(filterBody, user);
+    const scopedRows = await prisma.auditResult.findMany({
+      where,
+      select: { po_number: true },
+    });
+    const poNumbers = [
+      ...new Set(scopedRows.map((r) => r.po_number).filter(Boolean)),
+    ];
+
+    if (!poNumbers.length) {
+      return res.status(200).json({
+        results: [],
+        total: 0,
+        page: Number(page),
+        pageSize: Number(pageSize) || 25,
+        dimension,
+        scope: scopeOf(user),
+      });
+    }
+
+    const headerRows = await prisma.poHeaderResult.findMany({
+      where: { po_number: { in: poNumbers } },
+    });
+
+    const matchesDimension = (hr) => {
+      switch (dimension) {
+        case "closed":
+          return hr.remarksLocked === true;
+        case "open":
+          return hr.remarksLocked !== true;
+        case "verifiedAny":
+          return (hr.results || []).some(
+            (p) => classifyPoint(p) === "verified",
+          );
+        case "notVerifiedAny":
+          return (hr.results || []).some(
+            (p) => classifyPoint(p) === "notVerified",
+          );
+        case "all":
+        default:
+          return true;
+      }
+    };
+
+    const filtered = headerRows.filter(matchesDimension);
+
+    const take = Math.min(Number(pageSize) || 25, 200);
+    const skip = (Math.max(Number(page) || 1, 1) - 1) * take;
+
+    const paged = filtered.slice(skip, skip + take).map((hr) => {
+      const verifiedCount = (hr.results || []).filter(
+        (p) => classifyPoint(p) === "verified",
+      ).length;
+      const notVerifiedCount = (hr.results || []).filter(
+        (p) => classifyPoint(p) === "notVerified",
+      ).length;
+      const vendor = getVendorInfo(hr.vendor_code);
+      return {
+        po_number: hr.po_number,
+        vendorCode: hr.vendor_code,
+        vendorName: vendor?.name || getVendorName(hr.vendor_code),
+        poType: hr.po_type,
+        poTypeName: getPoTypeName(hr.po_type),
+        purchaseGroup: hr.purchase_group,
+        purchaseGroupName: getPurchaseGroupName(hr.purchase_group),
+        headerLocked: hr.remarksLocked,
+        headerLockedAt: hr.remarksLockedAt,
+        verifiedCount,
+        notVerifiedCount,
+        compliancePct:
+          verifiedCount + notVerifiedCount > 0
+            ? Number(
+                (
+                  (verifiedCount / (verifiedCount + notVerifiedCount)) *
+                  100
+                ).toFixed(1),
+              )
+            : null,
+      };
+    });
+
+    return res.status(200).json({
+      results: paged,
+      total: filtered.length,
+      page: Number(page),
+      pageSize: take,
+      dimension,
+      scope: scopeOf(user),
+    });
+  } catch (error) {
+    console.error("Error in getExecutiveHeaderKpiDrilldown:", error);
+    return res
+      .status(500)
+      .json({ message: "Failed to compute header KPI drilldown" });
   }
 };
 

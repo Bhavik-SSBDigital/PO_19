@@ -176,8 +176,16 @@ const PoSummaryHeader = ({ details }) => {
  * (a one-line "Header Checks: Closed" banner, expandable), so header
  * status reads identically wherever it appears across the app. This
  * dialog does NOT show its own separate header table anymore.
+ *
+ * `onHeaderChanged` (optional): fired after a header lock/unlock action
+ * succeeds, in addition to this dialog refreshing its own view. A header
+ * close/reopen changes PO-wide compliance numbers dashboard-wide
+ * (Executive Dashboard KPI cards, charts, and any open drilldown list),
+ * not just what this one dialog shows - so the parent that renders this
+ * dialog should use this hook to refetch its own summary/rows and keep
+ * every number on screen in sync with the header's actual DB state.
  */
-const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage }) => {
+const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChanged }) => {
   const [loading, setLoading] = useState(false);
   const [details, setDetails] = useState(null);
   const [error, setError] = useState("");
@@ -223,6 +231,17 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage }) => {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preview]);
+
+  // Any header lock/unlock action affects the PO's compliance numbers
+  // dashboard-wide (Executive Dashboard KPIs, charts, drilldown lists),
+  // not just this dialog's own view. Refresh the dialog locally, then let
+  // the parent (dashboard page, drilldown table, etc.) know it should
+  // refetch its own summary/rows so every number on screen stays in sync
+  // with the header's actual DB state.
+  const handleHeaderChanged = async () => {
+    await load();
+    onHeaderChanged?.();
+  };
 
   const isHeaderOnly = details?.scope === "po-header";
 
@@ -282,7 +301,7 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage }) => {
               isAdmin={roleFlags.isAdmin}
               isProcurementManager={roleFlags.isProcurementManager}
               variant="full"
-              onChanged={load}
+              onChanged={handleHeaderChanged}
             />
           </Box>
         )}
@@ -302,7 +321,7 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage }) => {
                 isAdmin={roleFlags.isAdmin}
                 isProcurementManager={roleFlags.isProcurementManager}
                 variant="compact"
-                onChanged={load}
+                onChanged={handleHeaderChanged}
               />
             )}
 

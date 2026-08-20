@@ -195,6 +195,8 @@ VALID_PURCHASE_GROUPS = {
     "P55", "P60", "P61", "P64", "P62",
 }
 
+RC_PLACEHOLDER_PO_TYPES = {"ZTWK"}
+
 PR_RELEASED_VALUES = {"2"}          # ASSUMPTION - confirm with client
 RC_RELEASED_VALUES = {"R"}          # ASSUMPTION - confirm with client
 

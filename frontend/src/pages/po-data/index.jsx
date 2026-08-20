@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Box, Typography, Tabs, Tab, Chip } from "@mui/material";
+import { Box, Typography, Tabs, Tab, Chip, Pagination } from "@mui/material";
 import { toast } from "react-toastify";
 
-// Adjust these import paths if your folder structure is slightly different
 import PoWiseExceptionsTable from "pages/executive-dashboard/components/PoWiseExceptionsTable";
 import PoLineItemBreakdownDialog from "pages/executive-dashboard/components/PoLineItemBreakdownDialog";
 import PoDetailsPreviewDialog from "pages/executive-dashboard/components/PoDetailsPreviewDialog";
@@ -11,10 +10,6 @@ import PoAdvancedFilterBar from "pages/executive-dashboard/components/PoAdvanced
 import { post } from "utils/axiosApi";
 import { buildSearchUrl } from "utils/po-link-utils";
 
-// Adjust this to however your app actually determines the logged-in user's
-// role flags (redux selector, decoded token, etc.) — mirrors the pattern
-// already used elsewhere in this app (e.g. `localStorage.getItem("role")`
-// in search-audit-data). Swap this out for the real source of truth.
 const useRoleFlags = () => {
   const role = localStorage.getItem("role") || "";
   return {
@@ -24,9 +19,6 @@ const useRoleFlags = () => {
   };
 };
 
-// Ordered tab definitions — order matches the natural review lifecycle:
-// nothing started -> partially done -> fully done. `match` decides which
-// tab a PO's `reviewStatus` (from the backend) belongs in.
 const TABS = [
   {
     value: "pending",
@@ -51,35 +43,24 @@ const TABS = [
   },
 ];
 
+const PAGE_SIZE = 25;
+
 const PODataPage = () => {
   const navigate = useNavigate();
   const { isAdmin, isProcurementManager, isBuyer } = useRoleFlags();
 
   const [loading, setLoading] = useState(true);
   const [poData, setPoData] = useState([]);
-  const [poPreview, setPoPreview] = useState(null); // { poNumber, lineItem } — full audit-check detail
-  const [poBreakdown, setPoBreakdown] = useState(null); // the PO row — per-line-item closed/open list
-  // Advanced filter payload from PoAdvancedFilterBar (PM/Admin only;
-  // stays {} for a Buyer, whose scope is enforced server-side regardless).
+  const [poPreview, setPoPreview] = useState(null); 
+  const [poBreakdown, setPoBreakdown] = useState(null); 
   const [advancedFilters, setAdvancedFilters] = useState({});
-  // Which tab is showing. "pending" is the default landing tab — the
-  // not-yet-started queue is usually what needs attention first.
   const [activeTab, setActiveTab] = useState("pending");
+  const [pageByTab, setPageByTab] = useState({ pending: 1, in_progress: 1, reviewed: 1 });
 
   const fetchTableData = useCallback(async (filters = {}) => {
     setLoading(true);
     try {
-      // Calls the dedicated PO Data endpoint. It now returns EVERY PO in
-      // scope — compliant and non-compliant alike — each carrying
-      // closedLineCount/totalLineCount/reviewStatus/lineItemDetails so we
-      // can split them into the three tabs below, and show a full
-      // line-item breakdown on click, without a second round-trip.
-      // `filters` carries whatever the advanced filter bar produced
-      // (purchaseGroup, purchaseGroupName, vendorSearch, poNumberSearch,
-      // plant, poType, date range, severity, pointNo) — all optional, all
-      // ignored server-side for a Buyer.
       const response = await post("/reports/po-data", filters);
-
       const rows = response?.results || [];
       setPoData(rows);
     } catch (err) {
@@ -98,11 +79,9 @@ const PODataPage = () => {
   const handleApplyFilters = (filters) => {
     setAdvancedFilters(filters);
     fetchTableData(filters);
+    setPageByTab({ pending: 1, in_progress: 1, reviewed: 1 });
   };
 
-  // Row-level menu action from PoWiseExceptionsTable:
-  //  - "breakdown": open the per-line-item closed/open dialog for this PO
-  //  - "newtab" / "modal": kept for whole-PO shortcuts (first line item)
   const handleRowAction = (row, mode) => {
     if (!row) return;
     if (mode === "breakdown") {
@@ -117,7 +96,6 @@ const PODataPage = () => {
     }
   };
 
-  // Used by the breakdown dialog when the user picks one specific line item.
   const openLineItemPreview = (poNumber, lineItem) => {
     setPoBreakdown(null);
     setPoPreview({ poNumber, lineItem });
@@ -138,9 +116,6 @@ const PODataPage = () => {
     setPoPreview(null);
   };
 
-  // Split into the three tabs by reviewStatus. Falls back gracefully if an
-  // older API response without reviewStatus ever slips through (treats it
-  // as pending rather than silently dropping the row from every tab).
   const rowsByTab = useMemo(() => {
     const buckets = { pending: [], in_progress: [], reviewed: [] };
     for (const row of poData) {
@@ -157,6 +132,9 @@ const PODataPage = () => {
 
   const activeTabDef = TABS.find((t) => t.value === activeTab) || TABS[0];
   const activeRows = rowsByTab[activeTab] || [];
+  const activePage = pageByTab[activeTab] || 1;
+  const pageCount = Math.max(Math.ceil(activeRows.length / PAGE_SIZE), 1);
+  const pagedRows = activeRows.slice((activePage - 1) * PAGE_SIZE, activePage * PAGE_SIZE);
 
   return (
     <Box sx={{ maxWidth: 'xl', mx: 'auto', p: { xs: 2, sm: 3 } }}>
@@ -165,12 +143,10 @@ const PODataPage = () => {
           PO Data & Exceptions Master
         </Typography>
         <Typography variant="body1" sx={{ color: '#64748b' }}>
-          Comprehensive view of every Purchase Order in scope — compliant and non-compliant — filterable by purchasing group and individual line-item compliance status.
+          Comprehensive view of every Purchase Order in scope — filterable by purchasing group and individual line-item compliance status.
         </Typography>
       </Box>
 
-      {/* Advanced filters — renders nothing for a Buyer; their scope is
-          fixed to their own purchasing group regardless of this UI. */}
       <PoAdvancedFilterBar
         isAdmin={isAdmin}
         isProcurementManager={isProcurementManager}
@@ -207,13 +183,25 @@ const PODataPage = () => {
       <PoWiseExceptionsTable
         loading={loading}
         onRowAction={handleRowAction}
-        rows={activeRows}
-        title={activeTabDef.label}
+        rows={pagedRows}
+        /* Clearly distinguishes page size from total to prevent user confusion */
+        title={`${activeTabDef.label} — Page ${activePage} (Showing ${pagedRows.length} of ${activeRows.length} Total)`}
         showTotals
         showProgress
         infoText="Click any PO to see its per-line-item breakdown — which line items are closed and which are still pending. Review Progress shows closedLineCount/totalLineCount (e.g. 3/8)."
         restrictedNotice={restrictedNotice}
       />
+
+      {pageCount > 1 && (
+        <Box display="flex" justifyContent="center" sx={{ mt: 2 }}>
+          <Pagination
+            count={pageCount}
+            page={activePage}
+            onChange={(_, v) => setPageByTab((p) => ({ ...p, [activeTab]: v }))}
+            color="primary"
+          />
+        </Box>
+      )}
 
       <PoLineItemBreakdownDialog
         po={poBreakdown}
@@ -226,6 +214,7 @@ const PODataPage = () => {
         preview={poPreview}
         onClose={() => setPoPreview(null)}
         onOpenFullPage={openFullSearchPage}
+        onHeaderChanged={() => fetchTableData(advancedFilters)}
       />
     </Box>
   );
