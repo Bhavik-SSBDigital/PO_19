@@ -65,7 +65,7 @@ const PURCHASE_GROUPS = [
  * scoped dataset.
  */
 function buildWhere(body = {}, user = {}) {
-  const where = { type: "PO", po_type: { notIn: RC_PLACEHOLDER_PO_TYPES } };
+  const where = { type: "PO" };
 
   if (body.poDateFrom || body.poDateTo) {
     where.po_created_date = {};
