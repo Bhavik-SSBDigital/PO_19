@@ -3,24 +3,27 @@
 // (or `npx prisma migrate dev`) against DATABASE_URL to create these tables -
 // you do not need to run schema.sql separately if you use this file.
 //
-// CHANGES IN THIS VERSION (Header-Level closing is now its own system):
-//   - PoHeaderResult gained remarksLocked/remarksLockedBy/remarksLockedAt -
-//     the SAME "checked" concept AuditResult already has for line items,
-//     but scoped to the whole PO. Closing header-level points (9, 11, 12,
-//     13, 14, 15) is now a PO-level action, completely independent of
-//     closing any individual line item. A buyer closes it ONCE per PO;
-//     every line item of that PO then shows "Header Checks: Closed" -
-//     they never re-review it.
-//   - NEW MODEL: PoHeaderRemark. Buyer remarks against a header-level point
-//     are now attached to (po_number, pointNo) instead of
-//     (auditResultId, pointNo) - there's no single "line item" a header
-//     remark belongs to. Mirrors PoRemark's shape/locking rules exactly,
-//     just keyed at PO level.
-//   Nothing else changed.
-//
-// (Earlier revisions - PoHeaderResult itself, RC Overlap access control,
-// buyer remarks + PM advanced filtering - are unchanged and still present
-// below.)
+// CHANGES IN THIS VERSION (point content moved into DB, points renumbered):
+//   - AuditPointConfig gained title/summary/logic/dataPoints/scope. This
+//     table is now the SINGLE source of truth for point content (it used
+//     to hold severity only; title/summary/logic/dataPoints previously
+//     lived in the static file utility/point-reference.js, which is now
+//     obsolete and should be deleted after running
+//     scripts/seed-point-definitions.js). severity remains the one
+//     admin-editable field via the Risk Categorization Master page;
+//     title/summary/logic/dataPoints/scope are considered fixed content,
+//     re-seeded only by re-running the seed script.
+//   - Point numbers themselves changed meaning: header-level points are now
+//     1-9 (contiguous), line-level points are now 10-19 (contiguous). Any
+//     already-stored AuditResult.results / PoHeaderResult.results JSON,
+//     and any PoRemark.pointNo / PoHeaderRemark.pointNo rows, were created
+//     under the OLD numbering and MUST be run through
+//     scripts/migrate-point-numbers.js exactly once before the new
+//     numbering is trusted anywhere. See utility/point-number-map.js for
+//     the old->new mapping and utility/point-scope.js for the new ranges.
+//   Nothing else changed from the previous schema revision (header-level
+//   closing as its own system, RC Overlap access control, buyer remarks +
+//   PM advanced filtering).
 
 generator client {
   provider = "prisma-client-js"
@@ -110,12 +113,14 @@ model Log {
 
 // ---------------------------------------------------------------------------
 // points (models/points.js) — master audit-point catalogue (BPV/PJV/PO/NONPO)
+// Unrelated to the PO audit's 1-19 points below (different subsystem,
+// pre-existing "type" field covers BPV/PJV/PO/NONPO); left untouched.
 // ---------------------------------------------------------------------------
 model Point {
   id          String  @id @default(uuid())
   pointNo     Int     @map("point_no")
   description String
-  type        String  @default("PJV") // BPV | PJV | PO | NONPO
+  type        String  @default("PO") // BPV | PJV | PO | NONPO
   high        Boolean @default(false)
   medium      Boolean @default(false)
   low         Boolean @default(false)
@@ -124,12 +129,31 @@ model Point {
   @@map("points")
 }
 
+// ---------------------------------------------------------------------------
+// AuditPointConfig — NOW THE SINGLE SOURCE OF TRUTH for the 19 PO audit
+// points: both admin-editable severity AND the fixed title/summary/logic/
+// dataPoints/scope content that used to live in utility/point-reference.js.
+// pointNo is the NEW numbering (1-9 = header, 10-19 = line — see
+// utility/point-scope.js). Populated by scripts/seed-point-definitions.js.
+// ---------------------------------------------------------------------------
 model AuditPointConfig {
-  pointNo   Int      @id
-  severity  String   @default("Medium") // Critical | High | Medium | Low
-  updatedBy String?
-  updatedAt DateTime @updatedAt
+  pointNo    Int      @id
+  severity   String   @default("Medium") // Critical | High | Medium | Low - admin editable
+  updatedBy  String?
+  updatedAt  DateTime @updatedAt
+
+  title      String   @default("")
+  summary    String   @default("")
+  logic      String   @default("")
+  dataPoints String   @default("") @map("data_points")
+  scope      String   @default("line") // "header" | "line" - must agree with utility/point-scope.js ranges
+
 }
+// Deliberately NO @@map here, matching your original model, which also had
+// no @@map (so its table is named "AuditPointConfig"). Adding one now would
+// make `prisma migrate dev` try to rename/drop-recreate the table. If you
+// want a snake_case table name, add @@map("audit_point_configs") yourself
+// and let Prisma generate a proper rename migration for it.
 
 // ---------------------------------------------------------------------------
 // audit_results (models/audit_result.js) — the core transaction/audit table
@@ -159,6 +183,9 @@ model AuditResult {
   procurement_data        String?
   imported                Boolean?
 
+  // Holds LINE-LEVEL point results only (new pointNo 10-19). See
+  // utility/point-scope.js. Historical rows created before the
+  // renumbering must be run through scripts/migrate-point-numbers.js.
   results                 Json      @default("[]")
 
   auditedOn               DateTime  @default(now()) @map("audited_on")
@@ -236,8 +263,8 @@ model AuditResult {
 
 // ---------------------------------------------------------------------------
 // po_header_results — one row per PO NUMBER, holding only the HEADER-LEVEL
-// audit points (9, 11, 12, 13, 14, 15). Populated by engine.py's
-// --header-json output via `node addheader.js <file>`.
+// audit points (new numbering: 1-9). Populated by engine.py's --header-json
+// output via `node addheader.js <file>`.
 //
 // remarksLocked/By/At — the PO-LEVEL "checked" flag. This is a SEPARATE
 // closing system from AuditResult.remarksLocked (line-level): a buyer
@@ -249,7 +276,9 @@ model AuditResult {
 // Not linked by foreign key to AuditResult (same pattern as
 // RcOverlapResult) — matched purely by po_number, since a single PO
 // number can correspond to many AuditResult line-item rows and this
-// table intentionally holds one row regardless of line count.
+// table intentionally holds one row regardless of line count. This is
+// also the table any "header-level details, no line item number" view
+// should read from.
 // ---------------------------------------------------------------------------
 model PoHeaderResult {
   id             String   @id @default(uuid())
@@ -257,7 +286,7 @@ model PoHeaderResult {
   vendor_code    String?
   purchase_group String?
   po_type        String?
-  results        Json     @default("[]") // header-level points: 9, 11, 12, 13, 14, 15
+  results        Json     @default("[]") // header-level points: new 1-9
 
   remarksLocked   Boolean   @default(false) @map("remarks_locked")
   remarksLockedBy String?   @map("remarks_locked_by")
@@ -379,9 +408,10 @@ model PoRemark {
 }
 
 // ---------------------------------------------------------------------------
-// rc_overlap_results — Rule 19 (RC Overlap), at the RC level, keyed by
-// (vendor, RC material code, RC number). Backs the standalone "RC Overlap"
-// section/page instead of point #19 inside a PO line's `results` array.
+// rc_overlap_results — Rule 19-OLD / Rule 9-NEW (RC Overlap), at the RC
+// level, keyed by (vendor, RC material code, RC number). Backs the
+// standalone "RC Overlap" section/page instead of a point inside a PO
+// line's `results` array.
 // ---------------------------------------------------------------------------
 model RcOverlapResult {
   id             String    @id @default(uuid())

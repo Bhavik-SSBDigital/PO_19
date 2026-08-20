@@ -14,7 +14,14 @@ import {
   getPaymentTermDescription,
   getPoTypeName,
 } from "../utility/master-data.js";
-import { POINT_DEFINITIONS_BY_NO } from "../utility/point-reference.js";
+// CHANGED: point content (title/summary/logic) now comes from the DB, not
+// point-reference.js - see utility/point-definitions.js. This is the same
+// swap already made in dashboard-controller.js and
+// risk-categorization-controller.js.
+import {
+  ensurePointDefinitionsLoaded,
+  getPointDefinition,
+} from "../utility/point-definitions.js";
 import { getHeaderForPo, getHeadersForPos } from "../utility/header-results.js";
 import { getPoHeaderSummary } from "./po-header-controller.js";
 
@@ -135,32 +142,36 @@ const lineItemOf = (row) => {
 const uniqueKeyOf = (row) =>
   row.po_material_number || `${row.po_number}-${lineItemOf(row) ?? row.id}`;
 
+// RENUMBERED: results in AuditResult.results are the 10 LINE-LEVEL points
+// (new numbers 10-19). getPointDefinition() always returns a usable
+// fallback object even for an unseeded pointNo, so no existence check is
+// needed here anymore (previously guarded by
+// POINT_DEFINITIONS_BY_NO[...] ? {...} : {}).
 function withPointReference(results) {
-  return (results || []).map((p) => ({
-    ...p,
-    scope: "line", // everything in AuditResult.results is line-level/"Others" now
-    severity: severityOf(p.pointNo),
-    ...(POINT_DEFINITIONS_BY_NO[String(p.pointNo)]
-      ? {
-          title: POINT_DEFINITIONS_BY_NO[String(p.pointNo)].title,
-          summary: POINT_DEFINITIONS_BY_NO[String(p.pointNo)].summary,
-          logic: POINT_DEFINITIONS_BY_NO[String(p.pointNo)].logic,
-        }
-      : {}),
-  }));
+  return (results || []).map((p) => {
+    const def = getPointDefinition(p.pointNo);
+    return {
+      ...p,
+      scope: "line", // everything in AuditResult.results is line-level (points 10-19) now
+      severity: severityOf(p.pointNo),
+      title: def.title,
+      summary: def.summary,
+      logic: def.logic,
+    };
+  });
 }
 
 /**
- * `results` holds ONLY the 13 line-level + "Others" points (1-8, 10,
- * 16-19) - this is a LINE-ITEM view, and shows LINE-ITEM data only, per
- * design. The PO's header-level points (9, 11, 12, 13, 14, 15) are
- * attached separately as `header` - a compact status object
- * ({ points, locked, lockedBy, lockedAt, verifiedCount, notVerifiedCount,
- * totalPoints }), fetched ONCE for this PO number regardless of which
- * line item is being viewed, and IDENTICAL across every line item of the
- * same PO. This is what lets the frontend show a small "Header Checks:
- * Closed" indicator on every line item without re-fetching/re-computing
- * anything, and without mixing header rows into the line-item table.
+ * `results` holds ONLY the 10 LINE-LEVEL points (new numbers 10-19) -
+ * this is a LINE-ITEM view, and shows LINE-ITEM data only, per design.
+ * The PO's header-level points (new numbers 1-9) are attached separately
+ * as `header` - a compact status object ({ points, locked, lockedBy,
+ * lockedAt, verifiedCount, notVerifiedCount, totalPoints }), fetched ONCE
+ * for this PO number regardless of which line item is being viewed, and
+ * IDENTICAL across every line item of the same PO. This is what lets the
+ * frontend show a small "Header Checks: Closed" indicator on every line
+ * item without re-fetching/re-computing anything, and without mixing
+ * header rows into the line-item table.
  */
 const withExceptionPoints = async (row) => {
   const vendor = getVendorInfo(row.vendor_code);
@@ -173,15 +184,10 @@ const withExceptionPoints = async (row) => {
     lineItem: lineItemOf(row),
     results: withPointReference(row.results),
     header,
-    exceptionPoints: exceptionPointsOf(row).map((ep) => ({
-      ...ep,
-      ...(POINT_DEFINITIONS_BY_NO[String(ep.pointNo)]
-        ? {
-            title: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].title,
-            logic: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].logic,
-          }
-        : {}),
-    })),
+    exceptionPoints: exceptionPointsOf(row).map((ep) => {
+      const def = getPointDefinition(ep.pointNo);
+      return { ...ep, title: def.title, logic: def.logic };
+    }),
     vendorName:
       row.nameOfVendor || vendor?.name || getVendorName(row.vendor_code),
     vendorGstin: row.GSTInOfVendor || vendor?.gstin || "",
@@ -217,15 +223,10 @@ async function withExceptionPointsBatch(rows) {
         lockedBy: null,
         lockedAt: null,
       },
-      exceptionPoints: exceptionPointsOf(row).map((ep) => ({
-        ...ep,
-        ...(POINT_DEFINITIONS_BY_NO[String(ep.pointNo)]
-          ? {
-              title: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].title,
-              logic: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].logic,
-            }
-          : {}),
-      })),
+      exceptionPoints: exceptionPointsOf(row).map((ep) => {
+        const def = getPointDefinition(ep.pointNo);
+        return { ...ep, title: def.title, logic: def.logic };
+      }),
       vendorName:
         row.nameOfVendor || vendor?.name || getVendorName(row.vendor_code),
       vendorGstin: row.GSTInOfVendor || vendor?.gstin || "",
@@ -239,7 +240,7 @@ async function withExceptionPointsBatch(rows) {
 
 export const get_po_audit_results = async (req, res) => {
   try {
-    await ensureSeverityLoaded();
+    await Promise.all([ensureSeverityLoaded(), ensurePointDefinitionsLoaded()]);
     const {
       page = 1,
       pageSize = 25,
@@ -299,21 +300,24 @@ export const get_po_audit_results = async (req, res) => {
  * POST /getPOAuditResult
  *
  * LINE-ITEM lookup (id, poMaterialNumber, or po_number + po_line_item):
- *   Returns line-item data - `results` (13 line-level points),
- *   `exceptionPoints`, plus a compact `header` status object for this
- *   PO. This response contains LINE-ITEM detail; it does not carry the
- *   full header points table by default beyond that compact status
+ *   Returns line-item data - `results` (10 line-level points, new numbers
+ *   10-19), `exceptionPoints`, plus a compact `header` status object for
+ *   this PO. This response contains LINE-ITEM detail; it does not carry
+ *   the full header points table by default beyond that compact status
  *   (the frontend's header panel component fetches full header detail
  *   itself, once, when the user expands it).
  *
  * PO-ONLY lookup (po_number given, no po_line_item, no id/material
  * number): delegates entirely to getPoHeaderSummary - the header-level
- * points + a line-item picker list, NOT a forced/guessed line item. This
- * replaces the old "multipleMatches" picker modal.
+ * points (new numbers 1-9) + a line-item picker list, NOT a
+ * forced/guessed line item. This is THE mechanism that satisfies "PO
+ * Number header-level details, without adding the PO Line Item Number":
+ * omitting po_line_item from the request is what routes here instead of
+ * the line-item branch above.
  */
 export const get_po_audit_result = async (req, res) => {
   try {
-    await ensureSeverityLoaded();
+    await Promise.all([ensureSeverityLoaded(), ensurePointDefinitionsLoaded()]);
     const { poMaterialNumber, id, po_number, po_line_item, fiscalYear } =
       req.body || {};
 
@@ -342,6 +346,8 @@ export const get_po_audit_result = async (req, res) => {
         include: RESULT_INCLUDE,
       });
 
+      console.log("result", result);
+
       if (!result) {
         return res.status(404).json({
           message: po_line_item
@@ -365,15 +371,15 @@ export const get_po_audit_result = async (req, res) => {
 
 /**
  * POST /reports/po-lines
- * Every line item of a PO, LINE-LEVEL data only (results = 13 line-level
- * points per line, no header points mixed in). `header` is returned ONCE
- * at the top level of the response, not duplicated per line - callers
- * that need "does this PO's header show closed" read `header.locked`
- * once, not per line item.
+ * Every line item of a PO, LINE-LEVEL data only (results = 10 line-level
+ * points per line, new numbers 10-19, no header points mixed in).
+ * `header` is returned ONCE at the top level of the response, not
+ * duplicated per line - callers that need "does this PO's header show
+ * closed" read `header.locked` once, not per line item.
  */
 export const get_po_lines = async (req, res) => {
   try {
-    await ensureSeverityLoaded();
+    await Promise.all([ensureSeverityLoaded(), ensurePointDefinitionsLoaded()]);
     const { poNumber } = req.body || {};
     if (!poNumber)
       return res.status(400).json({ message: "poNumber is required" });
@@ -393,15 +399,10 @@ export const get_po_lines = async (req, res) => {
         lineItemKey: uniqueKeyOf(row),
         lineItem: lineItemOf(row),
         results: withPointReference(row.results),
-        exceptionPoints: exceptionPointsOf(row).map((ep) => ({
-          ...ep,
-          ...(POINT_DEFINITIONS_BY_NO[String(ep.pointNo)]
-            ? {
-                title: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].title,
-                logic: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].logic,
-              }
-            : {}),
-        })),
+        exceptionPoints: exceptionPointsOf(row).map((ep) => {
+          const def = getPointDefinition(ep.pointNo);
+          return { ...ep, title: def.title, logic: def.logic };
+        }),
         vendorName:
           row.nameOfVendor || vendor?.name || getVendorName(row.vendor_code),
         vendorGstin: row.GSTInOfVendor || vendor?.gstin || "",

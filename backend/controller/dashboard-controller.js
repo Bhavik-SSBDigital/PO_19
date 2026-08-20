@@ -16,11 +16,16 @@ import {
   getPaymentTermDescription,
   getPoTypeName,
 } from "../utility/master-data.js";
+// CHANGED: point content (title/summary/logic) now comes from the DB, not
+// a file - see utility/point-definitions.js. ensurePointDefinitionsLoaded()
+// must be awaited before getPointDefinition() is used, same pattern as
+// ensureSeverityLoaded()/severityOf().
 import {
-  POINT_DEFINITIONS_BY_NO,
+  ensurePointDefinitionsLoaded,
+  getPointDefinition,
   KPI_DEFINITIONS,
   CHART_DEFINITIONS,
-} from "../utility/point-reference.js";
+} from "../utility/point-definitions.js";
 import {
   HEADER_LEVEL_RULE_NOS,
   LINE_TABLE_RULE_NOS,
@@ -202,7 +207,7 @@ function compliancePctOf(v) {
 
 export const getExecutiveSummary = async (req, res) => {
   try {
-    await ensureSeverityLoaded();
+    await Promise.all([ensureSeverityLoaded(), ensurePointDefinitionsLoaded()]);
 
     const user = req.user || {};
     const where = buildWhere(req.body || {}, user);
@@ -222,11 +227,11 @@ export const getExecutiveSummary = async (req, res) => {
     let highRiskExceptions = 0;
     let exceptionValueExposure = 0;
 
-    // LINE-LEVEL control-wise tallies. Only LINE_TABLE_RULE_NOS (1-8, 10,
-    // 16-19) are seeded here - header-level points (9, 11, 12, 13, 14, 15)
-    // no longer live in AuditResult.results at all, so they're computed
-    // separately below (headerControlWise), once per PO instead of once
-    // per line.
+    // LINE-LEVEL control-wise tallies. Only LINE_TABLE_RULE_NOS (NEW
+    // numbers 10-19) are seeded here - header-level points (NEW numbers
+    // 1-9) no longer live in AuditResult.results at all, so they're
+    // computed separately below (headerControlWise), once per PO instead
+    // of once per line.
     const controlWise = {};
     for (const pointNo of LINE_TABLE_RULE_NOS) {
       controlWise[String(pointNo)] = {
@@ -470,17 +475,20 @@ export const getExecutiveSummary = async (req, res) => {
     }
 
     const headerControlWiseCompliance = Object.entries(headerControlWise)
-      .map(([pointNo, v]) => ({
-        pointNo,
-        scope: "header",
-        severity: severityOf(pointNo),
-        label: pointLabel(pointNo),
-        title: POINT_DEFINITIONS_BY_NO[pointNo]?.title || pointLabel(pointNo),
-        summary: POINT_DEFINITIONS_BY_NO[pointNo]?.summary || "",
-        compliancePct: compliancePctOf(v),
-        verified: v.verified,
-        notVerified: v.notVerified,
-      }))
+      .map(([pointNo, v]) => {
+        const def = getPointDefinition(pointNo);
+        return {
+          pointNo,
+          scope: "header",
+          severity: severityOf(pointNo),
+          label: pointLabel(pointNo),
+          title: def.title,
+          summary: def.summary,
+          compliancePct: compliancePctOf(v),
+          verified: v.verified,
+          notVerified: v.notVerified,
+        };
+      })
       .sort((a, b) => Number(a.pointNo) - Number(b.pointNo));
 
     const headerCompliancePct = compliancePctOf({
@@ -580,9 +588,9 @@ export const getExecutiveSummary = async (req, res) => {
         overallComplianceScore: complianceScore,
         highRiskExceptions,
         exceptionValueExposure: Number(exceptionValueExposure.toFixed(2)),
-        // NEW - header-level (PO-wide) KPIs, kept in their own nested
-        // object so nothing that reads the flat line-level keys above
-        // breaks. Each PO counts once regardless of line-item count.
+        // header-level (PO-wide) KPIs, kept in their own nested object so
+        // nothing that reads the flat line-level keys above breaks. Each
+        // PO counts once regardless of line-item count.
         header: {
           totalPOsWithHeaderData: headerRecords.length,
           verifiedCount: headerVerifiedCount,
@@ -596,26 +604,27 @@ export const getExecutiveSummary = async (req, res) => {
       },
       charts: {
         controlWiseCompliance: Object.entries(controlWise)
-          .map(([pointNo, v]) => ({
-            pointNo,
-            scope: "line",
-            severity: severityOf(pointNo),
-            label: pointLabel(pointNo),
-            title:
-              POINT_DEFINITIONS_BY_NO[pointNo]?.title || pointLabel(pointNo),
-            summary: POINT_DEFINITIONS_BY_NO[pointNo]?.summary || "",
-            compliancePct: compliancePctOf(v),
-            verified: v.verified,
-            notVerified: v.notVerified,
-          }))
+          .map(([pointNo, v]) => {
+            const def = getPointDefinition(pointNo);
+            return {
+              pointNo,
+              scope: "line",
+              severity: severityOf(pointNo),
+              label: pointLabel(pointNo),
+              title: def.title,
+              summary: def.summary,
+              compliancePct: compliancePctOf(v),
+              verified: v.verified,
+              notVerified: v.notVerified,
+            };
+          })
           .sort((a, b) => Number(a.pointNo) - Number(b.pointNo)),
-        // NEW - header-level control-wise compliance. Same shape as
+        // header-level control-wise compliance. Same shape as
         // controlWiseCompliance above (so it can reuse the same chart
         // component), but each data point is ONE PO, not one PO line, and
-        // only covers points 9, 11, 12, 13, 14, 15. Render this as its own
-        // clearly-labeled panel - do NOT merge into controlWiseCompliance,
-        // since the denominators mean different things (line-count vs
-        // PO-count).
+        // only covers points 1-9. Render this as its own clearly-labeled
+        // panel - do NOT merge into controlWiseCompliance, since the
+        // denominators mean different things (line-count vs PO-count).
         headerControlWiseCompliance,
         poWiseExceptions: poWiseExceptionsAll,
         exceptionBySeverity: SEVERITY_LEVELS.map((severity) => ({
@@ -765,7 +774,7 @@ export const getFilterOptions = async (req, res) => {
 
 export const getExecutiveDrilldown = async (req, res) => {
   try {
-    await ensureSeverityLoaded();
+    await Promise.all([ensureSeverityLoaded(), ensurePointDefinitionsLoaded()]);
 
     const user = req.user || {};
     const {
@@ -861,16 +870,15 @@ export const getExecutiveDrilldown = async (req, res) => {
     const skip = (Math.max(Number(page) || 1, 1) - 1) * take;
 
     const paged = filtered.slice(skip, skip + take).map((r) => {
-      const exceptionPoints = exceptionPointsOf(r).map((ep) => ({
-        ...ep,
-        ...(POINT_DEFINITIONS_BY_NO[String(ep.pointNo)]
-          ? {
-              title: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].title,
-              summary: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].summary,
-              logic: POINT_DEFINITIONS_BY_NO[String(ep.pointNo)].logic,
-            }
-          : {}),
-      }));
+      const exceptionPoints = exceptionPointsOf(r).map((ep) => {
+        const def = getPointDefinition(ep.pointNo);
+        return {
+          ...ep,
+          title: def.title,
+          summary: def.summary,
+          logic: def.logic,
+        };
+      });
 
       const vendor = getVendorInfo(r.vendor_code);
 
@@ -930,7 +938,7 @@ export const getExecutiveDrilldown = async (req, res) => {
  */
 export const getExecutiveHeaderDrilldown = async (req, res) => {
   try {
-    await ensureSeverityLoaded();
+    await Promise.all([ensureSeverityLoaded(), ensurePointDefinitionsLoaded()]);
     const user = req.user || {};
     const {
       pointNo,
@@ -997,7 +1005,7 @@ export const getExecutiveHeaderDrilldown = async (req, res) => {
         headerLocked: hr.remarksLocked,
         headerLockedAt: hr.remarksLockedAt,
         pointNo,
-        title: POINT_DEFINITIONS_BY_NO[String(pointNo)]?.title,
+        title: getPointDefinition(pointNo).title,
         result: {
           ...point,
           severity: severityOf(pointNo),

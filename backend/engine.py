@@ -14,25 +14,74 @@ Each of the three inputs can be either .csv (the original export format) or
 Output:
     audit_results.xlsx
         - "PO Line Results"  : one row per PO line item, one column per rule
-                                 (1-19). Still shows every point per line,
-                                 for human review - unchanged.
+                                 (1-19, NEW numbering - see CHANGELOG below).
         - "RC Overlap"       : RC-level results (point 20).
         - "Assumptions"       : every assumption this script had to make.
                                  THESE MUST BE CONFIRMED WITH THE CLIENT.
 
     <addpo-json>    : one record per PO LINE ITEM. `results` holds only the
-                       LINE-LEVEL points (10 points: 1-6, 10, 16-18).
+                       LINE-LEVEL points (10 points: NEW numbers 10-19).
                        Feeds audit_results via `node addpo.js <file>`.
 
     <header-json>   : one record per PO NUMBER. `results` holds only the
-                       HEADER-LEVEL points (9 points: 7, 8, 9, 11-15, 19).
+                       HEADER-LEVEL points (9 points: NEW numbers 1-9).
                        Feeds po_header_results via `node addheader.js <file>`.
 
     <rc-json>       : unchanged - RC Overlap / point 20.
 
 ===============================================================================
-CHANGELOG - THIS REVISION (bug-fix pass, raised against PO 4500491554 /
-PO 4500491455 line 00100)
+CHANGELOG - THIS REVISION (point renumbering, per client request)
+===============================================================================
+
+  Point numbers were reassigned so HEADER-LEVEL points are contiguous 1-9
+  and LINE-LEVEL points are contiguous 10-19 (previously they were
+  interleaved: header points were 7,8,9,11-15,19 and line points were
+  1-6,10,16-18). ONLY the numbering changed - every rule's underlying
+  logic, thresholds, columns, and behavior are byte-for-byte identical to
+  the prior revision. Mapping (old -> new):
+
+      OLD  ->  NEW   Rule
+      7    ->  1     RC Released
+      8    ->  2     RC Assigned Consistently
+      9    ->  3     GST Tax Logic
+      11   ->  4     MSME Vendor Payment Term
+      12   ->  5     General Vendor Payment Term
+      13   ->  6     EYW Inco-Term Requires Freight Condition
+      14   ->  7     EXW/FCA Must NOT Carry Freight Condition
+      15   ->  8     Rate Approval by Authorised Approver
+      19   ->  9     Multiple POs to Same Vendor, Same Day
+      1    ->  10    Release Verification (PR released before PO)
+      2    ->  11    PR Assigned to PO Line
+      3    ->  12    PR Creation Date Within 6 Months of PO
+      4    ->  13    PR Date Precedes PO Date
+      5    ->  14    Delivery Date After PR Date
+      6    ->  15    PO Quantity vs PR Quantity (Tolerance)
+      10   ->  16    Vendor-Material Tax Code Consistency
+      16   ->  17    Service PO (ZSER) Item Category
+      17   ->  18    Service PO (ZCSR) Item Category
+      18   ->  19    ZLRM Must Not Use Service Item Category
+
+  Concretely this touched: PO_LINE_RULES (reordered + renumbered),
+  HEADER_LEVEL_RULE_NOS (now {1..9}), and the few log_assumption() calls
+  that had a rule number hardcoded inline (rules 07/09/10/01/06 by their
+  OLD numbers - now emit their NEW numbers: 1/3/16/10/15 respectively).
+  Function names (rule_01_..., rule_07_..., etc.) were LEFT AS-IS since
+  they're just internal identifiers - what matters is the pointNo each
+  one now reports, wired via the PO_LINE_RULES tuples below.
+
+  IMPORTANT: this script is the SOURCE of pointNo values written into
+  audit_results / po_header_results. Once this file is deployed, every
+  NEW import emits new numbers directly - no separate remapping needed
+  for future data. Data already sitting in the DB from an older run of
+  this script still has OLD numbers and needs a one-time DB migration
+  (see scripts/migrate-point-numbers.js on the Node side) - run that
+  BEFORE importing anything new with this updated engine, or you'll end
+  up with a mix of old- and new-numbered records with no way to tell
+  them apart.
+
+===============================================================================
+CHANGELOG - PRIOR REVISION (bug-fix pass, raised against PO 4500491554 /
+PO 4500491455 line 00100) - unchanged, kept for history
 ===============================================================================
 
   1. GLOBAL EXCLUSION WAS NEVER FIRING ("Deletion Indication is not applied
@@ -51,8 +100,8 @@ PO 4500491455 line 00100)
      9 Returns Item='X', no overlap) now correctly fall back to Not
      Applicable across all 19 points, PO 4500491554 lines 10/20 included.
 
-  2. POINT 9 - "Tax Code 07 not found in Tax Master" even though 07 IS in
-     the master:
+  2. POINT (now #3, was #9) - "Tax Code 07 not found in Tax Master" even
+     though 07 IS in the master:
      load_tax_master() read the Tax Code column with pandas' default dtype
      inference. In the master workbook that column is stored as a NUMBER,
      so "07" is stored as the number 7 and the leading zero is lost before
@@ -70,19 +119,20 @@ PO 4500491455 line 00100)
      are left untouched since normalize_tax_code only strips a leading
      zero when it's followed by another digit.
 
-  3. POINT 15 - "No rate-approval tag found in Our Ref." logic tightened:
-     the real Our Ref. data contains "DWS-APPROVED", "DWS APPROVED", "DWS
-     APPROVAL" and "DWS APPROVE" as rate-approval tags. The token set only
-     recognised "DWS APPROVED"/"DWS-APPROVED" (normalizes to DWSAPPROVED);
-     "DWS APPROVAL" and "DWS APPROVE" (-> DWSAPPROVAL / DWSAPPROVE) fell
-     through to Not Applicable instead of being evaluated.
+  3. POINT (now #8, was #15) - "No rate-approval tag found in Our Ref."
+     logic tightened: the real Our Ref. data contains "DWS-APPROVED", "DWS
+     APPROVED", "DWS APPROVAL" and "DWS APPROVE" as rate-approval tags. The
+     token set only recognised "DWS APPROVED"/"DWS-APPROVED" (normalizes
+     to DWSAPPROVED); "DWS APPROVAL" and "DWS APPROVE" (-> DWSAPPROVAL /
+     DWSAPPROVE) fell through to Not Applicable instead of being evaluated.
      FIX: added "DWSAPPROVAL" and "DWSAPPROVE" to RATE_APPROVAL_TAG_TOKENS.
      NOTE: the downstream approver-initials check (KKB/SRS/PJP/DAULAT/NHV/
      CVS) inside rule_15_rate_approval is UNCHANGED in this pass - per
      client instruction, DWS-approver verification itself is out of scope
      for this fix and needs separate confirmation later.
 
-  4. POINT 6 - delivery tolerance was not reading the over-delivery column:
+  4. POINT (now #15, was #6) - delivery tolerance was not reading the
+     over-delivery column:
      OVER_DELIVERY_TOLERANCE_COLUMN pointed at "Over Delivery tolerance",
      which doesn't exist in the extract (the real header is "Overdelivery
      Tolerance Limit" - already present in the file, not something still
@@ -90,11 +140,11 @@ PO 4500491455 line 00100)
      UNDER-delivery tolerance column instead.
      FIX: OVER_DELIVERY_TOLERANCE_COLUMN = "Overdelivery Tolerance Limit".
      The client-confirmed Overdelivery Tolerance Limit is now genuinely
-     used for the over-delivery side of rule 6, as originally intended.
+     used for the over-delivery side of this rule, as originally intended.
 
-  5. (Retained from prior revision, unaffected by this pass) Rules 7, 8, 9,
-     11-15, 19 are HEADER-LEVEL; rules 1-6, 10, 16-18 are LINE-LEVEL. See
-     HEADER_LEVEL_RULE_NOS / LINE_ONLY_RULES below.
+  5. (Retained, unaffected by either pass) Points #1-9 are HEADER-LEVEL;
+     points #10-19 are LINE-LEVEL. See HEADER_LEVEL_RULE_NOS / LINE_ONLY_RULES
+     below.
 
 Usage:
     python3 engine.py --poaudit POAUDIT_x.csv --cnd POAUDITCND_x.csv \
@@ -125,7 +175,7 @@ MANUAL = "Data Missing"
 FREIGHT_CONDITION_TYPES = {"ZBF1", "ZBF2", "ZRA3", "ZRB3", "ZRE3"}
 DWS_APPROVERS = {"KKB", "SRS", "PJP", "DAULAT", "NHV", "CVS"}
 
-# --- Rule 11 support: MSME payment terms -----------------------------------
+# --- Rule support: MSME payment terms (new #4, old #11) --------------------
 MSME_PAYMENT_TERMS = {
     "Z100": {"days": 15, "desc": "15 DAYS CREDIT"},
     "Z101": {"days": 30, "desc": "30 DAYS CREDIT"},
@@ -151,10 +201,10 @@ RC_RELEASED_VALUES = {"R"}          # ASSUMPTION - confirm with client
 SIX_MONTHS_DAYS = 180
 
 # --- GLOBAL exclusion support (applies to ALL 19 points) -------------------
-# FIX: these are now the REAL column headers from the POAUDIT extract
-# (confirmed against POAUDIT.csv). Previously "Deletion Indicator" /
-# "Return Item" - neither exists in the extract, so the exclusion never
-# fired for any line (see CHANGELOG item 1 above).
+# These are the REAL column headers from the POAUDIT extract (confirmed
+# against POAUDIT.csv). Previously "Deletion Indicator" / "Return Item" -
+# neither exists in the extract, so the exclusion never fired for any line
+# (see CHANGELOG - prior revision, item 1).
 RETURN_ITEM_COLUMN = "Returns Item"
 DELETION_INDICATOR_COLUMN = "Deletion indicator"
 
@@ -163,18 +213,18 @@ EXCLUDED_LINE_REMARK = (
     "(Deletion indicator 'L' and/or Returns Item 'X')"
 )
 
-# --- Rule 6 support: Over Delivery tolerance column -------------------------
-# FIX: this column already exists in the extract under this exact name
+# --- Rule support: Over Delivery tolerance column (new #15, old #6) --------
+# This column already exists in the extract under this exact name
 # (confirmed against POAUDIT.csv) - it was NOT still "to be added" as
-# previously assumed. Wires the over-delivery side of rule 6 to the
+# previously assumed. Wires the over-delivery side of this rule to the
 # client-confirmed Overdelivery Tolerance Limit instead of silently
 # falling back to Under Delivery tolerance for every line.
 OVER_DELIVERY_TOLERANCE_COLUMN = "Overdelivery Tolerance Limit"
 
-# --- Rules 13/14 support: PO types requiring manual check ------------------
+# --- Rules support: PO types requiring manual check (new #6/#7, old #13/#14)
 MANUAL_CHECK_PO_TYPES = {"ZIRM", "ZICP"}
 
-# --- Rule 9 support: GSTIN -> state code -----------------------------------
+# --- Rule support: GSTIN -> state code (new #3, old #9) --------------------
 GSTIN_COLUMN = "Tax Number 3"       # ASSUMPTION - confirm exact header with client
 GST_STATE_CODE_MAP = {
     "01": "JAMMU AND KASHMIR", "02": "HIMACHAL PRADESH", "03": "PUNJAB",
@@ -248,11 +298,11 @@ ITEM_CATEGORY_SUBCONTRACTING_CODE = next(
     code for code, v in ITEM_CATEGORY_CODE_MAP.items() if v["letter"] == "L"
 )  # "3"
 
-# --- Rule 15 support: normalized rate-approval tag matching ------------------
-# FIX: added DWSAPPROVAL / DWSAPPROVE - real Our Ref. values "DWS APPROVAL"
-# and "DWS APPROVE" were falling through to Not Applicable before this,
-# because only "DWS APPROVED"/"DWS-APPROVED" normalized to a recognised
-# token. Approver-initials check below this is unchanged (out of scope).
+# --- Rule support: normalized rate-approval tag matching (new #8, old #15) -
+# Added DWSAPPROVAL / DWSAPPROVE - real Our Ref. values "DWS APPROVAL" and
+# "DWS APPROVE" were falling through to Not Applicable before this, because
+# only "DWS APPROVED"/"DWS-APPROVED" normalized to a recognised token.
+# Approver-initials check below this is unchanged (out of scope).
 RATE_APPROVAL_TAG_TOKENS = {
     "APPROVEDRATE", "APPROVERATE", "RATEAPPROVAL", "APPROVEDRAT",
     "DWSAPPROVED", "DWSAAPPROVED", "DWSAPPROVAL", "DWSAPPROVE",
@@ -312,18 +362,18 @@ def s(row, col):
 
 
 # ---------------------------------------------------------------------------
-# NEW - Point 9 tax-code normalization
+# Tax-code normalization (used by the GST Tax Logic rule, new #3)
 # ---------------------------------------------------------------------------
 def normalize_tax_code(value):
     """
-    FIX for Point 9 ("Tax Code 07 not found in Tax Master"): the Tax Code
-    column in the Tax Master workbook is stored as a NUMBER, so a code
-    like "07" is stored as the number 7 and loses its leading zero the
-    moment Excel/pandas reads it. POAUDIT's own "Tax code" column is
-    exported as text and keeps the leading zero ("07"). str("07") !=
-    str(7), so a direct dict lookup always failed for any 1-2 digit code
-    with a leading zero (which is ~98% of the codes actually in the
-    extract: 00/01/03/05/07/08/09).
+    FIX for "Tax Code 07 not found in Tax Master": the Tax Code column in
+    the Tax Master workbook is stored as a NUMBER, so a code like "07" is
+    stored as the number 7 and loses its leading zero the moment
+    Excel/pandas reads it. POAUDIT's own "Tax code" column is exported as
+    text and keeps the leading zero ("07"). str("07") != str(7), so a
+    direct dict lookup always failed for any 1-2 digit code with a leading
+    zero (which is ~98% of the codes actually in the extract: 00/01/03/05/
+    07/08/09).
 
     Mirrors the normCode() leading-zero strip already used for vendor and
     plant codes elsewhere in this codebase: strip a leading zero only when
@@ -470,11 +520,11 @@ def load_tax_master(base_folder):
         print(f"WARNING: Tax Master not found! Checked {path}")
         return {}
 
-    # FIX: read Tax Code as text so pandas doesn't coerce it to a number
-    # (which would silently drop leading zeros before normalize_tax_code
-    # even gets a chance to run). Both this key and the PO's own tax code
-    # are passed through normalize_tax_code() so "07"/"7" always match -
-    # see normalize_tax_code() docstring above.
+    # Read Tax Code as text so pandas doesn't coerce it to a number (which
+    # would silently drop leading zeros before normalize_tax_code even gets
+    # a chance to run). Both this key and the PO's own tax code are passed
+    # through normalize_tax_code() so "07"/"7" always match - see
+    # normalize_tax_code() docstring above.
     df = pd.read_excel(path, dtype={"Tax Code": str}).fillna("")
     mapping = {}
     for _, r in df.iterrows():
@@ -523,6 +573,12 @@ def evaluate_rule(rule_no, fn, row, ctx):
 # Exclusion (Deletion indicator / Returns Item) is handled centrally by
 # evaluate_rule() above - these functions assume they're only ever called
 # for an eligible (non-excluded) line item.
+#
+# Function names below still carry their OLD point numbers (rule_01_...,
+# rule_07_..., etc.) - these are just internal identifiers and were left
+# alone per the "don't change anything except numbering" instruction. The
+# actual pointNo each rule reports comes from the PO_LINE_RULES list further
+# down, which now uses the NEW numbers.
 # ---------------------------------------------------------------------------
 
 def rule_01_release_verification(row, ctx):
@@ -533,7 +589,7 @@ def rule_01_release_verification(row, ctx):
     if not purchase_req:
         return NOT_VERIFIED, "Purchase Req is blank"
     rel_ind = s(row, "PR Release Ind")
-    log_assumption(1, "PR Release Ind code meaning assumed: '2' = released (PR_RELEASED_VALUES). Confirm actual codes with client.")
+    log_assumption(10, "PR Release Ind code meaning assumed: '2' = released (PR_RELEASED_VALUES). Confirm actual codes with client.")
     if rel_ind in PR_RELEASED_VALUES:
         return VERIFIED, "PR is released"
     return NOT_VERIFIED, f"PR Release Ind = '{rel_ind}' not in released set {sorted(PR_RELEASED_VALUES)}"
@@ -605,7 +661,7 @@ def rule_06_quantity_control(row, ctx):
     else:
         tolerance_pct = under_tolerance_pct
         log_assumption(
-            6,
+            15,
             f"'{OVER_DELIVERY_TOLERANCE_COLUMN}' was blank for this line - fell back to "
             f"'Under Delivery tolerance' for the over-delivery check.",
         )
@@ -617,19 +673,19 @@ def rule_06_quantity_control(row, ctx):
 
 
 def rule_07_rc_released(row, ctx):
-    """HEADER-LEVEL rule (see build_po_header_records)."""
+    """HEADER-LEVEL rule (see build_po_header_records) - reports as new point #1."""
     rc_no = s(row, "RC no.")
     if not rc_no:
         return NA, "No RC assigned to this line"
     rc_status = s(row, "RC Release status")
-    log_assumption(7, "RC Release status code meaning assumed: 'R' = released. Confirm actual codes with client.")
+    log_assumption(1, "RC Release status code meaning assumed: 'R' = released. Confirm actual codes with client.")
     if rc_status in RC_RELEASED_VALUES:
         return VERIFIED, "RC is released"
     return NOT_VERIFIED, f"RC Release status = '{rc_status}' not in released set"
 
 
 def rule_08_rc_consistency(row, ctx):
-    """HEADER-LEVEL rule (see build_po_header_records)."""
+    """HEADER-LEVEL rule (see build_po_header_records) - reports as new point #2."""
     po_number = s(row, "PO number")
     material = s(row, "Material Code")
 
@@ -656,7 +712,7 @@ def rule_08_rc_consistency(row, ctx):
 
 
 def rule_09_tax_logic(row, ctx):
-    """HEADER-LEVEL rule (see build_po_header_records)."""
+    """HEADER-LEVEL rule (see build_po_header_records) - reports as new point #3."""
     vendor_state = s(row, "Vendor State").upper()
     tax_code = s(row, "Tax code")
 
@@ -666,7 +722,7 @@ def rule_09_tax_logic(row, ctx):
         if derived_state:
             vendor_state = derived_state
             log_assumption(
-                9,
+                3,
                 f"'Vendor State' was blank; state was derived from the GSTIN state code in "
                 f"'{GSTIN_COLUMN}' instead. Column name '{GSTIN_COLUMN}' is UNCONFIRMED - "
                 f"verify against the real extract header."
@@ -676,7 +732,7 @@ def rule_09_tax_logic(row, ctx):
         return MANUAL, "Vendor state or tax code missing (Vendor State blank and GSTIN unavailable/unrecognised)"
 
     tax_master = ctx.get("tax_master", {})
-    tax = tax_master.get(normalize_tax_code(tax_code))  # FIX: normalize before lookup ("07" -> "7")
+    tax = tax_master.get(normalize_tax_code(tax_code))  # normalize before lookup ("07" -> "7")
 
     if not tax:
         return MANUAL, f"Tax Code {tax_code} not found in Tax Master"
@@ -708,13 +764,13 @@ def rule_10_vendor_material_tax_consistency(row, ctx):
     tax_codes = ctx["vendor_material_tax"].get((vendor, material), set())
     if len(tax_codes) <= 1:
         return VERIFIED, "Consistent tax code for this vendor-material combination (within this extract)"
-    log_assumption(10, "This rule is described as needing 'historical data' across all past POs. This script only checks consistency "
-                       "within the single extract provided; a production run should compare against the full transaction history.")
+    log_assumption(16, "This rule is described as needing 'historical data' across all past POs. This script only checks consistency "
+                        "within the single extract provided; a production run should compare against the full transaction history.")
     return NOT_VERIFIED, f"Multiple tax codes found for vendor {vendor} / material {material}: {sorted(tax_codes)}"
 
 
 def rule_11_msme_payment_term(row, ctx):
-    """HEADER-LEVEL rule (see build_po_header_records)."""
+    """HEADER-LEVEL rule (see build_po_header_records) - reports as new point #4."""
     msme_status = s(row, "Vendor MSME Status")
     if not msme_status:
         return NA, "Vendor has no MSME certificate on file"
@@ -730,13 +786,13 @@ def rule_11_msme_payment_term(row, ctx):
 
 
 def rule_12_general_payment_term(row, ctx):
-    """HEADER-LEVEL rule (see build_po_header_records)."""
+    """HEADER-LEVEL rule (see build_po_header_records) - reports as new point #5."""
     msme_status = s(row, "Vendor MSME Status")
     purchase_group = s(row, "Purchase Group")
     payment_term = s(row, "Payment Term")
     po_type = s(row, "PO Type")
     if msme_status:
-        return NA, "MSME vendor (covered by rule 11)"
+        return NA, "MSME vendor (covered by point #4)"
     if purchase_group in GENERAL_TERM_EXCLUDED_PURCHASE_GROUPS:
         return NA, f"Purchase group {purchase_group} excluded"
     if payment_term in GENERAL_TERM_EXCLUDED_PAYMENT_TERMS:
@@ -760,10 +816,10 @@ def _has_freight_condition(po_number, item_no, cnd_by_po):
 
 def rule_13_eyw_freight_required(row, ctx):
     """
-    HEADER-LEVEL rule (see build_po_header_records).
+    HEADER-LEVEL rule (see build_po_header_records) - reports as new point #6.
 
     PO types ZIRM/ZICP route to manual review here too (previously only
-    rule 14 had this).
+    rule 14/new #7 had this).
     """
     po_type = s(row, "PO Type")
     if po_type in MANUAL_CHECK_PO_TYPES:
@@ -784,7 +840,7 @@ def rule_13_eyw_freight_required(row, ctx):
 
 def rule_14_exw_fca_no_freight(row, ctx):
     """
-    HEADER-LEVEL rule (see build_po_header_records).
+    HEADER-LEVEL rule (see build_po_header_records) - reports as new point #7.
 
     PO types ZIRM/ZICP route to manual review instead of an automated
     Verified/Not-Verified outcome.
@@ -807,7 +863,7 @@ def rule_14_exw_fca_no_freight(row, ctx):
 
 
 def rule_15_rate_approval(row, ctx):
-    """HEADER-LEVEL rule (see build_po_header_records)."""
+    """HEADER-LEVEL rule (see build_po_header_records) - reports as new point #8."""
     our_ref = s(row, "Our Ref.")
     if not _is_rate_approval_tag(our_ref):
         return NA, "No rate-approval tag found in Our Ref."
@@ -882,7 +938,7 @@ def rule_18_lrm_no_l_category(row, ctx):
 
 
 def rule_19_multiple_po_same_day(row, ctx):
-    """HEADER-LEVEL rule (see build_po_header_records)."""
+    """HEADER-LEVEL rule (see build_po_header_records) - reports as new point #9."""
     po_number = s(row, "PO number")
     key = (s(row, "Vendor Code"), s(row, "PO Created date"), s(row, "Plant"), s(row, "Purchase Group"))
     pos_in_group = ctx["same_day_groups"].get(key, set())
@@ -908,29 +964,36 @@ def rule_rc_overlap(row, ctx):
 
 # ---------------------------------------------------------------------------
 # Rule registry + HEADER vs LINE classification
+#
+# RENUMBERED (see CHANGELOG at top): pointNo values below are the NEW
+# numbers. Header points are now contiguous 1-9; line points 10-19. Each
+# tuple's rule_no (first element) is what actually gets written out as
+# `pointNo` - the function names are unrelated legacy identifiers.
 # ---------------------------------------------------------------------------
-HEADER_LEVEL_RULE_NOS = {7, 8, 9, 11, 12, 13, 14, 15, 19}
+HEADER_LEVEL_RULE_NOS = {1, 2, 3, 4, 5, 6, 7, 8, 9}
 
 PO_LINE_RULES = [
-    (1, "Release Verification (PR released before PO)", rule_01_release_verification),
-    (2, "PR assigned to each PO line", rule_02_pr_assigned),
-    (3, "PR Creation date within 6 months (180 days) of PO", rule_03_pr_within_6_months),
-    (4, "PR date precedes PO date", rule_04_pr_precedes_po),
-    (5, "Delivery date after PR date", rule_05_delivery_after_pr),
-    (6, "PO qty vs PR qty (tolerance)", rule_06_quantity_control),
-    (7, "RC released", rule_07_rc_released),
-    (8, "RC assigned consistently across same-material lines", rule_08_rc_consistency),
-    (9, "IGST only for non-Gujarat vendors", rule_09_tax_logic),
-    (10, "Vendor-Material tax code consistency", rule_10_vendor_material_tax_consistency),
-    (11, "MSME payment term (Z100/Z101/Z102/Z146/Z148/Z105/Z126)", rule_11_msme_payment_term),
-    (12, "General payment term >=21 days", rule_12_general_payment_term),
-    (13, "EYW inco-term requires freight condition", rule_13_eyw_freight_required),
-    (14, "EXW/FCA must not have freight condition", rule_14_exw_fca_no_freight),
-    (15, "Rate approval by authorised approver", rule_15_rate_approval),
-    (16, "Service PO (ZSER) uses Item Cat D + Acct Assignment K", rule_16_zser_item_category),
-    (17, "Service PO (ZCSR) uses Item Cat D + Acct Assignment A", rule_17_zcsr_item_category),
-    (18, "ZLRM/ZLCP/ZIRM/ZICP must not use Item Cat L + Acct Assignment K", rule_18_lrm_no_l_category),
-    (19, "Multiple POs to same vendor/date/plant/purchase-group flagged", rule_19_multiple_po_same_day),
+    # ---- HEADER-LEVEL (1-9) ----
+    (1, "RC released", rule_07_rc_released),
+    (2, "RC assigned consistently across same-material lines", rule_08_rc_consistency),
+    (3, "IGST only for non-Gujarat vendors", rule_09_tax_logic),
+    (4, "MSME payment term (Z100/Z101/Z102/Z146/Z148/Z105/Z126)", rule_11_msme_payment_term),
+    (5, "General payment term >=21 days", rule_12_general_payment_term),
+    (6, "EYW inco-term requires freight condition", rule_13_eyw_freight_required),
+    (7, "EXW/FCA must not have freight condition", rule_14_exw_fca_no_freight),
+    (8, "Rate approval by authorised approver", rule_15_rate_approval),
+    (9, "Multiple POs to same vendor/date/plant/purchase-group flagged", rule_19_multiple_po_same_day),
+    # ---- LINE-LEVEL (10-19) ----
+    (10, "Release Verification (PR released before PO)", rule_01_release_verification),
+    (11, "PR assigned to each PO line", rule_02_pr_assigned),
+    (12, "PR Creation date within 6 months (180 days) of PO", rule_03_pr_within_6_months),
+    (13, "PR date precedes PO date", rule_04_pr_precedes_po),
+    (14, "Delivery date after PR date", rule_05_delivery_after_pr),
+    (15, "PO qty vs PR qty (tolerance)", rule_06_quantity_control),
+    (16, "Vendor-Material tax code consistency", rule_10_vendor_material_tax_consistency),
+    (17, "Service PO (ZSER) uses Item Cat D + Acct Assignment K", rule_16_zser_item_category),
+    (18, "Service PO (ZCSR) uses Item Cat D + Acct Assignment A", rule_17_zcsr_item_category),
+    (19, "ZLRM/ZLCP/ZIRM/ZICP must not use Item Cat L + Acct Assignment K", rule_18_lrm_no_l_category),
 ]
 
 HEADER_RULES = [r for r in PO_LINE_RULES if r[0] in HEADER_LEVEL_RULE_NOS]
@@ -1118,9 +1181,9 @@ STATUS_TO_RESULT_FLAGS = {
 def build_addpo_records(po_rows, ctx):
     """
     One record per PO LINE ITEM. `results` contains ONLY the 10 LINE-LEVEL
-    points (1-6, 10, 16-18). A line item with Deletion indicator 'L' and/or
-    Returns Item 'X' gets a uniform Not Applicable across all 10 (via
-    evaluate_rule), same as every other point.
+    points (NEW numbers 10-19). A line item with Deletion indicator 'L'
+    and/or Returns Item 'X' gets a uniform Not Applicable across all 10
+    (via evaluate_rule), same as every other point.
     """
     records = []
     for row in po_rows:
@@ -1175,8 +1238,8 @@ def build_addpo_records(po_rows, ctx):
 def build_po_header_records(po_rows, ctx):
     """
     One record per PO NUMBER. `results` contains ONLY the 9 HEADER-LEVEL
-    points (7, 8, 9, 11, 12, 13, 14, 15, 19), evaluated once per PO
-    instead of once per line.
+    points (NEW numbers 1-9), evaluated once per PO instead of once per
+    line.
 
     Excluded lines (Deletion indicator 'L' / Returns Item 'X') are dropped
     from the per-PO evaluation set first.
@@ -1215,7 +1278,7 @@ def build_po_header_records(po_rows, ctx):
                     )
                     log_assumption(
                         rule_no,
-                        f"PO {po_number}: header-level rule {rule_no} disagreed across "
+                        f"PO {po_number}: header-level point {rule_no} disagreed across "
                         f"eligible line items and was routed to Data Missing/manual "
                         f"review instead of picking one line's answer.",
                     )
@@ -1279,20 +1342,20 @@ def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None, header_
         rc_overlap_df.to_excel(writer, sheet_name="RC Overlap", index=False)
         assumptions_df.to_excel(writer, sheet_name="Assumptions", index=False)
 
-    print(f"Wrote {len(df)} PO-line results (rules 1-19) and {len(rc_overlap_df)} RC-overlap rows (point 20) to {out_path}")
+    print(f"Wrote {len(df)} PO-line results (rules 1-19, NEW numbering) and {len(rc_overlap_df)} RC-overlap rows (point 20) to {out_path}")
     print(f"{len(assumptions_df)} assumption(s) logged - see 'Assumptions' sheet. These MUST be confirmed with the client.")
 
     if addpo_json_path:
         records = build_addpo_records(po_rows, ctx)
         with open(addpo_json_path, "w") as f:
             json.dump(records, f, indent=2)
-        print(f"Wrote {len(records)} PO-line records (line-level: rules 1-6,10,16-18) to {addpo_json_path} - insert with: node addpo.js {addpo_json_path}")
+        print(f"Wrote {len(records)} PO-line records (line-level: points 10-19) to {addpo_json_path} - insert with: node addpo.js {addpo_json_path}")
 
     if header_json_path:
         header_records = build_po_header_records(po_rows, ctx)
         with open(header_json_path, "w") as f:
             json.dump(header_records, f, indent=2)
-        print(f"Wrote {len(header_records)} PO-header records (header-level: rules 7,8,9,11-15,19) to {header_json_path} - insert with: node addheader.js {header_json_path}")
+        print(f"Wrote {len(header_records)} PO-header records (header-level: points 1-9) to {header_json_path} - insert with: node addheader.js {header_json_path}")
 
     if rc_json_path:
         rc_records = build_rc_overlap_records(rc_rows, po_rows)

@@ -70,6 +70,23 @@ const ROW_SELECT = {
   remarksLockedAt: true,
 };
 
+// Fields returned for the HEADER-LEVEL-ONLY endpoint. Deliberately does
+// NOT include po_line_item, po_material_number, or anything else that
+// identifies a specific line — header-level data is one row per PO
+// NUMBER, full stop. See getPoHeaderWiseDetails below.
+const HEADER_ROW_SELECT = {
+  id: true,
+  po_number: true,
+  vendor_code: true,
+  purchase_group: true,
+  po_type: true,
+  results: true,
+  remarksLocked: true,
+  remarksLockedBy: true,
+  remarksLockedAt: true,
+  auditedOn: true,
+};
+
 function buildBaseWhere(body = {}) {
   const where = { type: "PO" };
 
@@ -196,22 +213,9 @@ function reviewStatusOf(b) {
  * with no such filter, every PO in scope is returned regardless of its
  * compliance status.
  *
- * REVIEW STATUS (pending / in_progress / reviewed):
- * Each returned PO carries closedLineCount/openLineCount/totalLineCount,
- * closedPct, and reviewStatus, derived from each line item's `remarksLocked`
- * flag (per-line-item, not per-PO — see rowIsClosed above). See
- * reviewStatusOf for the 3-way split. `isFullyClosed` is kept as a plain
- * boolean alias (`reviewStatus === "reviewed"`) for anything still reading
- * the older 2-state field.
- *
- * Each PO also carries `lineItemDetails`: an array with one entry per line
- * item (lineItem, closed, hasException, remarksLockedAt, netValue, ...) so
- * the frontend can show "which line item is closed / which isn't" without a
- * second request when a PO row is clicked.
- *
- * The frontend does the pending/in_progress/reviewed split client-side
- * (single fetch), not this endpoint — so no new query param is needed here
- * for that.
+ * This is the LINE-ITEM view — each PO carries lineItemDetails with a
+ * po_line_item per entry. For a header-only view (no line item anywhere in
+ * the response), use getPoHeaderWiseDetails below instead.
  */
 export const getPoWiseExceptions = async (req, res) => {
   try {
@@ -361,6 +365,120 @@ export const getPoWiseExceptions = async (req, res) => {
   } catch (error) {
     console.error("Error in getPoWiseExceptions:", error);
     return res.status(500).json({ message: "Failed to fetch PO data" });
+  }
+};
+
+/**
+ * NEW — PO Header-Level Details, PO-Number-wise, with NO po_line_item
+ * anywhere in the request or response. One row per PO number, sourced
+ * entirely from PoHeaderResult (which is itself already one-row-per-PO —
+ * see prisma schema). This is what the search page / any "header level"
+ * navigation should call instead of getPoWiseExceptions whenever the user
+ * is looking at header-level detail, so a line item can never leak in.
+ *
+ * Same purchase-group scoping rules as getPoWiseExceptions (Buyer locked
+ * to own group; Admin/PM can see all or narrow by group).
+ *
+ * Body accepts: poNumber (exact or partial via poNumberSearch), vendorCode,
+ * purchaseGroup[], poType[]. No line-item-shaped filters (materialCode,
+ * poDateFrom/To acting on line data, etc.) are accepted here on purpose —
+ * PoHeaderResult doesn't carry those columns. If you need date-range
+ * filtering on header data, that requires adding those columns to
+ * PoHeaderResult first (not present in the schema I was given).
+ */
+export const getPoHeaderWiseDetails = async (req, res) => {
+  try {
+    await ensureSeverityLoaded();
+
+    const body = req.body || {};
+    const user = req.user || {};
+    const where = {};
+
+    if (user.isAdmin || user.isProcurementManager) {
+      const groupCodes = new Set();
+      if (Array.isArray(body.purchaseGroup) && body.purchaseGroup.length) {
+        body.purchaseGroup.forEach((c) =>
+          groupCodes.add(String(c).toUpperCase()),
+        );
+      }
+      if (groupCodes.size) {
+        where.purchase_group = { in: [...groupCodes] };
+      }
+    } else if (user.isBuyer) {
+      where.purchase_group = getPurchaseGroupCode(user.username);
+    } else {
+      return res
+        .status(403)
+        .json({ message: "Not authorized to view PO header data" });
+    }
+
+    if (body.poNumber) {
+      where.po_number = body.poNumber; // exact match - header table is unique per po_number
+    } else if (body.poNumberSearch) {
+      where.po_number = { contains: body.poNumberSearch, mode: "insensitive" };
+    }
+    if (body.vendorCode) where.vendor_code = body.vendorCode;
+    if (Array.isArray(body.poType) && body.poType.length) {
+      where.po_type = { in: body.poType };
+    }
+
+    const rows = await prisma.poHeaderResult.findMany({
+      where,
+      select: HEADER_ROW_SELECT,
+      orderBy: { po_number: "asc" },
+    });
+
+    const results = rows.map((row) => {
+      const verifiedPoints = (row.results || []).filter(
+        (p) => classifyPoint(p) === "verified",
+      ).length;
+      const notVerifiedPoints = (row.results || []).filter(
+        (p) => classifyPoint(p) === "notVerified",
+      ).length;
+      const denom = verifiedPoints + notVerifiedPoints;
+      const vendor = getVendorInfo(row.vendor_code);
+
+      return {
+        poNumber: row.po_number,
+        vendorCode: row.vendor_code,
+        vendorName: vendor?.name || getVendorName(row.vendor_code),
+        poType: row.po_type,
+        poTypeName: getPoTypeName(row.po_type),
+        purchaseGroup: row.purchase_group,
+        purchaseGroupName: getPurchaseGroupName(row.purchase_group),
+        // Header-level points only (see utility/point-scope.js) - every
+        // entry here already excludes any concept of a line item, because
+        // PoHeaderResult.results only ever holds header points.
+        points: (row.results || []).map((p) => ({
+          pointNo: p.pointNo,
+          status: classifyPoint(p),
+          severity: severityOf(p.pointNo),
+          remarks: p.remarks || [],
+        })),
+        verifiedPoints,
+        notVerifiedPoints,
+        compliancePct:
+          denom > 0
+            ? Number(((verifiedPoints / denom) * 100).toFixed(1))
+            : null,
+        closed: row.remarksLocked === true,
+        closedBy: row.remarksLockedBy || null,
+        closedAt: row.remarksLockedAt || null,
+        auditedOn: row.auditedOn,
+      };
+    });
+
+    return res.status(200).json({
+      total: results.length,
+      results,
+      scope:
+        user.isBuyer && !(user.isAdmin || user.isProcurementManager)
+          ? { restrictedToPurchaseGroup: user.username }
+          : null,
+    });
+  } catch (error) {
+    console.error("Error in getPoHeaderWiseDetails:", error);
+    return res.status(500).json({ message: "Failed to fetch PO header data" });
   }
 };
 

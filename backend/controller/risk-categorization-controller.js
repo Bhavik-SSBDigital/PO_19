@@ -1,8 +1,13 @@
 import { prisma } from "../lib/prisma.js";
+// CHANGED: point content (title/summary/logic/dataPoints) now lives in the
+// DB (AuditPointConfig table), not a file - see utility/point-definitions.js
+// and scripts/seed-point-definitions.js. This controller no longer touches
+// utility/point-reference.js at all.
 import {
-  POINT_DEFINITIONS,
-  POINT_DEFINITIONS_BY_NO,
-} from "../utility/point-reference.js";
+  ensurePointDefinitionsLoaded,
+  invalidatePointDefinitionsCache,
+  listPointDefinitions,
+} from "../utility/point-definitions.js";
 import {
   SEVERITY_LEVELS,
   ensureSeverityLoaded,
@@ -13,15 +18,18 @@ import {
 // GET/POST /reports/audit-point-config
 // Returns every audit point's fixed description (pointNo/title/summary/
 // logic/dataPoints - never editable) plus its current, admin-set severity.
+// Both now come straight from the DB (AuditPointConfig), read through
+// point-definitions.js's cache.
 export const getAuditPointConfig = async (req, res) => {
   try {
-    await ensureSeverityLoaded();
-    const points = POINT_DEFINITIONS.map((p) => ({
+    await Promise.all([ensureSeverityLoaded(), ensurePointDefinitionsLoaded()]);
+    const points = listPointDefinitions().map((p) => ({
       pointNo: p.pointNo,
       title: p.title,
       summary: p.summary,
       logic: p.logic,
       dataPoints: p.dataPoints,
+      scope: p.scope, // "header" | "line"
       severity: severityOf(p.pointNo),
     }));
     res.status(200).json({ points, severityLevels: SEVERITY_LEVELS });
@@ -36,6 +44,13 @@ export const getAuditPointConfig = async (req, res) => {
 // POST /risk-categorization/update-severity  { pointNo, severity }
 // Admin-only. Adjust the `req.user?.role` check below to match however
 // your auth middleware attaches the logged-in user's role.
+//
+// IMPORTANT: this endpoint only ever touches the `severity` column of
+// AuditPointConfig. title/summary/logic/dataPoints/scope on that same row
+// are NOT admin-editable here - they're fixed content maintained only via
+// scripts/seed-point-definitions.js (see that file's header comment). This
+// mirrors the old behavior exactly: an admin adjusts criticality, nothing
+// else.
 export const updateAuditPointSeverity = async (req, res) => {
   try {
     const role = req.user?.role || req.headers["x-user-role"];
@@ -51,27 +66,28 @@ export const updateAuditPointSeverity = async (req, res) => {
         message: `pointNo and a valid severity (${SEVERITY_LEVELS.join(", ")}) are required`,
       });
     }
-    if (!POINT_DEFINITIONS_BY_NO[String(pointNo)]) {
+
+    await ensurePointDefinitionsLoaded();
+    const known = listPointDefinitions().some(
+      (p) => Number(p.pointNo) === Number(pointNo),
+    );
+    if (!known) {
       return res
         .status(404)
         .json({ message: `Unknown audit point #${pointNo}` });
     }
 
-    await prisma.auditPointConfig.upsert({
+    await prisma.auditPointConfig.update({
       where: { pointNo: Number(pointNo) },
-      update: {
-        severity,
-        updatedBy: req.user?.username || req.user?.id || null,
-      },
-      create: {
-        pointNo: Number(pointNo),
+      data: {
         severity,
         updatedBy: req.user?.username || req.user?.id || null,
       },
     });
 
     invalidateSeverityCache();
-    await ensureSeverityLoaded();
+    invalidatePointDefinitionsCache();
+    await Promise.all([ensureSeverityLoaded(), ensurePointDefinitionsLoaded()]);
 
     res.status(200).json({ pointNo: Number(pointNo), severity });
   } catch (error) {

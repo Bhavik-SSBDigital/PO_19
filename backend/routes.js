@@ -22,6 +22,7 @@ import {
 } from "./controller/po-controller.js";
 import {
   getPoWiseExceptions,
+  getPoHeaderWiseDetails, // NEW - header-only, no po_line_item anywhere
   getPurchaseGroupsForFilter,
   getPoTypesForFilter,
   getPlantsForFilter,
@@ -52,7 +53,7 @@ import {
   getPoRemarksReportFilters,
 } from "./controller/po-remarks-report-controller.js";
 
-// NEW - the entire header-level (PO-wide) system: summary fetch, remarks
+// The entire header-level (PO-wide) system: summary fetch, remarks
 // CRUD, and the PO-level close/reopen toggle. See po-header-controller.js.
 import {
   getPoHeaderSummary,
@@ -73,14 +74,14 @@ router.post("/logout", logout);
 router.post("/changePassword", changePassword);
 
 // --- PO Audit ---
-router.post("/getPOAuditResults", get_po_audit_results);
-router.post("/getPOAuditResult", get_po_audit_result);
+router.post("/getPOAuditResults", requireAuth, get_po_audit_results);
+router.post("/getPOAuditResult", requireAuth, get_po_audit_result);
 
 // --- Dashboard (Executive P2P Compliance Control Tower) ---
 router.post("/reports/executive-summary", requireAuth, getExecutiveSummary);
 router.post("/reports/filter-options", requireAuth, getFilterOptions);
 router.post("/reports/executive-drilldown", requireAuth, getExecutiveDrilldown);
-// NEW - PO-level drilldown behind the "PO Header-Level Compliance" chart.
+// PO-level drilldown behind the "PO Header-Level Compliance" chart.
 // Separate from executive-drilldown on purpose: results here are PO
 // numbers, not PO line items.
 router.post(
@@ -103,6 +104,17 @@ router.post(
   requireAuth,
   requireAnyOf("isAdmin", "isBuyer", "isProcurementManager"),
   getPoWiseExceptions,
+);
+
+// NEW - PO Header-Level Details, PO-Number-wise, no po_line_item anywhere
+// in the payload. Use this (not /reports/po-data) any time the frontend is
+// showing or navigating "header level" data - e.g. the search page when a
+// PO number is searched without picking a specific line item.
+router.post(
+  "/reports/po-header-data",
+  requireAuth,
+  requireAnyOf("isAdmin", "isBuyer", "isProcurementManager"),
+  getPoHeaderWiseDetails,
 );
 
 router.post(
@@ -163,12 +175,15 @@ router.post(
   setAuditResultCheckedStatus,
 );
 
-// --- HEADER-LEVEL (PO-wide) system - NEW ---
+// --- HEADER-LEVEL (PO-wide) system ---
 // Completely separate closing/remarks system from the line-level one
 // above. getPoHeaderSummary is what the search page calls when a PO
 // number is searched WITHOUT a line item (header points + line-item
-// picker list). setPoHeaderCheckedStatus is the PO-level close/reopen -
-// independent of setAuditResultCheckedStatus (line-level) above.
+// picker list) - make sure that flow is also switched to render via
+// getPoHeaderWiseDetails / this summary rather than getPoWiseExceptions,
+// so a line item never leaks into a header-level view.
+// setPoHeaderCheckedStatus is the PO-level close/reopen - independent of
+// setAuditResultCheckedStatus (line-level) above.
 router.post("/getPOHeaderSummary", requireAuth, getPoHeaderSummary);
 
 router.post(

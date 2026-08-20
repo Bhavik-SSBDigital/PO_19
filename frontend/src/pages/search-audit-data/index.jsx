@@ -191,10 +191,9 @@ const LineItemPickerRow = ({ item, onOpen }) => (
 
 /**
  * PO HEADER VIEW - rendered when a PO number is searched WITHOUT a line
- * item. Shows the PO's header-level checks (points 7, 8, 9, 11-15, 19,
- * evaluated once for the whole PO) via PoHeaderChecksPanel, plus a picker
- * list of the PO's line items - clicking one drills into the Line-Item
- * view below.
+ * item. Shows the PO's header-level checks (points 1-9, evaluated once
+ * for the whole PO) via PoHeaderChecksPanel, plus a picker list of the
+ * PO's line items - clicking one drills into the Line-Item view below.
  */
 const PoHeaderView = ({
   data,

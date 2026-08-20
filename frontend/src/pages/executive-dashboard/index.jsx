@@ -20,6 +20,7 @@ import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
 import FileDownloadRoundedIcon from "@mui/icons-material/FileDownloadRounded";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import LayersRoundedIcon from "@mui/icons-material/LayersRounded";
+import WarningAmberRoundedIcon from "@mui/icons-material/WarningAmberRounded";
 import {
   BarChart,
   Bar,
@@ -66,6 +67,7 @@ const GRID_COLOR = "#f1f5f9";
 // without reading every label.
 const HEADER_ACCENT = "#4f46e5";
 const HEADER_ACCENT_BG = "#eef2ff";
+const OVERVIEW_ACCENT = "#0f172a";
 
 const ChartGradients = () => (
   <defs>
@@ -138,6 +140,7 @@ const KpiCard = ({
   info,
   valueColor = "text.primary",
   accent,
+  emphasize,
 }) => {
   const content = (
     <CardContent
@@ -171,7 +174,7 @@ const KpiCard = ({
           <Skeleton width="60%" height={48} sx={{ borderRadius: 2 }} />
         ) : (
           <Typography
-            variant="h3"
+            variant={emphasize ? "h2" : "h3"}
             sx={{ fontWeight: 800, color: valueColor, letterSpacing: -1 }}
           >
             {value}
@@ -519,6 +522,9 @@ const ExecutiveDashboard = () => {
     loadOptions();
   }, []);
 
+  // kpis now carries a SINGLE canonical totalPOCount at the top level.
+  // Neither the line-level nor header-level sections below repeat a
+  // "total PO" figure of their own - see the Overview strip.
   const kpis = data?.kpis || {};
   const headerKpis = kpis.header || {};
   const charts = data?.charts || {};
@@ -527,6 +533,7 @@ const ExecutiveDashboard = () => {
   const restrictedNotice = data?.scope?.restrictedToPurchaseGroup
     ? `Showing figures for purchasing group ${data.scope.restrictedToPurchaseGroup} only`
     : undefined;
+  const missingHeaderDataCount = kpis.missingHeaderDataCount || 0;
 
   const openDrilldown = (dimension, value, title, extra = {}) =>
     setDrilldown({ dimension, value, title, ...extra });
@@ -565,11 +572,11 @@ const ExecutiveDashboard = () => {
     Object.entries(kpis).forEach(([k, v]) => {
       if (k === "header") return; // exported separately below
       if (!k.toLowerCase().includes("hold")) {
-        lines.push(`KPI,${csvEscape(k)},${csvEscape(v)},`);
+        lines.push(`Overview / Line-Level KPI,${csvEscape(k)},${csvEscape(v)},`);
       }
     });
     Object.entries(headerKpis).forEach(([k, v]) => {
-      lines.push(`Header KPI,${csvEscape(k)},${csvEscape(v)},`);
+      lines.push(`Header-Level KPI,${csvEscape(k)},${csvEscape(v)},`);
     });
 
     (charts.controlWiseCompliance || []).forEach((d) =>
@@ -637,7 +644,7 @@ const ExecutiveDashboard = () => {
           display: "flex",
           justifyContent: "space-between",
           alignItems: "flex-start",
-          mb: 5,
+          mb: 4,
           flexWrap: "wrap",
           gap: 3,
         }}
@@ -665,12 +672,13 @@ const ExecutiveDashboard = () => {
               color: "#64748b",
             }}
           >
-            Tracks compliance across two separate systems:{" "}
-            <strong>Line-Level</strong> checks (one result per PO line item, 10
-            points) and <strong>Header-Level</strong> checks (one result per
-            whole PO, 9 points — shown in the indigo-tinted panels below).
-            Criticality of each checkpoint is managed on the Risk Categorization
-            Master page.
+            Every PO below is checked against 19 audit points: 9{" "}
+            <strong>Header</strong> points (one result per whole PO — shown
+            first, in the indigo-tinted panels) and 10{" "}
+            <strong>Line-Item</strong> points (one result per PO line). Both
+            sets of points cover the same POs — see "Total POs" below.
+            Criticality of each checkpoint is managed on the Risk
+            Categorization Master page.
           </Typography>
           {restrictedNotice && (
             <Typography
@@ -713,9 +721,24 @@ const ExecutiveDashboard = () => {
           }}
         >
           <Chip
+            icon={<LayersRoundedIcon fontSize="small" />}
+            label={
+              headerKpis.overallComplianceScore != null
+                ? `${headerKpis.overallComplianceScore}% header compliant`
+                : "—"
+            }
+            sx={{
+              fontWeight: 800,
+              borderRadius: 2,
+              px: 1,
+              bgcolor: HEADER_ACCENT_BG,
+              color: HEADER_ACCENT,
+            }}
+          />
+          <Chip
             label={
               kpis.overallComplianceScore != null
-                ? `${kpis.overallComplianceScore}% line compliant`
+                ? `${kpis.overallComplianceScore}% line-item compliant`
                 : "—"
             }
             sx={{
@@ -734,21 +757,6 @@ const ExecutiveDashboard = () => {
                   : kpis.overallComplianceScore >= 50
                     ? "#d97706"
                     : NOT_VERIFIED_COLOR,
-            }}
-          />
-          <Chip
-            icon={<LayersRoundedIcon fontSize="small" />}
-            label={
-              headerKpis.overallComplianceScore != null
-                ? `${headerKpis.overallComplianceScore}% header compliant`
-                : "—"
-            }
-            sx={{
-              fontWeight: 800,
-              borderRadius: 2,
-              px: 1,
-              bgcolor: HEADER_ACCENT_BG,
-              color: HEADER_ACCENT,
             }}
           />
           <Box sx={{ width: "1px", height: 24, bgcolor: "divider" }} />
@@ -827,7 +835,14 @@ const ExecutiveDashboard = () => {
         </Paper>
       )}
 
-      {/* ══════════════════ LINE-LEVEL KPIs ══════════════════ */}
+      {/*
+        ══════════════════ OVERVIEW STRIP ══════════════════
+        The ONE place "Total POs" is shown. This number is never repeated
+        (with a possibly different value) anywhere else on the page - the
+        Header and Line-Item sections below only show compliance metrics
+        (verified / not-verified / %), not counts, specifically so the
+        client never sees two different "total PO" figures.
+      */}
       <Typography
         variant="overline"
         sx={{
@@ -838,16 +853,21 @@ const ExecutiveDashboard = () => {
           mb: 1.5,
         }}
       >
-        Line-Level (per PO line item)
+        Portfolio Overview
       </Typography>
-      <Grid container spacing={3} sx={{ mb: 5 }}>
-        <Grid item xs={12} sm={6} md={4}>
+      <Grid container spacing={3} sx={{ mb: 2 }}>
+        <Grid item xs={12} sm={6} md={3}>
           <KpiCard
-            label="Total PO Count"
+            emphasize
+            label="Total POs"
             value={kpis.totalPOCount ?? "—"}
-            sublabel="Click to view all PO lines"
+            valueColor={OVERVIEW_ACCENT}
+            sublabel="Every point below — header and line-item — is measured against this same set of POs. Click to view all PO lines."
             loading={loading}
-            info={kpiDefs.totalPOCount}
+            info={
+              kpiDefs.totalPOCount ||
+              "Distinct PO numbers in scope under the current filters."
+            }
             onClick={
               kpis.totalPOCount
                 ? () => openDrilldown("all", true, "All PO Lines")
@@ -855,11 +875,11 @@ const ExecutiveDashboard = () => {
             }
           />
         </Grid>
-        <Grid item xs={12} sm={6} md={4}>
+        <Grid item xs={12} sm={6} md={3}>
           <KpiCard
-            label="Total PO Lines"
+            label="Total PO Line Items"
             value={kpis.totalPOLineItems ?? "—"}
-            sublabel="Click to view all PO lines"
+            sublabel="Sum of line items across all POs above. Click to view all PO lines."
             loading={loading}
             info={kpiDefs.totalPOLineItems}
             onClick={
@@ -869,7 +889,7 @@ const ExecutiveDashboard = () => {
             }
           />
         </Grid>
-        <Grid item xs={12} sm={6} md={4}>
+        <Grid item xs={12} sm={6} md={3}>
           <KpiCard
             label="Total PR Count"
             value={kpis.totalPRCount ?? "—"}
@@ -883,8 +903,7 @@ const ExecutiveDashboard = () => {
             }
           />
         </Grid>
-
-        <Grid item xs={12} sm={6} md={4}>
+        <Grid item xs={12} sm={6} md={3}>
           <KpiCard
             label="Exception Exposure"
             value={
@@ -892,7 +911,7 @@ const ExecutiveDashboard = () => {
                 ? `${kpis.exceptionValueExposure.toLocaleString()}`
                 : "—"
             }
-            sublabel="Click to drill in"
+            sublabel="Line-item exceptions. Click to drill in"
             loading={loading}
             info={kpiDefs.exceptionValueExposure}
             onClick={
@@ -907,6 +926,111 @@ const ExecutiveDashboard = () => {
             }
           />
         </Grid>
+      </Grid>
+
+      {missingHeaderDataCount > 0 && (
+        <Paper
+          elevation={0}
+          sx={{
+            p: 2,
+            mb: 5,
+            display: "flex",
+            alignItems: "center",
+            gap: 1.5,
+            bgcolor: "#fffbeb",
+            borderRadius: 3,
+            border: "1px solid",
+            borderColor: "#fde68a",
+          }}
+        >
+          <WarningAmberRoundedIcon sx={{ color: "#b45309" }} fontSize="small" />
+          <Typography variant="body2" sx={{ color: "#92400e", fontWeight: 600 }}>
+            Header-level audit data hasn't been loaded yet for{" "}
+            {missingHeaderDataCount} of the {kpis.totalPOCount} POs in scope
+            (e.g. <code>node addheader.js</code> hasn't been run for that
+            batch). The Header-Level panels below only reflect the{" "}
+            {kpis.totalPOCount - missingHeaderDataCount} POs that do have
+            header data loaded.
+          </Typography>
+        </Paper>
+      )}
+      {!missingHeaderDataCount && <Box sx={{ mb: 5 }} />}
+
+      {/*
+        ══════════════════ HEADER-LEVEL (distinct indigo styling) ══════════════════
+        Moved ahead of Line-Item Level per request: header-level detail
+        should render first on the page, both in the KPI cards and in
+        the charts grid below.
+      */}
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1.5 }}>
+        <LayersRoundedIcon sx={{ color: HEADER_ACCENT, fontSize: 20 }} />
+        <Typography
+          variant="overline"
+          sx={{ fontWeight: 800, color: HEADER_ACCENT, letterSpacing: 1.5 }}
+        >
+          Header Level (9 points, one result per whole PO — points 1-9)
+        </Typography>
+      </Box>
+      <Grid container spacing={3} sx={{ mb: 5 }}>
+        <Grid item xs={12} sm={6} md={3}>
+          <KpiCard
+            accent
+            label="Header Compliance"
+            value={
+              headerKpis.overallComplianceScore != null
+                ? `${headerKpis.overallComplianceScore}%`
+                : "—"
+            }
+            loading={loading}
+            sublabel="Verified ÷ (Verified + Not Verified), per PO"
+          />
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <KpiCard
+            accent
+            label="POs Closed"
+            value={headerKpis.closedPOCount ?? "—"}
+            valueColor="#059669"
+            loading={loading}
+            sublabel={`${headerKpis.openPOCount ?? 0} still open — out of the same Total POs above`}
+          />
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <KpiCard
+            accent
+            label="Verified (Header)"
+            value={headerKpis.verifiedCount ?? "—"}
+            valueColor="#059669"
+            loading={loading}
+            sublabel="Across all header points, all in-scope POs"
+          />
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <KpiCard
+            accent
+            label="Not Verified (Header)"
+            value={headerKpis.notVerifiedCount ?? "—"}
+            valueColor="#dc2626"
+            loading={loading}
+            sublabel="Across all header points, all in-scope POs"
+          />
+        </Grid>
+      </Grid>
+
+      {/* ══════════════════ LINE-ITEM LEVEL ══════════════════ */}
+      <Typography
+        variant="overline"
+        sx={{
+          fontWeight: 800,
+          color: "#64748b",
+          letterSpacing: 1.5,
+          display: "block",
+          mb: 1.5,
+        }}
+      >
+        Line-Item Level (10 points, one result per PO line item — points 10-19)
+      </Typography>
+      <Grid container spacing={3} sx={{ mb: 5 }}>
         <Grid item xs={12} sm={6} md={4}>
           <KpiCard
             label="Verified Checks"
@@ -948,7 +1072,26 @@ const ExecutiveDashboard = () => {
             }
           />
         </Grid>
-
+        <Grid item xs={12} sm={6} md={4}>
+          <KpiCard
+            label="High-Risk Alerts"
+            value={kpis.highRiskExceptions ?? "—"}
+            valueColor="#dc2626"
+            sublabel="Critical + High severity"
+            loading={loading}
+            info={kpiDefs.highRiskExceptions}
+            onClick={
+              kpis.highRiskExceptions
+                ? () =>
+                    openDrilldown(
+                      "severity",
+                      "Critical,High",
+                      "High-Risk Exceptions (Critical + High)",
+                    )
+                : undefined
+            }
+          />
+        </Grid>
         <Grid item xs={12} sm={6} md={4}>
           <KpiCard
             label="Not Applicable"
@@ -991,86 +1134,118 @@ const ExecutiveDashboard = () => {
         </Grid>
         <Grid item xs={12} sm={6} md={4}>
           <KpiCard
-            label="High-Risk Alerts"
-            value={kpis.highRiskExceptions ?? "—"}
-            valueColor="#dc2626"
-            sublabel="Critical + High severity"
-            loading={loading}
-            info={kpiDefs.highRiskExceptions}
-            onClick={
-              kpis.highRiskExceptions
-                ? () =>
-                    openDrilldown(
-                      "severity",
-                      "Critical,High",
-                      "High-Risk Exceptions (Critical + High)",
-                    )
-                : undefined
-            }
-          />
-        </Grid>
-      </Grid>
-
-      {/* ══════════════════ HEADER-LEVEL KPIs (distinct indigo styling) ══════════════════ */}
-      <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1.5 }}>
-        <LayersRoundedIcon sx={{ color: HEADER_ACCENT, fontSize: 20 }} />
-        <Typography
-          variant="overline"
-          sx={{ fontWeight: 800, color: HEADER_ACCENT, letterSpacing: 1.5 }}
-        >
-          Header-Level (per whole PO — points 7, 8, 9, 11-15, 19)
-        </Typography>
-      </Box>
-      <Grid container spacing={3} sx={{ mb: 5 }}>
-        <Grid item xs={12} sm={6} md={3}>
-          <KpiCard
-            accent
-            label="POs with Header Data"
-            value={headerKpis.totalPOsWithHeaderData ?? "—"}
-            loading={loading}
-            sublabel="Total POs evaluated at header level"
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <KpiCard
-            accent
-            label="Header Compliance"
+            label="Line-Item Compliance"
             value={
-              headerKpis.overallComplianceScore != null
-                ? `${headerKpis.overallComplianceScore}%`
+              kpis.overallComplianceScore != null
+                ? `${kpis.overallComplianceScore}%`
                 : "—"
             }
+            valueColor={VERIFIED_COLOR}
+            sublabel="Verified ÷ (Verified + Not Verified), per line item"
             loading={loading}
-            sublabel="Verified ÷ (Verified + Not Verified), per PO"
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <KpiCard
-            accent
-            label="POs Closed"
-            value={headerKpis.closedPOCount ?? "—"}
-            valueColor="#059669"
-            loading={loading}
-            sublabel={`${headerKpis.openPOCount ?? 0} still open`}
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <KpiCard
-            accent
-            label="Not Verified (Header)"
-            value={headerKpis.notVerifiedCount ?? "—"}
-            valueColor="#dc2626"
-            loading={loading}
-            sublabel="Across all header points, all in-scope POs"
           />
         </Grid>
       </Grid>
 
       <Grid container spacing={3}>
+        {/*
+          ══════════════════════════════════════════════════════════════
+          PO HEADER-LEVEL COMPLIANCE - moved to render FIRST in the charts
+          grid, ahead of the line-item charts, per request. Each bar is
+          ONE OF THE 9 HEADER POINTS; each data point behind the bar is
+          ONE PO (not one line item) - see charts.headerControlWiseCompliance
+          in dashboard-controller.js. Distinctly styled (indigo panel/bars)
+          and captioned so it's unmistakably a different denominator than
+          every other chart on this page. Clicking a bar opens
+          HeaderDrilldownDialog (PO numbers, not line items).
+        */}
+        <Grid item xs={12}>
+          <ChartPanel
+            title="PO Header-Level Compliance"
+            hint="% verified per PO (9 header-level points: 1-9). Each bar's denominator is POs, not line items. Click a bar to drill in."
+            info="Header-level points describe the whole PO, not one line item, so this chart counts each PO exactly once — unlike the line-item chart below, which counts once per PO line."
+            accent
+            icon={<LayersRoundedIcon sx={{ mr: 1, color: HEADER_ACCENT }} />}
+            height={horizontalChartHeight(
+              (charts.headerControlWiseCompliance || []).length,
+              40,
+              60,
+              220,
+            )}
+          >
+            {loading ? (
+              <Skeleton
+                variant="rounded"
+                height="100%"
+                sx={{ borderRadius: 2 }}
+              />
+            ) : (
+              <ResponsiveContainer width="100%" height="95%">
+                <BarChart
+                  data={charts.headerControlWiseCompliance || []}
+                  layout="vertical"
+                  margin={{ top: 10, bottom: 10, left: 10, right: 40 }}
+                  barCategoryGap="30%"
+                >
+                  <ChartGradients />
+                  <CartesianGrid
+                    strokeDasharray="3 3"
+                    horizontal={false}
+                    stroke="#e0e7ff"
+                  />
+                  <XAxis
+                    type="number"
+                    domain={[0, 100]}
+                    unit="%"
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: "#6366f1", fontSize: 12, fontWeight: 500 }}
+                  />
+                  <YAxis
+                    type="category"
+                    dataKey="pointNo"
+                    tickFormatter={(v) => `#${v}`}
+                    width={50}
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: "#3730a3", fontSize: 13, fontWeight: 700 }}
+                  />
+                  <Tooltip
+                    content={<HeaderControlWiseTooltip />}
+                    cursor={{ fill: alpha("#6366f1", 0.06) }}
+                  />
+                  <Bar
+                    dataKey="compliancePct"
+                    radius={[0, 8, 8, 0]}
+                    cursor="pointer"
+                    barSize={22}
+                    onClick={(d) => {
+                      const p = payloadOf(d);
+                      openHeaderDrilldown(
+                        p.pointNo,
+                        `PO Header Point #${p.pointNo}: ${p.title} — Not-Verified POs`,
+                      );
+                    }}
+                  >
+                    {(charts.headerControlWiseCompliance || []).map((d) => (
+                      <Cell
+                        key={d.pointNo}
+                        fill={
+                          SEVERITY_COLORS[d.severity] || "url(#gradHeaderBar)"
+                        }
+                      />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </ChartPanel>
+        </Grid>
+
         <Grid item xs={12} md={7}>
           <ChartPanel
-            title="Control-Wise Compliance (Line-Level)"
-            hint="% verified per PO line item (10 line-level points). Click a bar to drill in."
+            title="Control-Wise Compliance (Line-Item)"
+            hint="% verified per PO line item (10 line-item points, 10-19). Click a bar to drill in."
             info={chartDefs.controlWiseCompliance}
           >
             {loading ? (
@@ -1196,105 +1371,11 @@ const ExecutiveDashboard = () => {
           </ChartPanel>
         </Grid>
 
-        {/*
-          ══════════════════════════════════════════════════════════════
-          PO HEADER-LEVEL COMPLIANCE - the header-level counterpart to
-          Control-Wise Compliance above. Each bar is ONE OF THE 9 HEADER
-          POINTS; each data point behind the bar is ONE PO (not one line
-          item) - see charts.headerControlWiseCompliance in
-          dashboard-controller.js. Distinctly styled (indigo panel/bars)
-          and captioned so it's unmistakably a different denominator than
-          every other chart on this page. Clicking a bar opens
-          HeaderDrilldownDialog (PO numbers, not line items).
-        */}
-        <Grid item xs={12}>
-          <ChartPanel
-            title="PO Header-Level Compliance"
-            hint="% verified per PO (9 header-level points: 7, 8, 9, 11-15, 19). Each bar's denominator is POs, not line items. Click a bar to drill in."
-            info="Header-level points describe the whole PO, not one line item, so this chart counts each PO exactly once — unlike the line-level chart above, which counts once per PO line."
-            accent
-            icon={<LayersRoundedIcon sx={{ mr: 1, color: HEADER_ACCENT }} />}
-            height={horizontalChartHeight(
-              (charts.headerControlWiseCompliance || []).length,
-              40,
-              60,
-              220,
-            )}
-          >
-            {loading ? (
-              <Skeleton
-                variant="rounded"
-                height="100%"
-                sx={{ borderRadius: 2 }}
-              />
-            ) : (
-              <ResponsiveContainer width="100%" height="95%">
-                <BarChart
-                  data={charts.headerControlWiseCompliance || []}
-                  layout="vertical"
-                  margin={{ top: 10, bottom: 10, left: 10, right: 40 }}
-                  barCategoryGap="30%"
-                >
-                  <ChartGradients />
-                  <CartesianGrid
-                    strokeDasharray="3 3"
-                    horizontal={false}
-                    stroke="#e0e7ff"
-                  />
-                  <XAxis
-                    type="number"
-                    domain={[0, 100]}
-                    unit="%"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: "#6366f1", fontSize: 12, fontWeight: 500 }}
-                  />
-                  <YAxis
-                    type="category"
-                    dataKey="pointNo"
-                    tickFormatter={(v) => `#${v}`}
-                    width={50}
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: "#3730a3", fontSize: 13, fontWeight: 700 }}
-                  />
-                  <Tooltip
-                    content={<HeaderControlWiseTooltip />}
-                    cursor={{ fill: alpha("#6366f1", 0.06) }}
-                  />
-                  <Bar
-                    dataKey="compliancePct"
-                    radius={[0, 8, 8, 0]}
-                    cursor="pointer"
-                    barSize={22}
-                    onClick={(d) => {
-                      const p = payloadOf(d);
-                      openHeaderDrilldown(
-                        p.pointNo,
-                        `PO Header Point #${p.pointNo}: ${p.title} — Not-Verified POs`,
-                      );
-                    }}
-                  >
-                    {(charts.headerControlWiseCompliance || []).map((d) => (
-                      <Cell
-                        key={d.pointNo}
-                        fill={
-                          SEVERITY_COLORS[d.severity] || "url(#gradHeaderBar)"
-                        }
-                      />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </ChartPanel>
-        </Grid>
-
         <Grid item xs={12}>
           <ChartPanel
             title="Purchase Group-Wise Compliance"
-            hint="% verified per purchasing group, worst first. Click a segment to drill in. (Line-level)"
-            info="Shows verified vs. not-verified LINE-LEVEL checkpoint counts for every purchasing group."
+            hint="% verified per purchasing group, worst first. Click a segment to drill in. (Line-item)"
+            info="Shows verified vs. not-verified LINE-ITEM checkpoint counts for every purchasing group."
             height={horizontalChartHeight(
               (charts.purchaseGroupWiseCompliance || []).length,
             )}
@@ -1402,8 +1483,8 @@ const ExecutiveDashboard = () => {
         <Grid item xs={12}>
           <ChartPanel
             title="Plant-Wise Compliance"
-            hint="% verified per plant, worst first. Click a segment to drill in. (Line-level)"
-            info="Shows verified vs. not-verified LINE-LEVEL checkpoint counts for every plant."
+            hint="% verified per plant, worst first. Click a segment to drill in. (Line-item)"
+            info="Shows verified vs. not-verified LINE-ITEM checkpoint counts for every plant."
             height={horizontalChartHeight(
               (charts.plantWiseCompliance || []).length,
             )}
@@ -1509,8 +1590,8 @@ const ExecutiveDashboard = () => {
         <Grid item xs={12}>
           <ChartPanel
             title="Vendor-Wise Compliance"
-            hint="Top 15 vendors by not-verified count. Click a segment to drill in. (Line-level)"
-            info="Shows verified vs. not-verified LINE-LEVEL checkpoint counts for the 15 vendors contributing the most compliance exceptions."
+            hint="Top 15 vendors by not-verified count. Click a segment to drill in. (Line-item)"
+            info="Shows verified vs. not-verified LINE-ITEM checkpoint counts for the 15 vendors contributing the most compliance exceptions."
             height={horizontalChartHeight(
               (charts.vendorWiseCompliance || []).length,
             )}
@@ -1616,7 +1697,7 @@ const ExecutiveDashboard = () => {
         <Grid item xs={12}>
           <ChartPanel
             title="PO Type-Wise Compliance"
-            hint="Click a segment to drill in. (Line-level)"
+            hint="Click a segment to drill in. (Line-item)"
             info={chartDefs.poTypeWiseCompliance}
             height={horizontalChartHeight(
               (charts.poTypeWiseCompliance || []).length,
@@ -1722,8 +1803,8 @@ const ExecutiveDashboard = () => {
         <Grid item xs={12}>
           <ChartPanel
             title="PO-Wise Compliance"
-            hint="Top 15 POs by not-verified count. Click a segment to drill in. (Line-level)"
-            info="Shows verified vs. not-verified LINE-LEVEL checkpoint counts for the 15 individual POs contributing the most compliance exceptions."
+            hint="Top 15 POs by not-verified count. Click a segment to drill in. (Line-item)"
+            info="Shows verified vs. not-verified LINE-ITEM checkpoint counts for the 15 individual POs contributing the most compliance exceptions."
             height={horizontalChartHeight(
               (charts.poNumberWiseCompliance || []).length,
             )}
@@ -1819,7 +1900,7 @@ const ExecutiveDashboard = () => {
         <Grid item xs={12}>
           <ChartPanel
             title="Monthly Exception Trend"
-            hint="Click a point to drill in. (Line-level)"
+            hint="Click a point to drill in. (Line-item)"
             info={chartDefs.monthlyExceptionTrend}
             height={300}
           >
@@ -1911,10 +1992,11 @@ const ExecutiveDashboard = () => {
           fontWeight: 500,
         }}
       >
-        Executive P2P Compliance Control Tower — Line-Level and Header-Level
-        compliance are tracked and closed as two separate systems throughout
-        this app. Checkpoint descriptions and criticality live on the Risk
-        Categorization Master page.
+        Executive P2P Compliance Control Tower — "Total POs" above is the
+        single figure for how many POs are in scope; Header-Level and
+        Line-Item sections above only report compliance against that same
+        set of POs. Checkpoint descriptions and criticality live on the
+        Risk Categorization Master page.
       </Typography>
 
       <DrilldownDialog
