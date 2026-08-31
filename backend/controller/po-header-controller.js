@@ -14,24 +14,15 @@ import { getHeaderForPo } from "../utility/header-results.js";
 /**
  * po-header-controller.js
  * ========================
- * Everything about the HEADER-LEVEL (PO-wide) audit system lives here,
- * mirroring po-remarks-controller.js's shape but keyed at PO level instead
- * of line-item level:
+ * Everything about the HEADER-LEVEL (PO-wide) audit system lives here.
  *
- *   - getPoHeaderSummary   : one PO's header points + lock status + a
- *                            lightweight list of its line items (used by
- *                            the search page when only a PO number, no
- *                            line item, is searched).
- *   - getPoHeaderRemarks   : buyer remarks against header-level points.
- *   - submitPoHeaderRemark / updatePoHeaderRemark / deletePoHeaderRemark
- *   - setPoHeaderCheckedStatus : the PO-LEVEL close/reopen toggle. This is
- *     a SEPARATE system from setAuditResultCheckedStatus (line-level) -
- *     closing the header never touches any line item, and closing a line
- *     item never touches the header.
- *
- * ACCESS CONTROL mirrors po-remarks-controller.js / po-data-controller.js:
- *   - Admin / Procurement Manager: full access to every PO's header.
- *   - Buyer: scoped to their own purchasing group (PoHeaderResult.purchase_group).
+ * ACCESS CONTROL:
+ *   - Admin / Procurement Manager: full access to every PO's header, and
+ *     to every buyer's header remark on it.
+ *   - Buyer: scoped to their own purchasing group for VIEWING the header
+ *     at all; but for individual remark TEXT, a Buyer only ever sees
+ *     remarks THEY personally submitted (see getPoHeaderRemarks and the
+ *     headerRemarksByPoint block in getPoHeaderSummary below).
  *   - Anyone else: 403.
  */
 
@@ -61,11 +52,12 @@ function canWriteHeaderRemarks(user, headerRecord) {
  * POST /getPOHeaderSummary
  * Body: { po_number }
  *
- * Returns the PO's header-level points + lock status, PLUS a lightweight
- * list of its line items (line item no., material, whether that line has
- * a line-level exception, whether that line is closed). This is what the
- * search page renders when the user searches a PO NUMBER without a line
- * item - a full header panel, and a picker to drill into one line.
+ * Returns the PO's header-level points + lock status, a lightweight list
+ * of its line items, PLUS (new) headerRemarksByPoint — every header-level
+ * buyer remark, grouped by pointNo, already filtered to what the caller
+ * is allowed to see (Buyer: own remarks only; Admin/PM: everyone's).
+ * This lets the frontend render remarks immediately without a follow-up
+ * call to /po-header-remarks/search.
  */
 export const getPoHeaderSummary = async (req, res) => {
   try {
@@ -80,8 +72,6 @@ export const getPoHeaderSummary = async (req, res) => {
       where: { po_number },
     });
 
-    // Even with no header record yet (e.g. header import hasn't run), we
-    // still want to show line items - so only 404 if NEITHER exists.
     const lineRows = await prisma.auditResult.findMany({
       where: { type: "PO", po_number },
       select: {
@@ -102,8 +92,6 @@ export const getPoHeaderSummary = async (req, res) => {
       return res.status(404).json({ message: "PO not found" });
     }
 
-    // Access check - use header's purchase_group if we have it, else fall
-    // back to the first line item's purchase_group.
     let scopeGroup = headerRecord?.purchase_group || null;
     if (!scopeGroup && lineRows.length) {
       const firstLine = await prisma.auditResult.findFirst({
@@ -122,6 +110,38 @@ export const getPoHeaderSummary = async (req, res) => {
     }
 
     const header = await getHeaderForPo(po_number);
+
+    // NEW: header-level buyer remarks, grouped by pointNo, pre-filtered
+    // to what this caller may see. Buyer -> own remarks only. Admin/PM
+    // -> everyone's.
+    const headerRemarkWhere = { po_number };
+    if (user.isBuyer && !(user.isAdmin || user.isProcurementManager)) {
+      headerRemarkWhere.submittedBy = user.id || user.userId;
+    }
+    const headerRemarkRows = await prisma.poHeaderRemark.findMany({
+      where: headerRemarkWhere,
+      include: { submitter: { select: SUBMITTER_SELECT } },
+      orderBy: { submittedAt: "desc" },
+    });
+    const userId = user.id || user.userId;
+    const headerRemarksByPoint = {};
+    for (const r of headerRemarkRows) {
+      const key = String(r.pointNo);
+      if (!headerRemarksByPoint[key]) headerRemarksByPoint[key] = [];
+      headerRemarksByPoint[key].push({
+        id: r.id,
+        remark: r.remark,
+        submittedBy: r.submittedBy,
+        submittedByName:
+          [r.submitter?.firstName, r.submitter?.lastName]
+            .filter(Boolean)
+            .join(" ") ||
+          r.submitter?.username ||
+          "",
+        submittedAt: r.submittedAt,
+        isMine: userId != null && String(r.submittedBy) === String(userId),
+      });
+    }
 
     const firstLine = lineRows[0];
     const vendor = firstLine
@@ -162,6 +182,7 @@ export const getPoHeaderSummary = async (req, res) => {
       purchaseGroup: scopeGroup,
       purchaseGroupName: getPurchaseGroupName(scopeGroup),
       header,
+      headerRemarksByPoint,
       lineItemCount: lineItems.length,
       lineItems,
     });
@@ -173,6 +194,12 @@ export const getPoHeaderSummary = async (req, res) => {
   }
 };
 
+/**
+ * POST /po-header-remarks/search
+ *
+ * Visibility rule: Admin / Procurement Manager see every header remark on
+ * the PO. A Buyer sees ONLY the remarks THEY personally submitted.
+ */
 export const getPoHeaderRemarks = async (req, res) => {
   try {
     const user = req.user || {};
@@ -197,6 +224,11 @@ export const getPoHeaderRemarks = async (req, res) => {
     const where = { po_number };
     if (pointNo !== undefined && pointNo !== null && pointNo !== "") {
       where.pointNo = Number(pointNo);
+    }
+
+    // Buyer -> restrict to remarks they authored. Admin / PM -> unrestricted.
+    if (user.isBuyer && !(user.isAdmin || user.isProcurementManager)) {
+      where.submittedBy = user.id || user.userId;
     }
 
     const remarks = await prisma.poHeaderRemark.findMany({
@@ -392,13 +424,8 @@ export const deletePoHeaderRemark = async (req, res) => {
 /**
  * POST /setPoHeaderCheckedStatus
  * Body: { po_number, checked }
- *
- * THE PO-LEVEL close/reopen toggle. Completely separate from
- * setAuditResultCheckedStatus (line-level, in po-remarks-controller.js) -
- * this never touches any AuditResult row. Once checked=true, the header
- * is locked for remarks, and every line item of this PO (viewed via
- * get_po_audit_result / get_po_lines) reports header.locked = true without
- * needing to be reviewed again.
+ * The PO-level close/reopen toggle. Completely separate from
+ * setAuditResultCheckedStatus (line-level).
  */
 export const setPoHeaderCheckedStatus = async (req, res) => {
   try {

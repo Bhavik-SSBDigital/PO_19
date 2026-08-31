@@ -22,7 +22,7 @@ import {
 } from "./controller/po-controller.js";
 import {
   getPoWiseExceptions,
-  getPoHeaderWiseDetails, // NEW - header-only, no po_line_item anywhere
+  getPoHeaderWiseDetails,
   getPurchaseGroupsForFilter,
   getPoTypesForFilter,
   getPlantsForFilter,
@@ -31,7 +31,7 @@ import {
   getExecutiveSummary,
   getFilterOptions,
   getExecutiveDrilldown,
-  getExecutiveHeaderDrilldown, // NEW - PO-level drilldown for the header chart
+  getExecutiveHeaderDrilldown,
   getExecutiveHeaderKpiDrilldown,
 } from "./controller/dashboard-controller.js";
 
@@ -54,8 +54,6 @@ import {
   getPoRemarksReportFilters,
 } from "./controller/po-remarks-report-controller.js";
 
-// The entire header-level (PO-wide) system: summary fetch, remarks
-// CRUD, and the PO-level close/reopen toggle. See po-header-controller.js.
 import {
   getPoHeaderSummary,
   getPoHeaderRemarks,
@@ -87,9 +85,6 @@ router.post(
   requireAuth,
   getExecutiveHeaderKpiDrilldown,
 );
-// PO-level drilldown behind the "PO Header-Level Compliance" chart.
-// Separate from executive-drilldown on purpose: results here are PO
-// numbers, not PO line items.
 router.post(
   "/reports/executive-header-drilldown",
   requireAuth,
@@ -100,11 +95,14 @@ router.get("/getRoles", getRoles);
 router.get("/getUsers", get_users);
 
 // --- PO Lines ---
-router.post("/reports/po-lines", get_po_lines);
+// FIX: requireAuth was missing here, so req.user was always {} — the new
+// buyer-remark visibility filtering in get_po_lines needs req.user to know
+// who's asking.
+router.post("/reports/po-lines", requireAuth, get_po_lines);
 
 router.delete("/deleteUser/:id", deleteUser);
 
-// --- PO Data / Advanced Filters (Buyer scoped to own group, PM + Admin see all / narrow by group) ---
+// --- PO Data / Advanced Filters ---
 router.post(
   "/reports/po-data",
   requireAuth,
@@ -112,10 +110,6 @@ router.post(
   getPoWiseExceptions,
 );
 
-// NEW - PO Header-Level Details, PO-Number-wise, no po_line_item anywhere
-// in the payload. Use this (not /reports/po-data) any time the frontend is
-// showing or navigating "header level" data - e.g. the search page when a
-// PO number is searched without picking a specific line item.
 router.post(
   "/reports/po-header-data",
   requireAuth,
@@ -182,14 +176,6 @@ router.post(
 );
 
 // --- HEADER-LEVEL (PO-wide) system ---
-// Completely separate closing/remarks system from the line-level one
-// above. getPoHeaderSummary is what the search page calls when a PO
-// number is searched WITHOUT a line item (header points + line-item
-// picker list) - make sure that flow is also switched to render via
-// getPoHeaderWiseDetails / this summary rather than getPoWiseExceptions,
-// so a line item never leaks into a header-level view.
-// setPoHeaderCheckedStatus is the PO-level close/reopen - independent of
-// setAuditResultCheckedStatus (line-level) above.
 router.post("/getPOHeaderSummary", requireAuth, getPoHeaderSummary);
 
 router.post(
@@ -223,8 +209,7 @@ router.post(
   setPoHeaderCheckedStatus,
 );
 
-// --- RC Overlap (Buyer scoped to own group via derived purchaseGroups[],
-// PM + Admin see all) ---
+// --- RC Overlap ---
 router.post("/reports/rc-overlap", requireAuth, getRcOverlapResults);
 router.post("/reports/rc-overlap-detail", requireAuth, getRcOverlapDetail);
 router.post("/reports/rc-overlap-summary", requireAuth, getRcOverlapSummary);

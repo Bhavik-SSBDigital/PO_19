@@ -12,10 +12,13 @@ import {
   Dialog,
   DialogTitle,
   DialogContent,
+  Tooltip,
 } from "@mui/material";
 import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
 import SendRoundedIcon from "@mui/icons-material/SendRounded";
 import LockRoundedIcon from "@mui/icons-material/LockRounded";
+import AddCommentRoundedIcon from "@mui/icons-material/AddCommentRounded";
+import ChatBubbleRoundedIcon from "@mui/icons-material/ChatBubbleRounded";
 import CloseIcon from "@mui/icons-material/Close";
 import { toast } from "react-toastify";
 import {
@@ -35,6 +38,14 @@ const PointRemarkPanel = ({
   isAdmin,
   isProcurementManager,
   locked: lockedProp = false,
+  // NEW: remarks already embedded on the search response (row.buyerRemarks
+  // for this point). Seeds state immediately so the trigger is correct on
+  // first paint instead of showing "No Remarks" until the dialog opens.
+  initialRemarks = [],
+  // NEW: optional — lets a parent list re-sync its own copy (e.g. a
+  // summary count somewhere else on the page) whenever this point's
+  // remarks change. Safe to omit.
+  onRemarksChanged,
   compact = false,
 }) => {
   // Only a Buyer can add/edit/delete. Admin and Procurement Manager are
@@ -42,16 +53,32 @@ const PointRemarkPanel = ({
   // get an input box or a delete button.
   const canSubmit = isBuyer;
 
-  const [remarks, setRemarks] = useState([]);
+  const [remarks, setRemarks] = useState(initialRemarks);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [draft, setDraft] = useState("");
   const [open, setOpen] = useState(false);
   const [locked, setLocked] = useState(lockedProp);
 
+  // Keep in sync whenever the parent re-fetches the search page and hands
+  // down fresh embedded remarks (e.g. after switching line items).
+  useEffect(() => {
+    setRemarks(initialRemarks);
+  }, [initialRemarks]);
+
+  useEffect(() => {
+    setLocked(lockedProp);
+  }, [lockedProp]);
+
   const ownRemark = remarks.find(
     (r) => currentUserId != null && String(r.submittedBy) === String(currentUserId)
   );
+
+  const applyRemarks = (next, nextLocked) => {
+    setRemarks(next);
+    if (nextLocked !== undefined) setLocked(nextLocked);
+    onRemarksChanged?.(next);
+  };
 
   const load = async () => {
     setLoading(true);
@@ -60,8 +87,7 @@ const PointRemarkPanel = ({
         ? { auditResultId, pointNo }
         : { poNumber, poLineItem, pointNo };
       const res = await getPoRemarks(payload);
-      setRemarks(res?.remarks || []);
-      setLocked(Boolean(res?.remarksLocked));
+      applyRemarks(res?.remarks || [], Boolean(res?.remarksLocked));
     } catch (error) {
       toast.error(error?.response?.data?.message || error?.message || "Failed to load remarks");
     } finally {
@@ -73,20 +99,11 @@ const PointRemarkPanel = ({
     if (open) {
       load();
     } else {
-      // Clear the draft the moment the dialog closes, so reopening it
-      // (for this point or a different one) never shows leftover text.
       setDraft("");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, auditResultId, poNumber, poLineItem, pointNo]);
 
-  // Draft always mirrors the current remark state instead of being left as
-  // whatever was last typed:
-  //  - own remark exists  -> draft shows that remark's text (edit mode)
-  //  - no own remark      -> draft is empty (add mode)
-  // Re-runs whenever `remarks` changes (e.g. right after a successful
-  // submit), so the box switches to edit mode with correct text
-  // immediately — no stale leftover input.
   useEffect(() => {
     if (!open) return;
     setDraft(ownRemark ? ownRemark.remark : "");
@@ -125,23 +142,67 @@ const PointRemarkPanel = ({
     }
   };
 
+  const count = remarks.length;
+  const latest = remarks[0]; // already ordered newest-first by the API
+
+  // ── Trigger chip: label, color and icon all driven off the SAME
+  // `remarks` array that renders inside the dialog — so the badge, the
+  // preview line, and the dialog contents can never disagree.
+  let chipLabel;
+  let chipColor = "default";
+  let chipIcon = <ChatBubbleRoundedIcon fontSize="small" />;
+  let chipVariant = "outlined";
+
+  if (count > 0) {
+    chipLabel = `${count} Remark${count > 1 ? "s" : ""}`;
+    chipColor = ownRemark ? "primary" : "default";
+    chipVariant = "filled";
+  } else if (canSubmit && locked) {
+    chipLabel = "Locked";
+    chipColor = "warning";
+    chipIcon = <LockRoundedIcon fontSize="small" />;
+  } else if (canSubmit) {
+    chipLabel = "Add Remark";
+    chipIcon = <AddCommentRoundedIcon fontSize="small" />;
+  } else {
+    chipLabel = "No Remarks";
+  }
+
   return (
     <>
-      <Button
-        size="small"
-        variant="outlined"
-        onClick={() => setOpen(true)}
-        startIcon={locked && canSubmit ? <LockRoundedIcon fontSize="small" /> : null}
-        sx={{ textTransform: "none", fontWeight: 600, borderRadius: "20px", minWidth: "120px" }}
-      >
-        {remarks.length > 0
-          ? `Remarks (${remarks.length})`
-          : canSubmit
-          ? locked
-            ? "Locked"
-            : "Add Remark"
-          : "No Remarks"}
-      </Button>
+      <Stack spacing={0.5} alignItems="flex-start">
+        <Chip
+          size="small"
+          clickable
+          onClick={() => setOpen(true)}
+          icon={chipIcon}
+          label={chipLabel}
+          color={chipColor}
+          variant={chipVariant}
+          sx={{ fontWeight: 700, borderRadius: "16px" }}
+        />
+        {latest && (
+          <Tooltip title={latest.remark}>
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              onClick={() => setOpen(true)}
+              sx={{
+                cursor: "pointer",
+                maxWidth: 220,
+                display: "-webkit-box",
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: "vertical",
+                overflow: "hidden",
+                lineHeight: 1.3,
+              }}
+            >
+              <b>{latest.submittedByName || "Buyer"}{latest.isMine ? " (you)" : ""}:</b>{" "}
+              {latest.remark}
+            </Typography>
+          </Tooltip>
+        )}
+      </Stack>
 
       <Dialog open={open} onClose={() => setOpen(false)} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
         <DialogTitle sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", bgcolor: "grey.50", borderBottom: "1px solid", borderColor: "divider" }}>
@@ -182,7 +243,7 @@ const PointRemarkPanel = ({
                 </Typography>
               )}
               {remarks.map((r) => {
-                const isMine = currentUserId != null && String(r.submittedBy) === String(currentUserId);
+                const isMine = r.isMine ?? (currentUserId != null && String(r.submittedBy) === String(currentUserId));
                 return (
                   <Box
                     key={r.id}
@@ -209,10 +270,21 @@ const PointRemarkPanel = ({
                         size="small"
                         color={isMine ? "primary" : "default"}
                         variant="outlined"
-                        label={`${r.submitter?.firstName || ""} ${r.submitter?.lastName || r.submitter?.username || ""}`.trim()}
+                        label={
+                          r.submittedByName ||
+                          `${r.submitter?.firstName || ""} ${r.submitter?.lastName || r.submitter?.username || ""}`.trim()
+                        }
                         sx={{ height: 24, fontSize: "0.75rem", fontWeight: 600, bgcolor: "white" }}
                       />
                       {isMine && <Chip size="small" label="Your remark" sx={{ height: 24, fontSize: "0.7rem" }} />}
+                      {r.submittedAt && (
+                        <Chip
+                          size="small"
+                          variant="outlined"
+                          label={new Date(r.submittedAt).toLocaleString()}
+                          sx={{ height: 24, fontSize: "0.7rem", bgcolor: "white" }}
+                        />
+                      )}
                     </Box>
                   </Box>
                 );

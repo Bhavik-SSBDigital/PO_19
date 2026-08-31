@@ -135,11 +135,14 @@ const getSeverityColor = (severity) => {
 //
 // This table shows ONLY line-item-level checks (searchData.results - the
 // 10 line-level points). It intentionally shows NOTHING header-level -
-// header-level points (7, 8, 9, 11, 12, 13, 14, 15, 19) belong to
-// PoHeaderChecksPanel, rendered by the PARENT page (search-audit-data's
-// index.jsx), not here. This keeps the two systems visually and
-// structurally separate, per design: a line item's results table is pure
-// line-item detail, full stop.
+// header-level points belong to PoHeaderChecksPanel, rendered by the
+// PARENT page, not here.
+//
+// Buyer Remarks column: PointRemarkPanel is seeded with `row.buyerRemarks`
+// (already embedded + visibility-filtered by the backend on the search
+// response), so the remark count/preview is correct on first paint - no
+// click-to-reveal delay, and no separate fetch needed just to know a
+// remark exists.
 const AuditResults = ({ searchData }) => {
   // Who's logged in.
   const role = localStorage.getItem("role");
@@ -260,22 +263,22 @@ const AuditResults = ({ searchData }) => {
           <TableHead sx={{ bgcolor: "#f5f5f5" }}>
             <TableRow>
               <TableCell sx={{ fontWeight: 600, width: "5%" }}>Pt #</TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "22%" }}>
+              <TableCell sx={{ fontWeight: 600, width: "20%" }}>
                 Title & Summary
               </TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "23%" }}>
+              <TableCell sx={{ fontWeight: 600, width: "20%" }}>
                 Logic
               </TableCell>
               <TableCell sx={{ fontWeight: 600, width: "7%" }}>
                 Severity
               </TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "11%" }}>
+              <TableCell sx={{ fontWeight: 600, width: "10%" }}>
                 Status
               </TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "13%" }}>
+              <TableCell sx={{ fontWeight: 600, width: "12%" }}>
                 System Remarks
               </TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "19%" }}>
+              <TableCell sx={{ fontWeight: 600, width: "26%" }}>
                 Buyer Remarks
               </TableCell>
             </TableRow>
@@ -348,6 +351,7 @@ const AuditResults = ({ searchData }) => {
                       isAdmin={isAdmin}
                       isProcurementManager={isProcurementManager}
                       locked={locked}
+                      initialRemarks={row.buyerRemarks}
                       compact
                     />
                   ) : (

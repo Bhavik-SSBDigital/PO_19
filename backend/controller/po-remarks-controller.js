@@ -8,7 +8,9 @@ const SUBMITTER_SELECT = {
   lastName: true,
 };
 
-// VIEW access — who can see remarks on this line item at all.
+// VIEW access — who can see remarks on this line item at all (used as a
+// coarse "is this PO even in your world" gate before the finer per-remark
+// filter in getPoRemarks is applied).
 function canAccessAuditResult(user, auditResult) {
   if (user.isAdmin || user.isProcurementManager) return true;
   if (user.isBuyer) {
@@ -178,6 +180,17 @@ export const updatePoRemark = async (req, res) => {
   }
 };
 
+/**
+ * POST /po-remarks/search
+ *
+ * Visibility rule:
+ *   - Admin / Procurement Manager -> see every remark scoped to the
+ *     requested line item / PO.
+ *   - Buyer -> sees ONLY the remarks THEY personally submitted. Being in
+ *     the same purchasing group as the line item is still required to
+ *     view the resource at all (canAccessAuditResult), but no longer
+ *     grants visibility into a colleague's remark text.
+ */
 export const getPoRemarks = async (req, res) => {
   try {
     const user = req.user || {};
@@ -223,6 +236,12 @@ export const getPoRemarks = async (req, res) => {
 
     if (pointNo !== undefined && pointNo !== null && pointNo !== "") {
       where.pointNo = Number(pointNo);
+    }
+
+    // Buyer -> restrict to remarks they authored themselves.
+    // Admin / Procurement Manager -> unrestricted.
+    if (user.isBuyer && !(user.isAdmin || user.isProcurementManager)) {
+      where.submittedBy = user.id || user.userId;
     }
 
     const remarks = await prisma.poRemark.findMany({

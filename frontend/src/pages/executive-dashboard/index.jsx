@@ -550,6 +550,22 @@ const ExecutiveDashboard = () => {
   const openHeaderKpiDrilldown = (dimension, title) =>
     setHeaderKpiDrilldown({ dimension, title });
 
+  // `mode` comes from PoWiseExceptionsTable's row menu: "newtab",
+  // "breakdown", or "modal" ("View First Line Item Details").
+  //  - "newtab"    -> open the full search page for the PO's first line
+  //                   item, unchanged.
+  //  - "breakdown" -> FIXED: previously this fell through to the same
+  //                   branch as a plain row click (always the first line
+  //                   item's preview) - the "View Line Item Breakdown"
+  //                   menu entry looked like it did nothing different.
+  //                   It now opens the shared preview dialog scoped to
+  //                   just the PO number (no line item), which renders
+  //                   the PO-header view - including the full Line Items
+  //                   breakdown table (every line item, its
+  //                   exception/closed status, and a one-click way to
+  //                   jump into any of them).
+  //  - anything else ("modal") -> unchanged: preview the PO's first line
+  //                   item directly.
   const handleRowAction = (row, mode) => {
     if (!row) return;
     const lineItem = getFirstLineItem(row);
@@ -559,6 +575,8 @@ const ExecutiveDashboard = () => {
         "_blank",
         "noopener,noreferrer",
       );
+    } else if (mode === "breakdown") {
+      setPoPreview({ poNumber: row.poNumber });
     } else {
       setPoPreview({ poNumber: row.poNumber, lineItem });
     }

@@ -30,7 +30,219 @@ Output:
     <rc-json>       : unchanged - RC Overlap / point 20.
 
 ===============================================================================
-CHANGELOG - THIS REVISION (point renumbering, per client request)
+CHANGELOG - THIS REVISION (Point 15 formula rewrite + Point 9/16 aggregate
+fix, per client request against the "before_after_verification" workbook)
+===============================================================================
+
+  Client supplied a manually-verified "before/after" workbook with a
+  ground-truth Verified/Not-Verified column for a sample of PO lines on
+  points #9 and #16, plus an explicit formula + worked examples for point
+  #15. This script was checked line-by-line against that ground truth
+  (all 14 manually-verified point #9 rows and the 1 manually-verified
+  point #16 row now match exactly - see verification notes below each
+  change). Three changes were required:
+
+  1. POINT #15 (PO Qty vs PR Qty) - RULE REPLACED, not just re-tuned.
+     The old rule compared a CUMULATIVE PO quantity (summed across every
+     live PO raised against the same PR line) to the PR's quantity, with
+     tolerance applied only to the overage. The client's actual rule is
+     much simpler and is NOT cumulative - it is a straight per-PO-line
+     comparison of that line's own PO Qty against that line's own linked
+     PR Qty:
+
+         PO Quantity <= PR Quantity <= PO Quantity x (1 + Overdelivery Tolerance % / 100)
+
+     i.e. the PR quantity must sit between the PO quantity (no shortfall
+     allowed - PO qty may never exceed PR qty) and the PO quantity plus
+     the line's Overdelivery Tolerance % (no more than that much extra
+     PR quantity is tolerated). Confirmed against the client's worked
+     example: PO Qty 1,000 / Overdelivery Tolerance 5% (=50 units) ->
+     allowed PR range 1,000-1,050. PR 1,020 -> Verified (within ceiling).
+     PR 1,060 -> Not Verified (exceeds the 5% buffer). PR 950 -> Not
+     Verified (PO qty cannot exceed PR qty).
+     FIX: rule_06_quantity_control rewritten to do a direct per-line
+     comparison of "PO Qty." vs "PR Qty." on the SAME row, bounded by
+     "Overdelivery Tolerance Limit" %. No PR-level cumulative aggregation
+     across multiple POs is performed any more - ctx["pr_cumulative_po_qty"]
+     and the accumulator that built it in build_context() have been
+     removed as dead code. "Under Delivery tolerance" is no longer
+     consulted for this rule (the client's formula only references
+     Overdelivery Tolerance) - if "Overdelivery Tolerance Limit" is blank,
+     the rule now falls back to 0% and logs an assumption, instead of
+     silently borrowing the Under-Delivery percentage as before.
+
+  2. POINT #9 (Multiple POs to same vendor/date/plant/purchase-group) -
+     TWO bugs found and fixed against the client's 14 manually-verified
+     rows (all 14 now match; see test evidence in PR/commit notes):
+
+       a) WRONG DATE COLUMN: the rule grouped on "PO Created date", but
+          the client's "Purchasing Date" is "PO Date(Doc date)" - a
+          different column that can differ from PO Created date by a day
+          or more (e.g. PO 4500491648 vs PO 4500491587: same vendor/
+          plant/purchase-group and the SAME "PO Created date"
+          (2026-04-04), but a DIFFERENT "PO Date(Doc date)" (2026-04-04
+          vs 2026-04-03) - the client's ground truth says these are
+          correctly Verified/not-a-duplicate, which only lines up with
+          "PO Date(Doc date)" as the comparison field, not "PO Created
+          date").
+          FIX: point #9's grouping key now uses "PO Date(Doc date)"
+          (new constant PURCHASING_DATE_COLUMN) instead of "PO Created
+          date". "PO Date(Doc date)" was added to PO_DATE_COLUMNS so it
+          gets the same SAP-date normalization as the other date columns
+          when the input is a direct .xlsx export.
+
+       b) GLOBAL EXCLUSION WAS WRONGLY APPLIED TO THIS AGGREGATE: last
+          revision's fix intentionally made same_day_groups (and
+          vendor_material_tax, see #3 below) skip Deletion indicator='L'
+          / Returns Item='X' rows when aggregating, on the theory that a
+          cancelled/returned line shouldn't count as a "real" duplicate
+          PO. The client's ground truth proves this is wrong for point
+          #9: e.g. PO 4500492165 vs PO 4500492159 (BOTH of 4500492159's
+          lines are Deletion indicator='L') - client's ground truth is
+          still Not Verified. PO 4500493355 vs PO 4500493343 (both
+          4500493343 lines are Returns Item='X') - still Not Verified.
+          The duplicate-PO-creation behaviour is real and worth flagging
+          even if one of the two POs was later cancelled or returned -
+          the audit point is about the buyer's *creation* pattern, not
+          the PO's current status.
+          FIX: same_day_groups-equivalent aggregation for point #9 no
+          longer skips excluded rows - ALL rows (including Deletion
+          indicator='L' / Returns Item='X') now contribute to the
+          duplicate-PO comparison. This does NOT change the excluded
+          row's OWN result, which is still forced to Not Applicable by
+          evaluate_rule()'s central dispatch regardless of this change -
+          it only changes what excluded rows contribute to OTHER, live
+          rows' comparisons (same distinction as last revision's fix,
+          just reaching the opposite conclusion once checked against
+          real ground truth).
+
+       c) REMARKS REWRITTEN per explicit client wording: Not Verified
+          now states plainly that all five parameters (Vendor, Purchasing
+          Group, Plant, Purchasing Date, RFQ no.) are the same. Verified
+          now names which specific parameter differs (RFQ number is
+          different / Purchasing Date is different / etc.) instead of
+          the old generic "no other PO matches" text, by comparing
+          against other POs that already share Vendor + Purchasing Group
+          + Plant (the natural "this looks like it could be the same
+          purchasing event" population) and reporting whether the
+          differentiator is Purchasing Date and/or RFQ no. When no other
+          PO shares Vendor+Purchasing Group+Plant at all, the remark
+          says so generically instead of manufacturing a claim about a
+          field that was never actually compared against anything close.
+
+       d) RFQ no. (5th dimension, added two revisions ago) is unchanged
+          in behaviour and caveat: RFQ_NO_COLUMN ("RFQ no.") still does
+          not exist in the real POAUDIT extract as of this revision (AIA
+          IT has not added it yet), so it still resolves to "" for every
+          row and does not currently affect grouping. No code changes
+          will be needed once the column is added under this name.
+
+  3. POINT #16 (Vendor-Material tax code consistency) - SAME bug as #9(b):
+     vendor_material_tax was skipping excluded rows when aggregating,
+     which is wrong per the client's ground truth: PO 4500493241 (tax
+     code 01, live) vs PO 4500492489 (tax code 03, Returns Item='X') for
+     the same vendor/material - client's ground truth is Not Verified
+     (the two tax codes ARE inconsistent), which only holds if the
+     Returns-Item line still counts towards the tax-code set being
+     compared.
+     FIX: vendor_material_tax aggregation no longer skips excluded rows
+     either - same reasoning and same non-impact on the excluded row's
+     own (still Not Applicable) result as #9(b) above.
+
+  VERIFICATION: engine.py was run against the client's real POAUDIT.csv /
+  POAUDITCND.csv / POAUDITRC.csv and the point #9 / point #16 outputs for
+  every PO+line pair present in the client's manually-verified
+  "before_after_verification" workbook were diffed against that
+  workbook's Verified/Not-Verified column - all 14 point #9 rows and the
+  1 point #16 row match after this fix (none matched before it, on
+  either the "Before" or the previous "After" column in that workbook).
+
+===============================================================================
+CHANGELOG - PRIOR REVISION (5 engine-level fixes, per client request against
+PO 4500493194 and follow-up instructions)
+===============================================================================
+
+  1. POINT #15 (PO Qty vs PR Qty tolerance) - cumulative PO quantity was
+     counting DELETED/RETURNED PO lines:
+     build_context()'s pr_cumulative_po_qty accumulator summed "PO Qty."
+     for every row sharing a (Purchase Req, PR line Item no.) key, with NO
+     check for _is_excluded_line() first. A cancelled PO line (Deletion
+     indicator = 'L') still added its quantity to the pool.
+     Example: PO 4500493194-00010 (PO Qty 1000) is the only LIVE PO
+     against PR 6900288564/00010 (PR Qty 1000) - it should be exactly
+     Verified. But PO 4500493244-00020 (Deletion indicator = 'L', PO Qty
+     1000) against the SAME PR line was still being added, making the
+     cumulative total 2000 vs a PR Qty of 1000 - a false 100% overage at
+     0% tolerance, so PO 4500493194-00010 came back Not Verified.
+     FIX: pr_cumulative_po_qty now skips any row where _is_excluded_line()
+     is True, matching the exclusion that already applies everywhere else.
+     SUPERSEDED THIS REVISION: point #15 no longer uses a cumulative
+     accumulator at all - see item 1 in the CHANGELOG section above. This
+     entry is kept for history only.
+
+  2. POINT #9 (Multiple POs to same vendor/date/plant/purchase-group) -
+     same_day_groups had the identical class of bug: it aggregated PO
+     numbers into the same_day_groups dict for EVERY row, including
+     deleted/returned lines, so a cancelled PO could still make an
+     otherwise-clean PO look like a same-day duplicate.
+     FIX: same_day_groups now also skips excluded rows when aggregating.
+     SUPERSEDED THIS REVISION: proven wrong against client ground truth -
+     see item 2(b) in the CHANGELOG section above. This entry is kept for
+     history only.
+
+  3. POINT #16 (Vendor-Material tax code consistency) - vendor_material_tax
+     had the same bug: tax codes from deleted/returned lines were being
+     folded into the per-(vendor, material) tax-code set, which could
+     make a vendor/material combination look inconsistent (or hide a real
+     inconsistency) based on a line that shouldn't count at all.
+     FIX: vendor_material_tax now also skips excluded rows when
+     aggregating.
+     SUPERSEDED THIS REVISION: proven wrong against client ground truth -
+     see item 3 in the CHANGELOG section above. This entry is kept for
+     history only.
+
+     NOTE ON 1-3: all three accumulators live in build_context() and are
+     built from the SAME po_rows loop; the fix in each case is the same
+     shape - add `and not _is_excluded_line(row)` to the row's admission
+     check before it contributes to the accumulator. This does NOT change
+     what evaluate_rule() returns for an excluded row itself (still a
+     uniform Not Applicable via the existing central dispatch) - it only
+     stops excluded rows from POLLUTING the aggregates that OTHER, live
+     rows get compared against.
+
+  4. POINTS #6/#7 (EYW inco-term requires freight condition / EXW-FCA must
+     NOT carry freight condition) - added ZFB5 as a recognised freight
+     condition type, per client request. FREIGHT_CONDITION_TYPES was
+     {ZBF1, ZBF2, ZRA3, ZRB3, ZRE3}; now also includes ZFB5. This is the
+     only set _has_freight_condition() checks against, so both rules pick
+     the change up automatically.
+
+  5. POINT #9 (Multiple POs to same vendor/date/plant/purchase-group) -
+     added RFQ no. as a 5th dimension of the duplicate-PO grouping key,
+     per client request ("Same RFQ no. logic needs to be added for point
+     no. 9"). Two POs are now only flagged as same-day duplicates if they
+     ALSO share the same RFQ no., in addition to vendor/date/plant/
+     purchase-group.
+     IMPORTANT CAVEAT: the client's own instruction says the RFQ no.
+     column still needs to be ADDED to the POAUDIT extract by AIA IT - it
+     does not exist yet as of this revision. RFQ_NO_COLUMN below is an
+     ASSUMED header name ("RFQ no.") and must be confirmed against the
+     real extract once AIA IT adds it. Until the column exists, s(row,
+     RFQ_NO_COLUMN) resolves to "" for every row (same fallback behavior
+     as any other unknown column - see s() below), so every PO's RFQ
+     component is equal and point #9 behaves EXACTLY as it did before
+     this change (grouped by vendor+date+plant+purchase-group only). No
+     code changes will be needed on this side once the column shows up in
+     the extract with the assumed name - if AIA IT uses a different
+     header, only RFQ_NO_COLUMN needs updating.
+     Implementation note: the grouping key was previously built separately
+     (and identically, by hand) in both build_context() and
+     rule_19_multiple_po_same_day(). Both now call one shared
+     _same_day_key(row) helper so the two can never drift out of sync
+     again.
+
+===============================================================================
+CHANGELOG - PRIOR REVISION (point renumbering, per client request)
 ===============================================================================
 
   Point numbers were reassigned so HEADER-LEVEL points are contiguous 1-9
@@ -141,10 +353,25 @@ PO 4500491455 line 00100) - unchanged, kept for history
      FIX: OVER_DELIVERY_TOLERANCE_COLUMN = "Overdelivery Tolerance Limit".
      The client-confirmed Overdelivery Tolerance Limit is now genuinely
      used for the over-delivery side of this rule, as originally intended.
+     SUPERSEDED THIS REVISION: point #15 no longer does a tolerance-banded
+     comparison against a cumulative quantity - see item 1 in the
+     CHANGELOG section above. This entry is kept for history only.
 
   5. (Retained, unaffected by either pass) Points #1-9 are HEADER-LEVEL;
      points #10-19 are LINE-LEVEL. See HEADER_LEVEL_RULE_NOS / LINE_ONLY_RULES
      below.
+
+===============================================================================
+OUT OF SCOPE FOR THIS FILE (tracked here for visibility only - NOT
+implemented in engine.py, see accompanying Node/Prisma + frontend changes)
+===============================================================================
+
+  - Buyer remarks must propagate and be visible at manager level: this is
+    PoRemark / PoHeaderRemark (schema.prisma) plus the Node API/UI layer.
+    engine.py never reads or writes remarks - it only produces the
+    Verified/Not Verified/NA/Data Missing results those remarks attach to.
+  - "Exception PO" graph and trend: dashboard/reporting work on top of
+    AuditResult / PoHeaderResult. engine.py has no charting responsibility.
 
 Usage:
     python3 engine.py --poaudit POAUDIT_x.csv --cnd POAUDITCND_x.csv \
@@ -172,7 +399,8 @@ MANUAL = "Data Missing"
 # ---------------------------------------------------------------------------
 # Config / master lists taken directly from the rule sheet (Final sheet.csv)
 # ---------------------------------------------------------------------------
-FREIGHT_CONDITION_TYPES = {"ZBF1", "ZBF2", "ZRA3", "ZRB3", "ZRE3"}
+# ZFB5 added this revision (points #6/#7) per client request - see CHANGELOG.
+FREIGHT_CONDITION_TYPES = {"ZBF1", "ZBF2", "ZRA3", "ZRB3", "ZRE3", "ZFB5"}
 DWS_APPROVERS = {"KKB", "SRS", "PJP", "DAULAT", "NHV", "CVS"}
 
 # --- Rule support: MSME payment terms (new #4, old #11) --------------------
@@ -219,8 +447,7 @@ EXCLUDED_LINE_REMARK = (
 # This column already exists in the extract under this exact name
 # (confirmed against POAUDIT.csv) - it was NOT still "to be added" as
 # previously assumed. Wires the over-delivery side of this rule to the
-# client-confirmed Overdelivery Tolerance Limit instead of silently
-# falling back to Under Delivery tolerance for every line.
+# client-confirmed Overdelivery Tolerance Limit.
 OVER_DELIVERY_TOLERANCE_COLUMN = "Overdelivery Tolerance Limit"
 
 # --- Rules support: PO types requiring manual check (new #6/#7, old #13/#14)
@@ -241,6 +468,23 @@ GST_STATE_CODE_MAP = {
     "33": "TAMIL NADU", "34": "PUDUCHERRY", "35": "ANDAMAN AND NICOBAR ISLANDS",
     "36": "TELANGANA", "37": "ANDHRA PRADESH", "38": "LADAKH",
 }
+
+# --- Rule support: point #9 grouping dimensions -----------------------------
+# "Purchasing Date" for point #9 is "PO Date(Doc date)", NOT "PO Created
+# date" - confirmed this revision against the client's ground truth (see
+# CHANGELOG item 2(a) above). PO_DATE_COLUMNS below includes it so it gets
+# the same normalize_sap_date() treatment as the other date columns when
+# the input file is a direct .xlsx export.
+PURCHASING_DATE_COLUMN = "PO Date(Doc date)"
+
+# ASSUMPTION - the client has confirmed an RFQ no. column still needs to be
+# ADDED to the POAUDIT extract by AIA IT; it does not exist yet. This is the
+# ASSUMED header name it will be added under - confirm/update once AIA IT
+# actually adds the column. Until then s(row, RFQ_NO_COLUMN) resolves to ""
+# for every row (same fallback as any other unknown column), so point #9's
+# grouping is completely unaffected by this dimension until the real column
+# shows up in the extract.
+RFQ_NO_COLUMN = "RFQ no."
 
 
 def _state_from_gstin(gstin_raw):
@@ -398,7 +642,11 @@ def normalize_tax_code(value):
 EXCEL_EXTENSIONS = {".xlsx", ".xlsm", ".xls"}
 CSV_EXTENSIONS = {".csv", ".txt"}
 
-PO_DATE_COLUMNS = ("PO Created date", "PR Creation date", "Delivery Date")
+# "PO Date(Doc date)" added this revision - point #9's "Purchasing Date"
+# uses this column, not "PO Created date" - see CHANGELOG item 2(a). It
+# needs the same SAP-date normalization treatment when the source file is
+# a direct .xlsx export.
+PO_DATE_COLUMNS = ("PO Created date", "PO Date(Doc date)", "PR Creation date", "Delivery Date")
 RC_DATE_COLUMNS = ("RC valid from", "RC valid to")
 
 
@@ -563,10 +811,68 @@ def evaluate_rule(rule_no, fn, row, ctx):
     uniform Not Applicable for EVERY rule without calling the rule
     function at all - this is what makes the exclusion apply identically
     across all 19 points instead of being reimplemented per rule.
+
+    NOTE: this ONLY governs an excluded row's OWN result. It has nothing
+    to do with whether an excluded row's data is still counted when
+    building the cross-row aggregates other (live) rows get compared
+    against in build_context() - see the point #9 / #16 CHANGELOG entries
+    above for why those two aggregates deliberately do NOT drop excluded
+    rows (point #15 no longer uses a cross-row aggregate at all).
     """
     if _is_excluded_line(row):
         return NA, EXCLUDED_LINE_REMARK
     return fn(row, ctx)
+
+
+# ---------------------------------------------------------------------------
+# Point #9 grouping helpers (Multiple POs to same vendor/purchase-group/
+# plant/Purchasing Date/RFQ). Used by BOTH build_context() (to build the
+# aggregates) and rule_19_multiple_po_same_day() (to look a PO up in them)
+# so the two can never define a key differently and silently disagree.
+#
+# Two keys are used:
+#   - _po9_full_key(row):  all five dimensions - an exact match here means
+#                           Not Verified ("all five parameters are the same").
+#   - _po9_core_key(row):  Vendor + Purchasing Group + Plant only - the
+#                           natural "this could plausibly be the same
+#                           purchasing event" population used to explain a
+#                           Verified result (which single remaining
+#                           dimension - Purchasing Date and/or RFQ no. -
+#                           is what actually differs).
+#
+# "Purchasing Date" = PURCHASING_DATE_COLUMN = "PO Date(Doc date)", NOT
+# "PO Created date" - see CHANGELOG item 2(a).
+#
+# Neither key filters out excluded (Deletion indicator='L' / Returns
+# Item='X') rows - see CHANGELOG item 2(b) for why that exclusion was
+# proven wrong for this specific point against the client's ground truth.
+# An excluded row's OWN result is still forced to Not Applicable
+# separately, by evaluate_rule() above.
+# ---------------------------------------------------------------------------
+def _po9_full_key(row):
+    return (
+        s(row, "Vendor Code"),
+        s(row, "Purchase Group"),
+        s(row, "Plant"),
+        s(row, PURCHASING_DATE_COLUMN),
+        s(row, RFQ_NO_COLUMN),
+    )
+
+
+def _po9_core_key(row):
+    return (
+        s(row, "Vendor Code"),
+        s(row, "Purchase Group"),
+        s(row, "Plant"),
+    )
+
+
+def _format_po_list(pos, limit=5):
+    pos = sorted(pos)
+    shown = ", ".join(pos[:limit])
+    if len(pos) > limit:
+        shown += f", and {len(pos) - limit} more"
+    return shown
 
 
 # ---------------------------------------------------------------------------
@@ -644,34 +950,67 @@ def rule_05_delivery_after_pr(row, ctx):
 
 
 def rule_06_quantity_control(row, ctx):
+    """
+    POINT #15 - REWRITTEN THIS REVISION (see CHANGELOG item 1).
+
+    Client's formula (confirmed with worked examples):
+
+        PO Quantity <= PR Quantity <= PO Quantity x (1 + Overdelivery Tolerance % / 100)
+
+    This is a direct, single-line comparison of THIS row's own "PO Qty."
+    against THIS row's own linked "PR Qty." - there is no cross-PO
+    cumulative aggregation any more (ctx["pr_cumulative_po_qty"] and its
+    accumulator in build_context() have been removed as dead code).
+
+    - PR Qty < PO Qty            -> Not Verified (PO qty cannot exceed PR qty)
+    - PO Qty <= PR Qty <= ceiling -> Verified
+    - PR Qty > ceiling            -> Not Verified (exceeds the overdelivery buffer)
+
+    where ceiling = PO Qty x (1 + Overdelivery Tolerance % / 100).
+    "Under Delivery tolerance" is intentionally NOT consulted for this
+    rule any more - the client's formula only references Overdelivery
+    Tolerance. If "Overdelivery Tolerance Limit" is blank, this falls
+    back to 0% (no allowed buffer) and logs an assumption.
+    """
     po_type = s(row, "PO Type")
     if po_type in {"ZSER", "ZCSR"}:
         return NA, f"Not applicable for PO type {po_type}"
-    purchase_req = s(row, "Purchase Req")
-    pr_line = s(row, "PR line Item no.")
-    pr_qty = parse_sap_number(s(row, "PR Qty."))
-    if not purchase_req or pr_qty is None or pr_qty == 0:
-        return NA, "PR qty not available (no PR line, or unparseable)"
-    cumulative_po_qty = ctx["pr_cumulative_po_qty"].get((purchase_req, pr_line), 0)
-    if cumulative_po_qty <= pr_qty:
-        return VERIFIED, f"Cumulative PO qty ({cumulative_po_qty}) across all POs against this PR is within PR qty ({pr_qty})"
 
-    under_tolerance_pct = parse_sap_number(s(row, "Under Delivery tolerance")) or 0
+    purchase_req = s(row, "Purchase Req")
+    if not purchase_req:
+        return NA, "No PR assigned to this PO line"
+
+    po_qty = parse_sap_number(s(row, "PO Qty."))
+    pr_qty = parse_sap_number(s(row, "PR Qty."))
+    if po_qty is None or pr_qty is None:
+        return MANUAL, "PO Qty. and/or PR Qty. missing or unparseable"
+
     over_tolerance_raw = s(row, OVER_DELIVERY_TOLERANCE_COLUMN)
-    if over_tolerance_raw:
-        tolerance_pct = parse_sap_number(over_tolerance_raw) or under_tolerance_pct
-    else:
-        tolerance_pct = under_tolerance_pct
+    tolerance_pct = parse_sap_number(over_tolerance_raw)
+    if tolerance_pct is None:
+        tolerance_pct = 0
         log_assumption(
             15,
-            f"'{OVER_DELIVERY_TOLERANCE_COLUMN}' was blank for this line - fell back to "
-            f"'Under Delivery tolerance' for the over-delivery check.",
+            f"'{OVER_DELIVERY_TOLERANCE_COLUMN}' was blank for this line - treated as 0% "
+            f"Overdelivery Tolerance (no buffer above PO Qty allowed).",
         )
 
-    excess_pct = (cumulative_po_qty - pr_qty) / pr_qty * 100
-    if excess_pct <= tolerance_pct:
-        return VERIFIED, f"Cumulative PO qty exceeds PR qty by {excess_pct:.1f}% (across all partial POs against this PR), within tolerance {tolerance_pct}%"
-    return NOT_VERIFIED, f"Cumulative PO qty exceeds PR qty by {excess_pct:.1f}% (across all partial POs against this PR), tolerance {tolerance_pct}%"
+    ceiling = po_qty * (1 + tolerance_pct / 100)
+
+    if pr_qty < po_qty:
+        return NOT_VERIFIED, (
+            f"PR Qty ({pr_qty}) is less than PO Qty ({po_qty}) - PO quantity cannot "
+            f"exceed PR quantity"
+        )
+    if pr_qty <= ceiling:
+        return VERIFIED, (
+            f"PR Qty ({pr_qty}) is within the allowed range: PO Qty ({po_qty}) <= PR Qty "
+            f"<= PO Qty + Overdelivery Tolerance {tolerance_pct}% ({ceiling})"
+        )
+    return NOT_VERIFIED, (
+        f"PR Qty ({pr_qty}) exceeds PO Qty ({po_qty}) + Overdelivery Tolerance "
+        f"{tolerance_pct}% ({ceiling})"
+    )
 
 
 def rule_07_rc_released(row, ctx):
@@ -761,6 +1100,15 @@ def rule_09_tax_logic(row, ctx):
 
 
 def rule_10_vendor_material_tax_consistency(row, ctx):
+    """
+    POINT #16. Aggregation FIX this revision (see CHANGELOG item 3): the
+    vendor_material_tax set built in build_context() no longer skips
+    excluded (Deletion indicator='L' / Returns Item='X') rows - confirmed
+    against the client's ground truth on PO 4500493241 (tax 01, live) vs
+    PO 4500492489 (tax 03, Returns Item='X'), same vendor/material, which
+    the client's manual audit says IS Not Verified (the two tax codes
+    still conflict even though one line was returned).
+    """
     vendor = s(row, "Vendor Code")
     material = s(row, "Material Code")
     tax_codes = ctx["vendor_material_tax"].get((vendor, material), set())
@@ -940,14 +1288,64 @@ def rule_18_lrm_no_l_category(row, ctx):
 
 
 def rule_19_multiple_po_same_day(row, ctx):
-    """HEADER-LEVEL rule (see build_po_header_records) - reports as new point #9."""
+    """
+    HEADER-LEVEL rule (see build_po_header_records) - reports as new point #9.
+
+    REWRITTEN THIS REVISION - see CHANGELOG item 2 for the full rationale
+    and the ground-truth verification (14/14 client-checked rows match).
+
+    Logic:
+      1. Exact match on all five dimensions (Vendor, Purchasing Group,
+         Plant, Purchasing Date = "PO Date(Doc date)", RFQ no.) against
+         >=1 other PO number -> Not Verified, remark states all five
+         parameters are the same and names the other PO(s).
+      2. Otherwise, look among other POs that already share Vendor +
+         Purchasing Group + Plant (the "core" population - the only POs
+         where a difference in Purchasing Date/RFQ is actually a
+         meaningful audit signal) and report which of those two remaining
+         dimensions differs.
+      3. If no other PO shares even Vendor + Purchasing Group + Plant,
+         Verified with a generic "no comparable PO" remark.
+
+    Grouping keys come from _po9_full_key()/_po9_core_key() (shared with
+    build_context()) so this can never disagree with how the aggregates
+    were built. Neither key filters out excluded rows for this point -
+    see CHANGELOG item 2(b).
+    """
     po_number = s(row, "PO number")
-    key = (s(row, "Vendor Code"), s(row, "PO Created date"), s(row, "Plant"), s(row, "Purchase Group"))
-    pos_in_group = ctx["same_day_groups"].get(key, set())
-    if len(pos_in_group) > 1:
-        others = sorted(pos_in_group - {po_number})
-        return NOT_VERIFIED, f"Multiple POs created same day/vendor/plant/group: also see {others}"
-    return VERIFIED, "No other PO matches same vendor/date/plant/purchasing group"
+
+    full_key = _po9_full_key(row)
+    others_full = ctx["po9_full_groups"].get(full_key, set()) - {po_number}
+    if others_full:
+        return NOT_VERIFIED, (
+            f"Same Vendor, Purchasing Group, Plant, Purchasing Date and RFQ no. as "
+            f"PO(s) {_format_po_list(others_full)} - all five parameters are the same"
+        )
+
+    core_key = _po9_core_key(row)
+    others_core = ctx["po9_core_groups"].get(core_key, set()) - {po_number}
+    if not others_core:
+        return VERIFIED, "No other PO found with the same Vendor, Purchasing Group and Plant"
+
+    self_date = s(row, PURCHASING_DATE_COLUMN)
+    self_rfq = s(row, RFQ_NO_COLUMN)
+    rep = ctx["po9_core_rep"]
+
+    rfq_diff = {po for po in others_core if rep.get((core_key, po), (None, None))[1] != self_rfq}
+    date_diff = {po for po in others_core if rep.get((core_key, po), (None, None))[0] != self_date}
+
+    reasons = []
+    if rfq_diff:
+        reasons.append(f"RFQ number is different (also see PO(s) {_format_po_list(rfq_diff)})")
+    if date_diff:
+        reasons.append(f"Purchasing Date is different (also see PO(s) {_format_po_list(date_diff)})")
+
+    if reasons:
+        return VERIFIED, "; ".join(reasons)
+    return VERIFIED, (
+        "No other PO found with the same Vendor, Purchasing Group, Plant, "
+        "Purchasing Date and RFQ no."
+    )
 
 
 def rule_rc_overlap(row, ctx):
@@ -984,15 +1382,15 @@ PO_LINE_RULES = [
     (6, "EYW inco-term requires freight condition", rule_13_eyw_freight_required),
     (7, "EXW/FCA must not have freight condition", rule_14_exw_fca_no_freight),
     (8, "Rate approval by authorised approver", rule_15_rate_approval),
-    (9, "Multiple POs to same vendor/date/plant/purchase-group flagged", rule_19_multiple_po_same_day),
+    (9, "Multiple POs to same Vendor/Purchasing Group/Plant/Purchasing Date/RFQ (all five must match for Not Verified)", rule_19_multiple_po_same_day),
     # ---- LINE-LEVEL (10-19) ----
     (10, "Release Verification (PR released before PO)", rule_01_release_verification),
     (11, "PR assigned to each PO line", rule_02_pr_assigned),
     (12, "PR Creation date within 6 months (180 days) of PO", rule_03_pr_within_6_months),
     (13, "PR date precedes PO date", rule_04_pr_precedes_po),
     (14, "Delivery date after PR date", rule_05_delivery_after_pr),
-    (15, "PO qty vs PR qty (tolerance)", rule_06_quantity_control),
-    (16, "Vendor-Material tax code consistency", rule_10_vendor_material_tax_consistency),
+    (15, "PO Qty <= PR Qty <= PO Qty x (1 + Overdelivery Tolerance %) - per PO line, not cumulative", rule_06_quantity_control),
+    (16, "Vendor-Material tax code consistency (all lines count, including deleted/returned)", rule_10_vendor_material_tax_consistency),
     (17, "Service PO (ZSER) uses Item Cat D + Acct Assignment K", rule_16_zser_item_category),
     (18, "Service PO (ZCSR) uses Item Cat D + Acct Assignment A", rule_17_zcsr_item_category),
     (19, "ZLRM/ZLCP/ZIRM/ZICP must not use Item Cat L + Acct Assignment K", rule_18_lrm_no_l_category),
@@ -1113,10 +1511,29 @@ def build_rc_overlap_records(rc_rows, po_rows):
 
 
 def build_context(po_rows, cnd_by_po, rc_rows):
+    """
+    Builds every cross-row aggregate the rule functions look up via ctx.
+
+    IMPORTANT (this revision):
+      - Point #9's aggregates (po9_full_groups / po9_core_groups /
+        po9_core_rep) and point #16's aggregate (vendor_material_tax) NO
+        LONGER skip excluded (Deletion indicator='L' / Returns Item='X')
+        rows when aggregating - the opposite of last revision's fix. This
+        was proven against the client's ground-truth "before/after"
+        workbook: a cancelled or returned PO/line must still count as a
+        real duplicate-creation event (point #9) or a real conflicting
+        tax code (point #16), even though its OWN result is still forced
+        to Not Applicable by evaluate_rule(). See CHANGELOG items 2(b)
+        and 3 at the top of this file.
+      - Point #15 no longer has an aggregate here at all - it was
+        rewritten to a direct per-line comparison (see rule_06). The old
+        pr_cumulative_po_qty accumulator has been removed.
+    """
     po_material_groups = defaultdict(list)
     vendor_material_tax = defaultdict(set)
-    same_day_groups = defaultdict(set)
-    pr_cumulative_po_qty = defaultdict(float)
+    po9_full_groups = defaultdict(set)
+    po9_core_groups = defaultdict(set)
+    po9_core_rep = {}
     rc_overlaps = {}
 
     by_vendor_material = defaultdict(list)
@@ -1147,28 +1564,51 @@ def build_context(po_rows, cnd_by_po, rc_rows):
     for row in po_rows:
         po_number = s(row, "PO number")
         material = s(row, "Material Code")
+        # po_material_groups intentionally still includes excluded rows:
+        # rule_08_rc_consistency (point #2) needs to see every line
+        # (excluded or not) sharing a PO+Material to detect an
+        # inconsistent RC assignment; evaluate_rule() already forces any
+        # excluded row's OWN result to Not Applicable regardless of what
+        # this group contains, so leaving this one unfiltered is safe and
+        # was not part of the reported bug.
         po_material_groups[(po_number, material)].append(row)
 
+        # Point #16: tax codes from EVERY row (including excluded ones)
+        # feed the per-(vendor, material) tax-code set - see CHANGELOG
+        # item 3.
         vendor = s(row, "Vendor Code")
         tax_code = s(row, "Tax code")
         if vendor and material and tax_code:
             vendor_material_tax[(vendor, material)].add(tax_code)
 
-        key = (vendor, s(row, "PO Created date"), s(row, "Plant"), s(row, "Purchase Group"))
-        same_day_groups[key].add(po_number)
+        # Point #9: every row (including excluded ones) feeds the
+        # duplicate-PO aggregates - see CHANGELOG item 2(b).
+        full_key = _po9_full_key(row)
+        po9_full_groups[full_key].add(po_number)
 
-        purchase_req = s(row, "Purchase Req")
-        pr_line = s(row, "PR line Item no.")
-        if purchase_req:
-            po_qty = parse_sap_number(s(row, "PO Qty.")) or 0
-            pr_cumulative_po_qty[(purchase_req, pr_line)] += po_qty
+        core_key = _po9_core_key(row)
+        po9_core_groups[core_key].add(po_number)
+        po9_core_rep.setdefault(
+            (core_key, po_number),
+            (s(row, PURCHASING_DATE_COLUMN), s(row, RFQ_NO_COLUMN)),
+        )
+
+    log_assumption(
+        9,
+        f"Point #9's RFQ dimension (column '{RFQ_NO_COLUMN}') still does not exist in the "
+        f"POAUDIT extract - the client has confirmed AIA IT still needs to add it. Until it "
+        f"does, every row's RFQ no. resolves to blank, so grouping is effectively driven by "
+        f"Vendor + Purchasing Group + Plant + Purchasing Date (PO Date(Doc date)) only. "
+        f"Confirm the column name (assumed: '{RFQ_NO_COLUMN}') once it is added.",
+    )
 
     return {
         "po_material_groups": po_material_groups,
         "vendor_material_tax": vendor_material_tax,
-        "same_day_groups": same_day_groups,
+        "po9_full_groups": po9_full_groups,
+        "po9_core_groups": po9_core_groups,
+        "po9_core_rep": po9_core_rep,
         "cnd_by_po": cnd_by_po,
-        "pr_cumulative_po_qty": pr_cumulative_po_qty,
         "rc_overlaps": rc_overlaps,
     }
 
@@ -1311,7 +1751,14 @@ def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None, header_
             f"{excluded_count} of {len(po_rows)} in-scope PO line(s) were excluded from "
             f"ALL 19 audit points (marked Not Applicable on every point, line-level and "
             f"header-level alike) because they have Deletion indicator = 'L' and/or "
-            f"Returns Item = 'X'.",
+            f"Returns Item = 'X'. This ONLY affects each such row's OWN result. This "
+            f"revision, these same excluded lines are DELIBERATELY still counted when "
+            f"building the point #9 (duplicate-PO) and point #16 (vendor/material tax "
+            f"consistency) aggregates, i.e. they still affect the results of OTHER, live "
+            f"line items where relevant - confirmed against the client's manually-verified "
+            f"ground truth (see CHANGELOG items 2(b) and 3). Point #15 no longer uses a "
+            f"cross-row aggregate at all, so exclusion there simply means the excluded "
+            f"line's own result is Not Applicable, with no effect on any other line.",
         )
 
     ctx = build_context(po_rows, cnd_by_po, rc_rows)

@@ -8,6 +8,7 @@ import {
 import CloseIcon from "@mui/icons-material/Close";
 import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
 import VisibilityRoundedIcon from "@mui/icons-material/VisibilityRounded";
+import FactCheckRoundedIcon from "@mui/icons-material/FactCheckRounded";
 import { post } from "utils/axiosApi";
 import PoDetailsPreviewDialog from "./PoDetailsPreviewDialog";
 import { buildSearchUrl } from "utils/po-link-utils";
@@ -33,9 +34,10 @@ const DrilldownDialog = ({ drilldown, appliedFilters, onClose, onDataChanged }) 
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
 
-  // Row-level "Open in New Tab" / "View Details Here" facility - same one
-  // the Executive Dashboard's PO-Wise Exceptions table has, now on every
-  // drilldown table too, not only PO-Wise Exceptions.
+  // Row-level "Open in New Tab" / "View Details Here" / "View Line Item
+  // Breakdown" facility - same one the Executive Dashboard's PO-Wise
+  // Exceptions table has, now on every drilldown table too, not only
+  // PO-Wise Exceptions.
   const [menuAnchor, setMenuAnchor] = useState(null);
   const [menuRow, setMenuRow] = useState(null);
   const [poPreview, setPoPreview] = useState(null);
@@ -85,10 +87,23 @@ const DrilldownDialog = ({ drilldown, appliedFilters, onClose, onDataChanged }) 
     setMenuRow(null);
   };
 
+  // `mode`:
+  //  - "newtab"    -> open the full search page for this exact line item,
+  //                   unchanged.
+  //  - "breakdown" -> NEW: open the shared preview dialog scoped to just
+  //                   the PO number (no line item), landing on the
+  //                   PO-header view - which now includes the full Line
+  //                   Items breakdown table (every line item of this PO,
+  //                   its exception/closed status, and a one-click way to
+  //                   jump into any of them, including the one this row
+  //                   itself represents).
+  //  - anything else ("modal") -> unchanged: preview this exact line item.
   const handleRowAction = (row, mode) => {
     if (!row) return;
     if (mode === "newtab") {
       window.open(buildSearchUrl(row.po_number, row.lineItem), "_blank", "noopener,noreferrer");
+    } else if (mode === "breakdown") {
+      setPoPreview({ poNumber: row.po_number });
     } else {
       setPoPreview({ poNumber: row.po_number, lineItem: row.lineItem });
     }
@@ -200,6 +215,10 @@ const DrilldownDialog = ({ drilldown, appliedFilters, onClose, onDataChanged }) 
       </DialogContent>
 
       <Menu anchorEl={menuAnchor} open={Boolean(menuAnchor)} onClose={closeRowMenu}>
+        <MenuItem onClick={() => { handleRowAction(menuRow, "breakdown"); closeRowMenu(); }}>
+          <FactCheckRoundedIcon fontSize="small" sx={{ mr: 1.25, color: "text.secondary" }} />
+          View Line Item Breakdown
+        </MenuItem>
         <MenuItem onClick={() => { handleRowAction(menuRow, "newtab"); closeRowMenu(); }}>
           <OpenInNewRoundedIcon fontSize="small" sx={{ mr: 1.25, color: "text.secondary" }} />
           Open in New Tab

@@ -8,22 +8,25 @@ import {
 } from "../utility/severity.js";
 import {
   getVendorName,
-  getVendorInfo, // Added VendorInfo import to retrieve GSTIN here too
+  getVendorInfo,
   getPlantName,
   getPurchaseGroupName,
   getPaymentTermDescription,
   getPoTypeName,
 } from "../utility/master-data.js";
-// CHANGED: point content (title/summary/logic) now comes from the DB, not
-// point-reference.js - see utility/point-definitions.js. This is the same
-// swap already made in dashboard-controller.js and
-// risk-categorization-controller.js.
 import {
   ensurePointDefinitionsLoaded,
   getPointDefinition,
 } from "../utility/point-definitions.js";
 import { getHeaderForPo, getHeadersForPos } from "../utility/header-results.js";
 import { getPoHeaderSummary } from "./po-header-controller.js";
+
+const REMARK_SUBMITTER_SELECT = {
+  id: true,
+  username: true,
+  firstName: true,
+  lastName: true,
+};
 
 function buildWhere(body = {}) {
   const and = [{ type: "PO" }];
@@ -128,7 +131,7 @@ const ROW_SELECT = {
   payment_term: true,
   results: true,
   tax_code: true,
-  GSTInOfVendor: true, // Explicitly select to avoid undefined
+  GSTInOfVendor: true,
 };
 
 const lineItemOf = (row) => {
@@ -142,21 +145,99 @@ const lineItemOf = (row) => {
 const uniqueKeyOf = (row) =>
   row.po_material_number || `${row.po_number}-${lineItemOf(row) ?? row.id}`;
 
+// ---------------------------------------------------------------------------
+// Buyer-remark enrichment
+// ---------------------------------------------------------------------------
+// Visibility rule: Admin / Procurement Manager see every remark on a line
+// item. A Buyer sees ONLY the remarks THEY personally submitted. Anyone
+// else sees nothing. This is intentionally stricter than "same purchasing
+// group" — a remark is private to its author until a manager looks at it.
+function remarkVisibleTo(user, remark) {
+  if (!user) return false;
+  if (user.isAdmin || user.isProcurementManager) return true;
+  if (user.isBuyer) {
+    const userId = user.id || user.userId;
+    return userId != null && String(remark.submittedBy) === String(userId);
+  }
+  return false;
+}
+
+function formatRemark(remark, user) {
+  const userId = user?.id || user?.userId;
+  return {
+    id: remark.id,
+    pointNo: remark.pointNo,
+    remark: remark.remark,
+    submittedBy: remark.submittedBy,
+    submittedByName:
+      [remark.submitter?.firstName, remark.submitter?.lastName]
+        .filter(Boolean)
+        .join(" ") ||
+      remark.submitter?.username ||
+      "",
+    submittedAt: remark.submittedAt,
+    isMine: userId != null && String(remark.submittedBy) === String(userId),
+  };
+}
+
+// Fetches every PoRemark for a single AuditResult id and groups them by
+// pointNo, already filtered down to what `user` is allowed to see.
+async function getRemarksMapForAuditResult(auditResultId, user) {
+  const remarks = await prisma.poRemark.findMany({
+    where: { auditResultId },
+    include: { submitter: { select: REMARK_SUBMITTER_SELECT } },
+    orderBy: { submittedAt: "desc" },
+  });
+
+  const map = new Map();
+  for (const r of remarks) {
+    if (!remarkVisibleTo(user, r)) continue;
+    const key = String(r.pointNo);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(formatRemark(r, user));
+  }
+  return map;
+}
+
+// Batch variant — one query for every row's remarks instead of N queries.
+// Returns Map<auditResultId, Map<pointNo, remark[]>>.
+async function getRemarksMapForAuditResults(auditResultIds, user) {
+  if (!auditResultIds.length) return new Map();
+  const remarks = await prisma.poRemark.findMany({
+    where: { auditResultId: { in: auditResultIds } },
+    include: { submitter: { select: REMARK_SUBMITTER_SELECT } },
+    orderBy: { submittedAt: "desc" },
+  });
+
+  const byAuditResult = new Map();
+  for (const r of remarks) {
+    if (!remarkVisibleTo(user, r)) continue;
+    if (!byAuditResult.has(r.auditResultId)) {
+      byAuditResult.set(r.auditResultId, new Map());
+    }
+    const pointMap = byAuditResult.get(r.auditResultId);
+    const key = String(r.pointNo);
+    if (!pointMap.has(key)) pointMap.set(key, []);
+    pointMap.get(key).push(formatRemark(r, user));
+  }
+  return byAuditResult;
+}
+
 // RENUMBERED: results in AuditResult.results are the 10 LINE-LEVEL points
-// (new numbers 10-19). getPointDefinition() always returns a usable
-// fallback object even for an unseeded pointNo, so no existence check is
-// needed here anymore (previously guarded by
-// POINT_DEFINITIONS_BY_NO[...] ? {...} : {}).
-function withPointReference(results) {
+// (new numbers 10-19). Now also attaches `buyerRemarks` per point, scoped
+// to what the requesting user is allowed to see. getPointDefinition()
+// always returns a usable fallback object even for an unseeded pointNo.
+function withPointReference(results, remarksByPoint = new Map()) {
   return (results || []).map((p) => {
     const def = getPointDefinition(p.pointNo);
     return {
       ...p,
-      scope: "line", // everything in AuditResult.results is line-level (points 10-19) now
+      scope: "line",
       severity: severityOf(p.pointNo),
       title: def.title,
       summary: def.summary,
       logic: def.logic,
+      buyerRemarks: remarksByPoint.get(String(p.pointNo)) || [],
     };
   });
 }
@@ -165,24 +246,20 @@ function withPointReference(results) {
  * `results` holds ONLY the 10 LINE-LEVEL points (new numbers 10-19) -
  * this is a LINE-ITEM view, and shows LINE-ITEM data only, per design.
  * The PO's header-level points (new numbers 1-9) are attached separately
- * as `header` - a compact status object ({ points, locked, lockedBy,
- * lockedAt, verifiedCount, notVerifiedCount, totalPoints }), fetched ONCE
- * for this PO number regardless of which line item is being viewed, and
- * IDENTICAL across every line item of the same PO. This is what lets the
- * frontend show a small "Header Checks: Closed" indicator on every line
- * item without re-fetching/re-computing anything, and without mixing
- * header rows into the line-item table.
+ * as `header` - a compact status object, fetched ONCE for this PO number
+ * regardless of which line item is being viewed.
  */
-const withExceptionPoints = async (row) => {
+const withExceptionPoints = async (row, user) => {
   const vendor = getVendorInfo(row.vendor_code);
   const header = await getHeaderForPo(row.po_number);
+  const remarksByPoint = await getRemarksMapForAuditResult(row.id, user);
 
   return {
     ...row,
     lineItemKey:
       row.po_material_number || `${row.po_number}-${lineItemOf(row) ?? row.id}`,
     lineItem: lineItemOf(row),
-    results: withPointReference(row.results),
+    results: withPointReference(row.results, remarksByPoint),
     header,
     exceptionPoints: exceptionPointsOf(row).map((ep) => {
       const def = getPointDefinition(ep.pointNo);
@@ -199,20 +276,25 @@ const withExceptionPoints = async (row) => {
 };
 
 // Batch variant - used wherever a whole page of rows needs enriching at
-// once, so header status is fetched in a single query (getHeadersForPos)
-// instead of once per row, and each PO's header is computed once even if
-// several of its lines appear on the same page.
-async function withExceptionPointsBatch(rows) {
+// once, so header status AND buyer remarks are each fetched in a single
+// query instead of once per row.
+async function withExceptionPointsBatch(rows, user) {
   const headerMap = await getHeadersForPos(rows.map((r) => r.po_number));
+  const remarksMap = await getRemarksMapForAuditResults(
+    rows.map((r) => r.id),
+    user,
+  );
+
   return rows.map((row) => {
     const vendor = getVendorInfo(row.vendor_code);
+    const remarksByPoint = remarksMap.get(row.id) || new Map();
     return {
       ...row,
       lineItemKey:
         row.po_material_number ||
         `${row.po_number}-${lineItemOf(row) ?? row.id}`,
       lineItem: lineItemOf(row),
-      results: withPointReference(row.results),
+      results: withPointReference(row.results, remarksByPoint),
       header: headerMap.get(row.po_number) || {
         poNumber: row.po_number,
         points: [],
@@ -241,6 +323,7 @@ async function withExceptionPointsBatch(rows) {
 export const get_po_audit_results = async (req, res) => {
   try {
     await Promise.all([ensureSeverityLoaded(), ensurePointDefinitionsLoaded()]);
+    const user = req.user || {};
     const {
       page = 1,
       pageSize = 25,
@@ -261,7 +344,7 @@ export const get_po_audit_results = async (req, res) => {
         matchesPointFilter(row, { severity, notVerifiedPointNo }),
       );
       const pageRows = filtered.slice(skip, skip + take);
-      const rows = await withExceptionPointsBatch(pageRows);
+      const rows = await withExceptionPointsBatch(pageRows, user);
       return res.status(200).json({
         results: rows,
         total: filtered.length,
@@ -281,7 +364,7 @@ export const get_po_audit_results = async (req, res) => {
       prisma.auditResult.count({ where }),
     ]);
 
-    const rows = await withExceptionPointsBatch(pageRows);
+    const rows = await withExceptionPointsBatch(pageRows, user);
     return res.status(200).json({
       results: rows,
       total,
@@ -300,24 +383,17 @@ export const get_po_audit_results = async (req, res) => {
  * POST /getPOAuditResult
  *
  * LINE-ITEM lookup (id, poMaterialNumber, or po_number + po_line_item):
- *   Returns line-item data - `results` (10 line-level points, new numbers
- *   10-19), `exceptionPoints`, plus a compact `header` status object for
- *   this PO. This response contains LINE-ITEM detail; it does not carry
- *   the full header points table by default beyond that compact status
- *   (the frontend's header panel component fetches full header detail
- *   itself, once, when the user expands it).
+ *   Returns line-item data - `results` (10 line-level points, each now
+ *   carrying its own `buyerRemarks`), `exceptionPoints`, plus a compact
+ *   `header` status object for this PO.
  *
  * PO-ONLY lookup (po_number given, no po_line_item, no id/material
- * number): delegates entirely to getPoHeaderSummary - the header-level
- * points (new numbers 1-9) + a line-item picker list, NOT a
- * forced/guessed line item. This is THE mechanism that satisfies "PO
- * Number header-level details, without adding the PO Line Item Number":
- * omitting po_line_item from the request is what routes here instead of
- * the line-item branch above.
+ * number): delegates entirely to getPoHeaderSummary.
  */
 export const get_po_audit_result = async (req, res) => {
   try {
     await Promise.all([ensureSeverityLoaded(), ensurePointDefinitionsLoaded()]);
+    const user = req.user || {};
     const { poMaterialNumber, id, po_number, po_line_item, fiscalYear } =
       req.body || {};
 
@@ -346,8 +422,6 @@ export const get_po_audit_result = async (req, res) => {
         include: RESULT_INCLUDE,
       });
 
-      console.log("result", result);
-
       if (!result) {
         return res.status(404).json({
           message: po_line_item
@@ -356,7 +430,7 @@ export const get_po_audit_result = async (req, res) => {
         });
       }
 
-      const enriched = await withExceptionPoints(result);
+      const enriched = await withExceptionPoints(result, user);
       return res.status(200).json(enriched);
     }
 
@@ -371,15 +445,13 @@ export const get_po_audit_result = async (req, res) => {
 
 /**
  * POST /reports/po-lines
- * Every line item of a PO, LINE-LEVEL data only (results = 10 line-level
- * points per line, new numbers 10-19, no header points mixed in).
- * `header` is returned ONCE at the top level of the response, not
- * duplicated per line - callers that need "does this PO's header show
- * closed" read `header.locked` once, not per line item.
+ * Every line item of a PO, LINE-LEVEL data only. `header` is returned
+ * ONCE at the top level of the response, not duplicated per line.
  */
 export const get_po_lines = async (req, res) => {
   try {
     await Promise.all([ensureSeverityLoaded(), ensurePointDefinitionsLoaded()]);
+    const user = req.user || {};
     const { poNumber } = req.body || {};
     if (!poNumber)
       return res.status(400).json({ message: "poNumber is required" });
@@ -391,14 +463,19 @@ export const get_po_lines = async (req, res) => {
     });
 
     const header = await getHeaderForPo(poNumber);
+    const remarksMap = await getRemarksMapForAuditResults(
+      rows.map((r) => r.id),
+      user,
+    );
 
     const lines = rows.map((row) => {
       const vendor = getVendorInfo(row.vendor_code);
+      const remarksByPoint = remarksMap.get(row.id) || new Map();
       return {
         ...row,
         lineItemKey: uniqueKeyOf(row),
         lineItem: lineItemOf(row),
-        results: withPointReference(row.results),
+        results: withPointReference(row.results, remarksByPoint),
         exceptionPoints: exceptionPointsOf(row).map((ep) => {
           const def = getPointDefinition(ep.pointNo);
           return { ...ep, title: def.title, logic: def.logic };

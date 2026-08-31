@@ -4,17 +4,30 @@ import {
   Box, Button, CircularProgress, Dialog, DialogActions, DialogContent,
   DialogTitle, Grid, IconButton, Paper, Table, TableBody, TableCell,
   TableContainer, TableHead, TableRow, Typography, Chip, Divider,
+  Select, MenuItem, FormControl,
 } from "@mui/material";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
 import PanToolAltRoundedIcon from "@mui/icons-material/PanToolAltRounded";
 import TaskAltRoundedIcon from "@mui/icons-material/TaskAltRounded";
+import LockRoundedIcon from "@mui/icons-material/LockRounded";
+import LockOpenRoundedIcon from "@mui/icons-material/LockOpenRounded";
+import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
+import { toast } from "react-toastify";
 import { post } from "utils/axiosApi";
+import { setAuditResultCheckedStatus } from "../../../api/api-functions";
 import PoHeaderChecksPanel from "./PoHeaderChecksPanel";
+// Same Buyer Remarks panel already used on the Search Audit Data page's
+// line-item results table (results-table.jsx). Wired in here too so
+// remarks a Buyer adds are visible (read-only for Admin/PM, editable for
+// Buyer) from every place this preview dialog is opened.
+import PointRemarkPanel from "./PointRemarkPanel";
 
-// "results", "header" and "exceptionPoints" are rendered by dedicated
-// blocks below, not the generic array-of-objects dumper — so exclude all
-// three here.
+// "results", "header", "lineItems" and "exceptionPoints" are rendered by
+// dedicated blocks below, not the generic array-of-objects dumper - so
+// exclude them all here. remarksLocked/By/At are excluded from the
+// generic "Other Fields" dumper because they have their own dedicated
+// status chip + toggle button (see the Line-Level Checks header below).
 const PO_SUMMARY_RAW_KEYS = new Set([
   "vendor_code", "vendorCode", "nameOfVendor", "vendorName",
   "GSTInOfVendor", "vendorGstin",
@@ -28,7 +41,9 @@ const PO_SUMMARY_RAW_KEYS = new Set([
 ]);
 
 const PREVIEW_EXCLUDE_KEYS = new Set([
-  "_id", "__v", "processDocuments", "multipleMatches", "results", "header", "headerResults", "exceptionPoints",
+  "_id", "__v", "processDocuments", "multipleMatches", "results", "header",
+  "headerResults", "exceptionPoints", "lineItems", "lineItemCount",
+  "remarksLocked", "remarksLockedBy", "remarksLockedAt",
   ...PO_SUMMARY_RAW_KEYS,
 ]);
 
@@ -168,27 +183,50 @@ const PoSummaryHeader = ({ details }) => {
 /**
  * Shared, dependency-free preview of a PO line's audit details/results.
  * Used by the Executive Dashboard's PO-Wise Exceptions table, the
- * Drilldown dialog table, and the PO Data page.
+ * Drilldown dialog tables, and the Header-KPI drilldown.
  *
  * `details.header` (compact: { points, totalPoints, verifiedCount,
  * notVerifiedCount, locked, lockedBy, lockedAt }) is rendered via the SAME
- * PoHeaderChecksPanel used on the search page - compact by default here
- * (a one-line "Header Checks: Closed" banner, expandable), so header
- * status reads identically wherever it appears across the app. This
- * dialog does NOT show its own separate header table anymore.
+ * PoHeaderChecksPanel used on the search page, so header status reads
+ * identically wherever it appears across the app.
  *
- * `onHeaderChanged` (optional): fired after a header lock/unlock action
- * succeeds, in addition to this dialog refreshing its own view. A header
- * close/reopen changes PO-wide compliance numbers dashboard-wide
- * (Executive Dashboard KPI cards, charts, and any open drilldown list),
- * not just what this one dialog shows - so the parent that renders this
- * dialog should use this hook to refetch its own summary/rows and keep
- * every number on screen in sync with the header's actual DB state.
+ * LINE-ITEM level status/remarks: the "Line-Level Checks" table below
+ * carries its own status chip + "Mark as Checked"/"Reopen" toggle (Buyers
+ * only), and a "Buyer Remarks" column using the same PointRemarkPanel
+ * already used on the Search Audit Data page.
+ *
+ * LINE ITEM SWITCHING (NEW): whichever line item this dialog was opened
+ * with is still what loads first, by default, exactly as before - that
+ * default is untouched. What's new is a "Viewing: [line item]" dropdown
+ * at the top of the dialog (populated from the existing
+ * /reports/po-lines endpoint) that lets you jump to ANY other line item
+ * of the same PO, or back to "PO Header — All Line Items", without
+ * leaving the dialog or losing your place in whatever table/drilldown
+ * opened it. The PO-header view now also renders a full Line Items
+ * breakdown table (using the lineItems array the header-summary endpoint
+ * already returns) so every line item, its exception/closed status, is
+ * visible and clickable from one place - this is what backs the
+ * "View Line Item Breakdown" menu action wherever it appears.
+ *
+ * `onHeaderChanged` (optional): fired after a header OR line-item
+ * lock/unlock action succeeds, in addition to this dialog refreshing its
+ * own view, so the parent (dashboard page, drilldown table, etc.) can
+ * refetch its own summary/rows and keep every number on screen in sync.
  */
 const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChanged }) => {
   const [loading, setLoading] = useState(false);
   const [details, setDetails] = useState(null);
   const [error, setError] = useState("");
+
+  // Line item status toggle (line-level "checked" lock), mirrors
+  // search-audit-data/components/results-table.jsx.
+  const [lineLocked, setLineLocked] = useState(false);
+  const [lineLockBusy, setLineLockBusy] = useState(false);
+
+  // NEW — quick-switch dropdown options: every line item of this PO,
+  // fetched once per PO via the existing /reports/po-lines endpoint.
+  const [lineItemOptions, setLineItemOptions] = useState([]);
+  const [lineItemOptionsLoading, setLineItemOptionsLoading] = useState(false);
 
   const role = typeof window !== "undefined" ? localStorage.getItem("role") : "";
   const currentUserId = typeof window !== "undefined" ? localStorage.getItem("userId") : null;
@@ -198,15 +236,22 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
     isProcurementManager: role === "isProcurementManager",
   };
 
-  const load = async () => {
+  // `lineItemOverride`:
+  //  - undefined -> use preview.lineItem (the ORIGINAL default the dialog
+  //    was opened with — unchanged behavior).
+  //  - ""        -> load the PO-header view (all line items) for this PO.
+  //  - "10"      -> load that specific line item.
+  const load = async (lineItemOverride) => {
     if (!preview) return;
     setLoading(true);
     setError("");
     setDetails(null);
+    const targetLineItem =
+      lineItemOverride === undefined ? preview.lineItem : lineItemOverride;
     try {
       const res = await post("/getPOAuditResult", {
         po_number: preview.poNumber,
-        po_line_item: preview.lineItem || undefined,
+        po_line_item: targetLineItem || undefined,
       });
       setDetails(res);
     } catch (err) {
@@ -232,18 +277,86 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preview]);
 
+  // Fetch the PO's full line-item list for the switcher dropdown as soon
+  // as we know which PO we're previewing — independent of whether the
+  // detail load (above) has resolved yet, so the dropdown is usable
+  // immediately.
+  useEffect(() => {
+    if (!preview?.poNumber) {
+      setLineItemOptions([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setLineItemOptionsLoading(true);
+      try {
+        const res = await post("/reports/po-lines", { poNumber: preview.poNumber });
+        if (!cancelled) setLineItemOptions(res?.lines || []);
+      } catch (err) {
+        if (!cancelled) setLineItemOptions([]);
+      } finally {
+        if (!cancelled) setLineItemOptionsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [preview?.poNumber]);
+
+  const isHeaderOnly = details?.scope === "po-header";
+
+  // The line item currently on screen, whatever got it there (initial
+  // default, a manual switch, or a lock-toggle refresh) — used to keep
+  // switching, refreshing, and "open full page" all pointed at the same
+  // line item instead of silently reverting to the original default.
+  const currentLineItem = isHeaderOnly ? "" : (details?.lineItem ?? preview?.lineItem ?? "");
+
+  // NEW — jump to any other line item (or back to the PO header) without
+  // closing the dialog.
+  const switchLineItem = (lineItem) => {
+    load(lineItem || "");
+  };
+
   // Any header lock/unlock action affects the PO's compliance numbers
-  // dashboard-wide (Executive Dashboard KPIs, charts, drilldown lists),
-  // not just this dialog's own view. Refresh the dialog locally, then let
-  // the parent (dashboard page, drilldown table, etc.) know it should
-  // refetch its own summary/rows so every number on screen stays in sync
-  // with the header's actual DB state.
+  // dashboard-wide. Refresh the dialog on whichever view is currently
+  // showing, then let the parent refetch its own summary/rows.
   const handleHeaderChanged = async () => {
-    await load();
+    await load(currentLineItem);
     onHeaderChanged?.();
   };
 
-  const isHeaderOnly = details?.scope === "po-header";
+  // Line-item counterpart — entirely independent lock
+  // (AuditResult.remarksLocked), same refresh pattern, and likewise
+  // reloads whichever line item is currently displayed.
+  const toggleLineLock = async () => {
+    if (!details?.po_number || !details?.lineItem) return;
+    setLineLockBusy(true);
+    try {
+      const res = await setAuditResultCheckedStatus({
+        poNumber: details.po_number,
+        poLineItem: details.lineItem,
+        checked: !lineLocked,
+      });
+      setLineLocked(Boolean(res?.remarksLocked));
+      toast.success(
+        res?.remarksLocked
+          ? "Line item marked as checked"
+          : "Line item reopened",
+      );
+      await load(details.lineItem);
+      onHeaderChanged?.();
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || err?.message || "Failed to update checked status",
+      );
+    } finally {
+      setLineLockBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    setLineLocked(Boolean(details?.remarksLocked));
+  }, [details]);
 
   const scalarEntries = useMemo(() => {
     if (!details || isHeaderOnly) return [];
@@ -259,13 +372,20 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
     );
   }, [details, isHeaderOnly]);
 
+  // Used by "Open in New Tab" / "Go to Full Search Page" so they always
+  // point at whichever line item is currently on screen, not the line
+  // item the dialog originally opened with.
+  const effectivePreview = preview
+    ? { poNumber: preview.poNumber, lineItem: isHeaderOnly ? undefined : currentLineItem || undefined }
+    : null;
+
   return (
     <Dialog open={!!preview} onClose={onClose} maxWidth="md" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
       <DialogTitle sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <Box>
           <Typography variant="h6" sx={{ fontWeight: 800 }}>
             PO {preview?.poNumber}
-            {preview?.lineItem ? ` — Line ${preview.lineItem}` : ""}
+            {!isHeaderOnly && currentLineItem ? ` — Line ${currentLineItem}` : ""}
           </Typography>
           <Typography variant="caption" color="text.secondary">
             Quick preview of audit data &amp; results
@@ -276,6 +396,51 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
         </IconButton>
       </DialogTitle>
       <DialogContent dividers>
+        {/* NEW — line item quick-switch, available regardless of which
+            view (header or a specific line) is currently showing, and
+            regardless of how the dialog was opened. */}
+        {preview?.poNumber && (
+          <Box sx={{ mb: 2.5, display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
+            <Typography variant="caption" sx={{ fontWeight: 700, color: "text.secondary" }}>
+              Viewing:
+            </Typography>
+            <FormControl size="small" sx={{ minWidth: 280 }}>
+              <Select
+                displayEmpty
+                value={currentLineItem}
+                onChange={(e) => switchLineItem(e.target.value)}
+                disabled={loading}
+              >
+                <MenuItem value="">
+                  <em>PO Header — All Line Items</em>
+                </MenuItem>
+                {lineItemOptions.map((line) => (
+                  <MenuItem key={line.lineItemKey || line.lineItem} value={line.lineItem || ""}>
+                    Line {line.lineItem || "—"}
+                    {line.material_disc
+                      ? ` — ${line.material_disc}`
+                      : line.material_code
+                        ? ` — ${line.material_code}`
+                        : ""}
+                    {line.exceptionPoints?.length ? " ⚠" : ""}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            {lineItemOptionsLoading && <CircularProgress size={16} />}
+            {!isHeaderOnly && currentLineItem && (
+              <Button
+                size="small"
+                startIcon={<ArrowBackRoundedIcon fontSize="small" />}
+                onClick={() => switchLineItem("")}
+                sx={{ textTransform: "none", fontWeight: 700 }}
+              >
+                Back to PO Header &amp; All Line Items
+              </Button>
+            )}
+          </Box>
+        )}
+
         {loading && (
           <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
             <CircularProgress size={28} />
@@ -303,6 +468,79 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
               variant="full"
               onChanged={handleHeaderChanged}
             />
+
+            {/* NEW — the "breakdown": every line item of this PO, its
+                exception/closed status, and a way to jump straight into
+                it. Backs "View Line Item Breakdown" wherever that menu
+                action opens this dialog with just a poNumber. */}
+            {Array.isArray(details.lineItems) && details.lineItems.length > 0 && (
+              <Box sx={{ mt: 3 }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1.5 }}>
+                  Line Items ({details.lineItems.length})
+                </Typography>
+                <TableContainer component={Paper} variant="outlined">
+                  <Table size="small">
+                    <TableHead sx={{ bgcolor: "grey.50" }}>
+                      <TableRow>
+                        <TableCell sx={{ fontWeight: 700 }}>Line Item</TableCell>
+                        <TableCell sx={{ fontWeight: 700 }}>Material</TableCell>
+                        <TableCell sx={{ fontWeight: 700 }}>Description</TableCell>
+                        <TableCell sx={{ fontWeight: 700 }} align="right">Net Value</TableCell>
+                        <TableCell sx={{ fontWeight: 700 }}>Result</TableCell>
+                        <TableCell sx={{ fontWeight: 700 }}>Status</TableCell>
+                        <TableCell sx={{ fontWeight: 700 }} align="right">Action</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {details.lineItems.map((item) => (
+                        <TableRow
+                          key={item.id || item.lineItem}
+                          hover
+                          sx={{ cursor: "pointer" }}
+                          onClick={() => switchLineItem(item.lineItem)}
+                        >
+                          <TableCell sx={{ fontWeight: 700 }}>{item.lineItem}</TableCell>
+                          <TableCell>{item.materialCode || "—"}</TableCell>
+                          <TableCell>
+                            <Typography variant="body2" color="text.secondary" noWrap sx={{ maxWidth: 220 }}>
+                              {item.materialDesc || "—"}
+                            </Typography>
+                          </TableCell>
+                          <TableCell align="right">
+                            {item.netValue ? Number(item.netValue).toLocaleString() : "—"}
+                          </TableCell>
+                          <TableCell>
+                            {item.hasException ? (
+                              <Chip size="small" label="Has Exception" sx={{ fontWeight: 700, bgcolor: "#fee2e2", color: "#dc2626" }} />
+                            ) : (
+                              <Chip size="small" label="Clean" sx={{ fontWeight: 700, bgcolor: "#dcfce7", color: "#059669" }} />
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {item.closed ? (
+                              <Chip size="small" icon={<LockRoundedIcon fontSize="small" />} label="Closed" sx={{ fontWeight: 700, bgcolor: "#dcfce7", color: "#059669" }} />
+                            ) : (
+                              <Chip size="small" icon={<LockOpenRoundedIcon fontSize="small" />} label="Open" sx={{ fontWeight: 700, bgcolor: "#fef3c7", color: "#92400e" }} />
+                            )}
+                          </TableCell>
+                          <TableCell align="right">
+                            <Button
+                              size="small"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                switchLineItem(item.lineItem);
+                              }}
+                            >
+                              View
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </Box>
+            )}
           </Box>
         )}
 
@@ -345,19 +583,64 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
 
             {Array.isArray(details.results) && details.results.length > 0 && (
               <Box sx={{ mb: 3 }}>
-                <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
-                  Line-Level Checks
-                </Typography>
+                <Box
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    flexWrap: "wrap",
+                    gap: 1,
+                    mb: 1,
+                  }}
+                >
+                  <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                    Line-Level Checks
+                  </Typography>
+
+                  {/* Line-item status chip + closing toggle, same
+                      capability/permissions as the Search Audit Data
+                      page's results-table.jsx: only a Buyer can toggle,
+                      Admin/PM see the status read-only. */}
+                  {details.po_number && details.lineItem && (
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+                      <Chip
+                        icon={
+                          lineLocked ? (
+                            <LockRoundedIcon fontSize="small" />
+                          ) : (
+                            <LockOpenRoundedIcon fontSize="small" />
+                          )
+                        }
+                        label={lineLocked ? "Line Item Checked — Remarks Locked" : "Open"}
+                        color={lineLocked ? "warning" : "default"}
+                        size="small"
+                        sx={{ fontWeight: 700 }}
+                      />
+                      {roleFlags.isBuyer && (
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          disabled={lineLockBusy}
+                          onClick={toggleLineLock}
+                          sx={{ textTransform: "none", fontWeight: 600 }}
+                        >
+                          {lineLockBusy ? "…" : lineLocked ? "Reopen" : "Mark as Checked"}
+                        </Button>
+                      )}
+                    </Box>
+                  )}
+                </Box>
                 <TableContainer component={Paper} variant="outlined">
                   <Table size="small">
                     <TableHead>
                       <TableRow>
                         <TableCell sx={{ fontWeight: 700, width: "5%" }}>Pt #</TableCell>
-                        <TableCell sx={{ fontWeight: 700, width: "25%" }}>Title &amp; Summary</TableCell>
-                        <TableCell sx={{ fontWeight: 700, width: "27%" }}>Logic</TableCell>
-                        <TableCell sx={{ fontWeight: 700, width: "8%" }}>Severity</TableCell>
-                        <TableCell sx={{ fontWeight: 700, width: "13%" }}>Status</TableCell>
-                        <TableCell sx={{ fontWeight: 700, width: "22%" }}>Remarks</TableCell>
+                        <TableCell sx={{ fontWeight: 700, width: "20%" }}>Title &amp; Summary</TableCell>
+                        <TableCell sx={{ fontWeight: 700, width: "20%" }}>Logic</TableCell>
+                        <TableCell sx={{ fontWeight: 700, width: "7%" }}>Severity</TableCell>
+                        <TableCell sx={{ fontWeight: 700, width: "12%" }}>Status</TableCell>
+                        <TableCell sx={{ fontWeight: 700, width: "18%" }}>System Remarks</TableCell>
+                        <TableCell sx={{ fontWeight: 700, width: "18%" }}>Buyer Remarks</TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
@@ -396,6 +679,25 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
                               </ul>
                             ) : (
                               <Typography variant="body2" color="textSecondary">None</Typography>
+                            )}
+                          </TableCell>
+                          <TableCell sx={{ verticalAlign: "top" }}>
+                            {details.po_number && details.lineItem ? (
+                              <PointRemarkPanel
+                                poNumber={details.po_number}
+                                poLineItem={details.lineItem}
+                                pointNo={row.pointNo}
+                                currentUserId={currentUserId}
+                                isBuyer={roleFlags.isBuyer}
+                                isAdmin={roleFlags.isAdmin}
+                                isProcurementManager={roleFlags.isProcurementManager}
+                                locked={lineLocked}
+                                compact
+                              />
+                            ) : (
+                              <Typography variant="caption" color="text.secondary">
+                                —
+                              </Typography>
                             )}
                           </TableCell>
                         </TableRow>
@@ -452,10 +754,10 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
         <Button onClick={onClose}>Close</Button>
         {!isHeaderOnly && (
           <>
-            <Button variant="outlined" startIcon={<OpenInNewRoundedIcon />} onClick={() => onOpenFullPage(preview, true)}>
+            <Button variant="outlined" startIcon={<OpenInNewRoundedIcon />} onClick={() => onOpenFullPage(effectivePreview, true)}>
               Open in New Tab
             </Button>
-            <Button variant="contained" onClick={() => onOpenFullPage(preview, false)}>
+            <Button variant="contained" onClick={() => onOpenFullPage(effectivePreview, false)}>
               Go to Full Search Page
             </Button>
           </>
