@@ -109,39 +109,16 @@ export const getPoHeaderSummary = async (req, res) => {
         .json({ message: "Not authorized to view this PO" });
     }
 
-    const header = await getHeaderForPo(po_number);
-
-    // NEW: header-level buyer remarks, grouped by pointNo, pre-filtered
-    // to what this caller may see. Buyer -> own remarks only. Admin/PM
-    // -> everyone's.
-    const headerRemarkWhere = { po_number };
-    if (user.isBuyer && !(user.isAdmin || user.isProcurementManager)) {
-      headerRemarkWhere.submittedBy = user.id || user.userId;
-    }
-    const headerRemarkRows = await prisma.poHeaderRemark.findMany({
-      where: headerRemarkWhere,
-      include: { submitter: { select: SUBMITTER_SELECT } },
-      orderBy: { submittedAt: "desc" },
-    });
-    const userId = user.id || user.userId;
-    const headerRemarksByPoint = {};
-    for (const r of headerRemarkRows) {
-      const key = String(r.pointNo);
-      if (!headerRemarksByPoint[key]) headerRemarksByPoint[key] = [];
-      headerRemarksByPoint[key].push({
-        id: r.id,
-        remark: r.remark,
-        submittedBy: r.submittedBy,
-        submittedByName:
-          [r.submitter?.firstName, r.submitter?.lastName]
-            .filter(Boolean)
-            .join(" ") ||
-          r.submitter?.username ||
-          "",
-        submittedAt: r.submittedAt,
-        isMine: userId != null && String(r.submittedBy) === String(userId),
-      });
-    }
+    // getHeaderForPo() is now THE single place that fetches header
+    // remarks (see utility/header-results.js) - it already returns
+    // `headerRemarksByPoint` on the shaped header, pre-filtered to what
+    // this caller may see (Buyer: own remarks only; Admin/PM: everyone's).
+    // Reusing it here (instead of re-querying PoHeaderRemark separately)
+    // means this response and every other endpoint that calls
+    // getHeaderForPo/getHeadersForPos can never disagree about remark
+    // counts for the same PO.
+    const header = await getHeaderForPo(po_number, user);
+    const headerRemarksByPoint = header.headerRemarksByPoint;
 
     const firstLine = lineRows[0];
     const vendor = firstLine

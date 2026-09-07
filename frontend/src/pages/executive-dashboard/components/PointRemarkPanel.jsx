@@ -24,7 +24,6 @@ import { toast } from "react-toastify";
 import {
   getPoRemarks,
   submitPoRemark,
-  updatePoRemark,
   deletePoRemark,
 } from "../../../api/api-functions";
 
@@ -106,24 +105,24 @@ const PointRemarkPanel = ({
 
   useEffect(() => {
     if (!open) return;
-    setDraft(ownRemark ? ownRemark.remark : "");
+    // Only ever prefill the box for a NEW remark. There is no "edit in
+    // place" flow — once a buyer has their own remark on this point, the
+    // input is hidden entirely (see canSubmit && !locked && !ownRemark
+    // below); to change wording they delete their remark and add a new
+    // one. So the draft box never needs to carry an existing remark's text.
+    if (!ownRemark) setDraft("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, remarks]);
 
   const handleSubmit = async () => {
-    if (!draft.trim()) return;
+    if (!draft.trim() || ownRemark) return;
     setSubmitting(true);
     try {
-      if (ownRemark) {
-        await updatePoRemark({ id: ownRemark.id, remark: draft.trim() });
-        toast.success("Remark updated");
-      } else {
-        const payload = auditResultId
-          ? { auditResultId, pointNo, remark: draft.trim() }
-          : { poNumber, poLineItem, pointNo, remark: draft.trim() };
-        await submitPoRemark(payload);
-        toast.success("Remark added");
-      }
+      const payload = auditResultId
+        ? { auditResultId, pointNo, remark: draft.trim() }
+        : { poNumber, poLineItem, pointNo, remark: draft.trim() };
+      await submitPoRemark(payload);
+      toast.success("Remark added");
       await load();
     } catch (error) {
       toast.error(error?.response?.data?.message || error?.message || "Failed to save remark");
@@ -145,17 +144,21 @@ const PointRemarkPanel = ({
   const count = remarks.length;
   const latest = remarks[0]; // already ordered newest-first by the API
 
-  // ── Trigger chip: label, color and icon all driven off the SAME
-  // `remarks` array that renders inside the dialog — so the badge, the
-  // preview line, and the dialog contents can never disagree.
+  // ── Trigger chip: EXACTLY two labels once there's something to act on
+  // — "Add Remark" (nothing exists yet, you can submit one) or "View
+  // Remarks" (one or more exist — open the dialog to read them, never to
+  // "update" anything). "Locked"/"No Remarks" are the only other states,
+  // for when there's genuinely nothing to add or view. Colors are
+  // distinct per state so the button reads correctly at a glance: green
+  // = you can add one, blue = remarks exist to read, amber = locked.
   let chipLabel;
   let chipColor = "default";
   let chipIcon = <ChatBubbleRoundedIcon fontSize="small" />;
   let chipVariant = "outlined";
 
   if (count > 0) {
-    chipLabel = `${count} Remark${count > 1 ? "s" : ""}`;
-    chipColor = ownRemark ? "primary" : "default";
+    chipLabel = "View Remarks";
+    chipColor = ownRemark ? "primary" : "info";
     chipVariant = "filled";
   } else if (canSubmit && locked) {
     chipLabel = "Locked";
@@ -163,6 +166,8 @@ const PointRemarkPanel = ({
     chipIcon = <LockRoundedIcon fontSize="small" />;
   } else if (canSubmit) {
     chipLabel = "Add Remark";
+    chipColor = "success";
+    chipVariant = "outlined";
     chipIcon = <AddCommentRoundedIcon fontSize="small" />;
   } else {
     chipLabel = "No Remarks";
@@ -197,8 +202,10 @@ const PointRemarkPanel = ({
                 lineHeight: 1.3,
               }}
             >
-              <b>{latest.submittedByName || "Buyer"}{latest.isMine ? " (you)" : ""}:</b>{" "}
-              {latest.remark}
+              {latest.submittedByName || "Buyer"}{latest.isMine ? " (you)" : ""}:{" "}
+              <Box component="span" sx={{ fontWeight: 700, color: "text.primary" }}>
+                {latest.remark}
+              </Box>
             </Typography>
           </Tooltip>
         )}
@@ -227,7 +234,7 @@ const PointRemarkPanel = ({
               <CircularProgress size={24} />
             </Box>
           ) : (
-            <Stack spacing={2} sx={{ mb: canSubmit && !locked ? 3 : 0 }}>
+            <Stack spacing={2} sx={{ mb: canSubmit && !locked && !ownRemark ? 3 : 0 }}>
               {locked && (
                 <Chip
                   icon={<LockRoundedIcon fontSize="small" />}
@@ -253,10 +260,15 @@ const PointRemarkPanel = ({
                       bgcolor: isMine ? "#eff6ff" : "#f8fafc",
                       border: "1px solid",
                       borderColor: isMine ? "#bfdbfe" : "grey.200",
+                      borderLeft: "4px solid",
+                      borderLeftColor: isMine ? "#2563eb" : "#94a3b8",
                     }}
                   >
                     <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                      <Typography variant="body2" sx={{ wordBreak: "break-word", pr: 2 }}>
+                      <Typography
+                        variant="body2"
+                        sx={{ wordBreak: "break-word", pr: 2, fontWeight: 700, color: "text.primary" }}
+                      >
                         {r.remark}
                       </Typography>
                       {isMine && canSubmit && !locked && (
@@ -292,14 +304,14 @@ const PointRemarkPanel = ({
             </Stack>
           )}
 
-          {canSubmit && !locked && (
+          {canSubmit && !locked && !ownRemark && (
             <Box sx={{ display: "flex", gap: 1, alignItems: "flex-start" }}>
               <TextField
                 size="medium"
                 fullWidth
                 multiline
                 maxRows={3}
-                placeholder={ownRemark ? "Edit your remark..." : "Type your remark here..."}
+                placeholder="Type your remark here..."
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => {
@@ -311,12 +323,13 @@ const PointRemarkPanel = ({
               />
               <Button
                 variant="contained"
+                color="success"
                 disabled={submitting || !draft.trim()}
                 onClick={handleSubmit}
                 sx={{ height: "40px", px: 3, boxShadow: "none" }}
                 startIcon={submitting ? <CircularProgress size={16} color="inherit" /> : <SendRoundedIcon />}
               >
-                {ownRemark ? "Update" : "Send"}
+                Add Remark
               </Button>
             </Box>
           )}

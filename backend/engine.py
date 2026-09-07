@@ -30,7 +30,142 @@ Output:
     <rc-json>       : unchanged - RC Overlap / point 20.
 
 ===============================================================================
-CHANGELOG - THIS REVISION (Point 15 formula rewrite + Point 9/16 aggregate
+CHANGELOG - THIS REVISION (Point 3 tax-code 0/48 ordering fix + Point 6/7
+freight-remark transparency fix, per direct client feedback)
+===============================================================================
+
+  1. POINT #3 (GST Tax Logic) - TAX CODE 0/48 WRONGLY SHOWED "DATA MISSING"
+     INSTEAD OF "NOT APPLICABLE". Client feedback: "If tax code is 0, 48 -
+     then no gst and data missing of Vendor state." Tax Codes '0' and '48'
+     already map, via the Tax Master, to categories 'No GST' and
+     'Input Tax' respectively - both of which normalize into
+     GST_NOT_APPLICABLE_TOKENS and are supposed to resolve straight to Not
+     Applicable ("no GST"). The bug was ORDERING: the function checked
+     Vendor State FIRST and returned Data Missing whenever Vendor State was
+     blank, before the Tax Master lookup (and therefore the
+     GST_NOT_APPLICABLE_TOKENS check) ever ran. So a line with Tax Code 0
+     or 48 but a blank Vendor State incorrectly showed Data Missing instead
+     of Not Applicable.
+     FIX: rule_09_tax_logic now looks up the Tax Code in the Tax Master
+     FIRST. If its category is one of the not-applicable/"no GST" tokens
+     (which covers Tax Codes 0 and 48, and any other exempt-style code),
+     it returns Not Applicable immediately - Vendor State is never
+     consulted for this branch. Vendor State is now only looked up (with
+     the existing GSTIN-derivation fallback) for the remaining categories
+     that genuinely need a Gujarat/non-Gujarat (SGST+CGST vs IGST)
+     comparison; Data Missing for a blank Vendor State still fires, but
+     only there - it can no longer block a Tax-Code-0/48-style
+     not-applicable determination that doesn't need Vendor State at all.
+
+  2. POINTS #6/#7 (EYW freight required / EXW-FCA must not have freight) -
+     REMARK NOW NAMES THE MATCHED CONDITION TYPE. Client feedback: "If
+     inco term is EYW and condition types are
+     R000,NAVM,PBXX,NAVS,JEXS,ZPB0,R001,ZIB2,ZPB1 - on these condition
+     types - why it is showing verified?" These listed codes are ordinary
+     pricing/tax conditions (gross price, non-deductible tax, etc.), NOT
+     freight - and were confirmed (against the real POAUDITCND extract)
+     to never by themselves cause a Verified result; every EYW line whose
+     ONLY condition types are from this list is correctly Not Verified.
+     What was actually happening: these codes routinely co-occur on the
+     SAME PO line alongside a genuine freight condition (e.g. ZRA3/ZRB3),
+     and the old remark just said "Freight condition present for EYW PO
+     line" without naming which condition type triggered it - so a
+     reviewer looking at a line with condition types
+     ['ZRB3','NAVM','PBXX','NAVS','JEXS'] had no way to see, from the
+     remark alone, that 'ZRB3' (not the other four) was what made it
+     Verified.
+     FIX: added _condition_types_for_item() / _freight_condition_match(),
+     which return the SPECIFIC matched freight condition type (or None)
+     plus the full list of condition types present. rule_13/rule_14 now
+     name the exact matched type in the remark (e.g. "Freight condition
+     'ZRB3' present...") and separately list any other, non-freight
+     condition types also present on the line, so it's immediately clear
+     from the remark alone why a line was Verified or Not Verified. No
+     pass/fail behavior changed - this is a transparency fix only,
+     confirmed against the real POAUDITCND data (0 lines had their status
+     change).
+
+===============================================================================
+CHANGELOG - PRIOR REVISION (Point 8 rate-approval tag fix + Point 9
+RFQ-source and blank-RFQ fix, per the "Final sheet" / "Changes to be done"
+column)
+===============================================================================
+
+  1. POINT #8 (Rate Approval by authorised approver) - WRONG TAG WAS BEING
+     SEARCHED. The "Changes to be done" column for this point is explicit:
+     "In Our Ref., search for 'DWS-APPROVED' / 'DWS-Approved'. Do not search
+     for 'Rate Approval', as 'Rate Approval' is the tag used for the Digital
+     Workflow Solution [itself, not for a rate-approval event]." The previous
+     RATE_APPROVAL_TAG_TOKENS set included "RATEAPPROVAL", "APPROVEDRATE",
+     "APPROVERATE" and "APPROVEDRAT" - i.e. it WAS matching on "Rate
+     Approval"-shaped text, exactly what the client says must NOT be
+     searched for, because that phrase is the generic DWS workflow tag and
+     doesn't mean a rate was actually approved. This meant any PO whose Our
+     Ref. carried a plain DWS "Rate Approval" workflow tag (without an
+     actual "DWS-APPROVED" outcome) was being incorrectly treated as
+     eligible for this point / evaluated as if approval had been confirmed.
+     FIX: RATE_APPROVAL_TAG_TOKENS now contains ONLY the DWS-APPROVED-style
+     tokens ("DWSAPPROVED", "DWSAAPPROVED", "DWSAPPROVAL", "DWSAPPROVE") -
+     the "RATEAPPROVAL"/"APPROVEDRATE"/"APPROVERATE"/"APPROVEDRAT" tokens
+     have been removed. _is_rate_approval_tag() (and therefore rule
+     #8/rule_15_rate_approval) now only fires on an actual "DWS-APPROVED"
+     (or the DWS "APPROVAL"/"APPROVE" spelling variants already confirmed
+     in a prior revision), never on a bare "Rate Approval" tag.
+
+  2. POINT #9 (Multiple POs to same vendor/date/plant/purchase-group, +RFQ)
+     - TWO issues fixed per the "Changes to be done" / notes columns for
+     this point:
+
+       a) RFQ SOURCE COLUMN WAS WRONG: the "Changes to be done" notes say
+          "Add RFQ number = order acknowledgement" - i.e. the RFQ number
+          this point needs is the extract's "order acknowledgement" column,
+          not a not-yet-added "RFQ no." column. RFQ_NO_COLUMN is now
+          "order acknowledgement". This column DOES exist in the real
+          extract (confirmed by the client's own worked example against PO
+          4500496148/4500496147/4500496155 - see below), so the previous
+          "column doesn't exist yet, AIA IT still needs to add it" caveat
+          no longer applies and has been removed.
+
+       b) BLANK-RFQ HANDLING: the "Changes to be done" text for this point
+          says: "Check all 5 parameters to verify whether they are verified
+          or not. If the RFQ No. is blank, check only the remaining 4
+          parameters for verification." The previous implementation
+          effectively required an EXACT match on all 5 dimensions
+          (including RFQ) to flag Not Verified, with no special handling
+          for a blank RFQ on either side. Per the client's own worked
+          example (I column note): PO 4500496148 (RFQ "RFQ-26-1215") and PO
+          4500496147 (RFQ "RFQ-26-1246") share Vendor/Purchasing Group/
+          Plant/Purchasing Date but have genuinely DIFFERENT RFQ numbers -
+          the client confirms these must NOT be flagged against each other.
+          PO 4500496155 shares the same Vendor/Purchasing Group/Plant/
+          Purchasing Date but has a BLANK RFQ - per the "blank -> compare
+          only 4 parameters" rule, 4500496155 must still be compared (and
+          matched) against BOTH of the other two POs on the remaining 4
+          parameters alone, regardless of what their RFQ values are.
+          FIX: rule_19_multiple_po_same_day (and its supporting aggregates
+          in build_context) were rewritten around a single 4-parameter key
+          (Vendor, Purchasing Group, Plant, Purchasing Date) plus a
+          per-PO representative RFQ value. Two POs sharing the 4-parameter
+          key are now treated as a match (-> Not Verified) UNLESS both
+          sides have a non-blank RFQ AND those RFQ values differ. In other
+          words: if either side's RFQ is blank, the RFQ dimension is
+          skipped and only the 4 core parameters decide the match; if both
+          sides have a non-blank RFQ, it must also match. This replaces the
+          old "_po9_full_key"/"po9_full_groups" exact-5-dimension-match
+          machinery entirely (it could never express "ignore RFQ when
+          blank" and always required a literal 5-way tuple match), and
+          reproduces the client's worked example exactly: PO 4500496148 is
+          NOT matched against PO 4500496147 (different, non-blank RFQs) but
+          IS matched against PO 4500496155 (blank RFQ) - net result Not
+          Verified for 4500496148 (and 4500496147), driven by 4500496155's
+          blank RFQ, not by a false match against each other's RFQs.
+
+  Everything else in this file (Points 1-7, 10-19, RC Overlap, header/line
+  scoping, exclusion handling, point renumbering) is unchanged from the
+  prior revision - see the CHANGELOG entries below for that history.
+
+===============================================================================
+CHANGELOG - PRIOR REVISION (Point 15 formula rewrite + Point 9/16 aggregate
 fix, per client request against the "before_after_verification" workbook)
 ===============================================================================
 
@@ -71,6 +206,14 @@ fix, per client request against the "before_after_verification" workbook)
      the rule now falls back to 0% and logs an assumption, instead of
      silently borrowing the Under-Delivery percentage as before.
 
+     NOTE: the Final sheet's own "Changes to be done" column for this
+     point still describes an older CUMULATIVE-PO-Qty formula, but its
+     "Testing" column marks that entry "ON HOLD" - so that (older, still
+     cumulative) formula is deliberately NOT applied here. The rule below
+     implements the newer, client-confirmed, non-cumulative formula from
+     this CHANGELOG entry instead, per the client's later explicit
+     instruction (worked examples above).
+
   2. POINT #9 (Multiple POs to same vendor/date/plant/purchase-group) -
      TWO bugs found and fixed against the client's 14 manually-verified
      rows (all 14 now match; see test evidence in PR/commit notes):
@@ -109,33 +252,29 @@ fix, per client request against the "before_after_verification" workbook)
           longer skips excluded rows - ALL rows (including Deletion
           indicator='L' / Returns Item='X') now contribute to the
           duplicate-PO comparison. This does NOT change the excluded
-          row's OWN result, which is still forced to Not Applicable by
-          evaluate_rule()'s central dispatch regardless of this change -
-          it only changes what excluded rows contribute to OTHER, live
-          rows' comparisons (same distinction as last revision's fix,
-          just reaching the opposite conclusion once checked against
-          real ground truth).
+          row's OWN result, which is still forced to Not Applicable
+          regardless of this change - it only changes what excluded rows
+          contribute to OTHER, live rows' comparisons.
 
        c) REMARKS REWRITTEN per explicit client wording: Not Verified
-          now states plainly that all five parameters (Vendor, Purchasing
-          Group, Plant, Purchasing Date, RFQ no.) are the same. Verified
-          now names which specific parameter differs (RFQ number is
-          different / Purchasing Date is different / etc.) instead of
-          the old generic "no other PO matches" text, by comparing
-          against other POs that already share Vendor + Purchasing Group
-          + Plant (the natural "this looks like it could be the same
-          purchasing event" population) and reporting whether the
-          differentiator is Purchasing Date and/or RFQ no. When no other
-          PO shares Vendor+Purchasing Group+Plant at all, the remark
-          says so generically instead of manufacturing a claim about a
-          field that was never actually compared against anything close.
+          now states plainly that the matched parameters are the same.
+          Verified now names which specific parameter differs (RFQ
+          number is different / Purchasing Date is different / etc.)
+          instead of the old generic "no other PO matches" text, by
+          comparing against other POs that already share Vendor +
+          Purchasing Group + Plant (the natural "this looks like it
+          could be the same purchasing event" population) and reporting
+          whether the differentiator is Purchasing Date and/or RFQ no.
+          When no other PO shares Vendor+Purchasing Group+Plant at all,
+          the remark says so generically instead of manufacturing a
+          claim about a field that was never actually compared against
+          anything close.
 
-       d) RFQ no. (5th dimension, added two revisions ago) is unchanged
-          in behaviour and caveat: RFQ_NO_COLUMN ("RFQ no.") still does
-          not exist in the real POAUDIT extract as of this revision (AIA
-          IT has not added it yet), so it still resolves to "" for every
-          row and does not currently affect grouping. No code changes
-          will be needed once the column is added under this name.
+       d) RFQ no. (5th dimension, added two revisions ago) - SUPERSEDED
+          THIS REVISION: see the "THIS REVISION" CHANGELOG entry above
+          for the corrected RFQ source column ("order acknowledgement")
+          and the blank-RFQ 4-parameter fallback rule. This entry is kept
+          for history only.
 
   3. POINT #16 (Vendor-Material tax code consistency) - SAME bug as #9(b):
      vendor_material_tax was skipping excluded rows when aggregating,
@@ -176,9 +315,9 @@ PO 4500493194 and follow-up instructions)
      0% tolerance, so PO 4500493194-00010 came back Not Verified.
      FIX: pr_cumulative_po_qty now skips any row where _is_excluded_line()
      is True, matching the exclusion that already applies everywhere else.
-     SUPERSEDED THIS REVISION: point #15 no longer uses a cumulative
-     accumulator at all - see item 1 in the CHANGELOG section above. This
-     entry is kept for history only.
+     SUPERSEDED: point #15 no longer uses a cumulative accumulator at all
+     - see the "PRIOR REVISION" CHANGELOG entry above. This entry is kept
+     for history only.
 
   2. POINT #9 (Multiple POs to same vendor/date/plant/purchase-group) -
      same_day_groups had the identical class of bug: it aggregated PO
@@ -186,8 +325,8 @@ PO 4500493194 and follow-up instructions)
      deleted/returned lines, so a cancelled PO could still make an
      otherwise-clean PO look like a same-day duplicate.
      FIX: same_day_groups now also skips excluded rows when aggregating.
-     SUPERSEDED THIS REVISION: proven wrong against client ground truth -
-     see item 2(b) in the CHANGELOG section above. This entry is kept for
+     SUPERSEDED: proven wrong against client ground truth - see the
+     "PRIOR REVISION" CHANGELOG entry above. This entry is kept for
      history only.
 
   3. POINT #16 (Vendor-Material tax code consistency) - vendor_material_tax
@@ -197,8 +336,8 @@ PO 4500493194 and follow-up instructions)
      inconsistency) based on a line that shouldn't count at all.
      FIX: vendor_material_tax now also skips excluded rows when
      aggregating.
-     SUPERSEDED THIS REVISION: proven wrong against client ground truth -
-     see item 3 in the CHANGELOG section above. This entry is kept for
+     SUPERSEDED: proven wrong against client ground truth - see the
+     "PRIOR REVISION" CHANGELOG entry above. This entry is kept for
      history only.
 
      NOTE ON 1-3: all three accumulators live in build_context() and are
@@ -220,26 +359,9 @@ PO 4500493194 and follow-up instructions)
   5. POINT #9 (Multiple POs to same vendor/date/plant/purchase-group) -
      added RFQ no. as a 5th dimension of the duplicate-PO grouping key,
      per client request ("Same RFQ no. logic needs to be added for point
-     no. 9"). Two POs are now only flagged as same-day duplicates if they
-     ALSO share the same RFQ no., in addition to vendor/date/plant/
-     purchase-group.
-     IMPORTANT CAVEAT: the client's own instruction says the RFQ no.
-     column still needs to be ADDED to the POAUDIT extract by AIA IT - it
-     does not exist yet as of this revision. RFQ_NO_COLUMN below is an
-     ASSUMED header name ("RFQ no.") and must be confirmed against the
-     real extract once AIA IT adds it. Until the column exists, s(row,
-     RFQ_NO_COLUMN) resolves to "" for every row (same fallback behavior
-     as any other unknown column - see s() below), so every PO's RFQ
-     component is equal and point #9 behaves EXACTLY as it did before
-     this change (grouped by vendor+date+plant+purchase-group only). No
-     code changes will be needed on this side once the column shows up in
-     the extract with the assumed name - if AIA IT uses a different
-     header, only RFQ_NO_COLUMN needs updating.
-     Implementation note: the grouping key was previously built separately
-     (and identically, by hand) in both build_context() and
-     rule_19_multiple_po_same_day(). Both now call one shared
-     _same_day_key(row) helper so the two can never drift out of sync
-     again.
+     no. 9"). SUPERSEDED THIS REVISION by the "order acknowledgement"
+     source column + blank-RFQ handling described in the "THIS REVISION"
+     CHANGELOG entry above. This entry is kept for history only.
 
 ===============================================================================
 CHANGELOG - PRIOR REVISION (point renumbering, per client request)
@@ -341,7 +463,10 @@ PO 4500491455 line 00100) - unchanged, kept for history
      NOTE: the downstream approver-initials check (KKB/SRS/PJP/DAULAT/NHV/
      CVS) inside rule_15_rate_approval is UNCHANGED in this pass - per
      client instruction, DWS-approver verification itself is out of scope
-     for this fix and needs separate confirmation later.
+     for this fix and needs separate confirmation later. SEE ALSO the
+     "THIS REVISION" CHANGELOG entry above, which removes the separate
+     "RATEAPPROVAL"/"Rate Approval"-shaped tokens that had also crept into
+     this same set and were wrong per the client's explicit instruction.
 
   4. POINT (now #15, was #6) - delivery tolerance was not reading the
      over-delivery column:
@@ -353,11 +478,11 @@ PO 4500491455 line 00100) - unchanged, kept for history
      FIX: OVER_DELIVERY_TOLERANCE_COLUMN = "Overdelivery Tolerance Limit".
      The client-confirmed Overdelivery Tolerance Limit is now genuinely
      used for the over-delivery side of this rule, as originally intended.
-     SUPERSEDED THIS REVISION: point #15 no longer does a tolerance-banded
-     comparison against a cumulative quantity - see item 1 in the
-     CHANGELOG section above. This entry is kept for history only.
+     SUPERSEDED: point #15 no longer does a tolerance-banded comparison
+     against a cumulative quantity - see the "PRIOR REVISION" CHANGELOG
+     entry above. This entry is kept for history only.
 
-  5. (Retained, unaffected by either pass) Points #1-9 are HEADER-LEVEL;
+  5. (Retained, unaffected by any pass) Points #1-9 are HEADER-LEVEL;
      points #10-19 are LINE-LEVEL. See HEADER_LEVEL_RULE_NOS / LINE_ONLY_RULES
      below.
 
@@ -395,12 +520,30 @@ VERIFIED = "Verified"
 NOT_VERIFIED = "Not Verified"
 NA = "Not Applicable"
 MANUAL = "Data Missing"
+# Distinct from MANUAL/"Data Missing": used ONLY for the ZIRM/ZICP
+# manual-check routing on points #6/#7 (import PO types the client wants
+# a human to check), never for genuinely missing/unparseable data. See
+# CHANGELOG "THIS REVISION".
+MANUAL_CHECK = "Manual Check"
 
 # ---------------------------------------------------------------------------
 # Config / master lists taken directly from the rule sheet (Final sheet.csv)
 # ---------------------------------------------------------------------------
-# ZFB5 added this revision (points #6/#7) per client request - see CHANGELOG.
+# ZFB5 added per client request (points #6/#7) - see CHANGELOG.
 FREIGHT_CONDITION_TYPES = {"ZBF1", "ZBF2", "ZRA3", "ZRB3", "ZRE3", "ZFB5"}
+
+# Reference-only (does not affect any logic): ordinary pricing/tax condition
+# types the client flagged as "why is this showing verified?" for EYW lines
+# (points #6/#7). Confirmed against real POAUDITCND data that these are NOT
+# in FREIGHT_CONDITION_TYPES and were never being counted as freight - they
+# routinely co-occur on the SAME PO line alongside a genuine freight
+# condition (e.g. ZRA3/ZRB3), which is what was actually driving Verified.
+# See _freight_condition_match()/_other_condition_types_note() below, which
+# now names the exact matched freight type in the remark so this is no
+# longer ambiguous to a reviewer.
+NON_FREIGHT_REFERENCE_CONDITION_TYPES = {
+    "R000", "NAVM", "PBXX", "NAVS", "JEXS", "ZPB0", "R001", "ZIB2", "ZPB1",
+}
 DWS_APPROVERS = {"KKB", "SRS", "PJP", "DAULAT", "NHV", "CVS"}
 
 # --- Rule support: MSME payment terms (new #4, old #11) --------------------
@@ -471,20 +614,21 @@ GST_STATE_CODE_MAP = {
 
 # --- Rule support: point #9 grouping dimensions -----------------------------
 # "Purchasing Date" for point #9 is "PO Date(Doc date)", NOT "PO Created
-# date" - confirmed this revision against the client's ground truth (see
-# CHANGELOG item 2(a) above). PO_DATE_COLUMNS below includes it so it gets
+# date" - confirmed against the client's ground truth (see CHANGELOG,
+# "PRIOR REVISION" item 2(a)). PO_DATE_COLUMNS below includes it so it gets
 # the same normalize_sap_date() treatment as the other date columns when
 # the input file is a direct .xlsx export.
 PURCHASING_DATE_COLUMN = "PO Date(Doc date)"
 
-# ASSUMPTION - the client has confirmed an RFQ no. column still needs to be
-# ADDED to the POAUDIT extract by AIA IT; it does not exist yet. This is the
-# ASSUMED header name it will be added under - confirm/update once AIA IT
-# actually adds the column. Until then s(row, RFQ_NO_COLUMN) resolves to ""
-# for every row (same fallback as any other unknown column), so point #9's
-# grouping is completely unaffected by this dimension until the real column
-# shows up in the extract.
-RFQ_NO_COLUMN = "RFQ no."
+# RFQ number source column for point #9's 5th dimension. Per the Final
+# sheet's "Changes to be done" notes: "Add RFQ number = order
+# acknowledgement" - i.e. the RFQ number is sourced from the extract's
+# "order acknowledgement" column, NOT a separate "RFQ no." column (that
+# earlier assumption is now known to be wrong and has been replaced). This
+# column is present in the real extract - confirmed via the client's own
+# worked example on PO 4500496148 / 4500496147 / 4500496155 (see CHANGELOG,
+# "THIS REVISION", item 2).
+RFQ_NO_COLUMN = "order acknowledgement"
 
 
 def _state_from_gstin(gstin_raw):
@@ -545,12 +689,14 @@ ITEM_CATEGORY_SUBCONTRACTING_CODE = next(
 )  # "3"
 
 # --- Rule support: normalized rate-approval tag matching (new #8, old #15) -
-# Added DWSAPPROVAL / DWSAPPROVE - real Our Ref. values "DWS APPROVAL" and
-# "DWS APPROVE" were falling through to Not Applicable before this, because
-# only "DWS APPROVED"/"DWS-APPROVED" normalized to a recognised token.
-# Approver-initials check below this is unchanged (out of scope).
+# FIXED THIS REVISION per the Final sheet's explicit "Changes to be done"
+# instruction: "In Our Ref., search for 'DWS-APPROVED' / 'DWS-Approved'. Do
+# not search for 'Rate Approval', as 'Rate Approval' is the tag used for
+# the Digital Workflow Solution." Only the DWS-APPROVED-style tokens are
+# kept below; the previous "RATEAPPROVAL"/"APPROVEDRATE"/"APPROVERATE"/
+# "APPROVEDRAT" tokens have been REMOVED because they matched on the
+# generic "Rate Approval" DWS workflow tag the client says must be ignored.
 RATE_APPROVAL_TAG_TOKENS = {
-    "APPROVEDRATE", "APPROVERATE", "RATEAPPROVAL", "APPROVEDRAT",
     "DWSAPPROVED", "DWSAAPPROVED", "DWSAPPROVAL", "DWSAPPROVE",
 }
 
@@ -642,10 +788,9 @@ def normalize_tax_code(value):
 EXCEL_EXTENSIONS = {".xlsx", ".xlsm", ".xls"}
 CSV_EXTENSIONS = {".csv", ".txt"}
 
-# "PO Date(Doc date)" added this revision - point #9's "Purchasing Date"
-# uses this column, not "PO Created date" - see CHANGELOG item 2(a). It
-# needs the same SAP-date normalization treatment when the source file is
-# a direct .xlsx export.
+# "PO Date(Doc date)" - point #9's "Purchasing Date" uses this column, not
+# "PO Created date" - see CHANGELOG. It needs the same SAP-date
+# normalization treatment when the source file is a direct .xlsx export.
 PO_DATE_COLUMNS = ("PO Created date", "PO Date(Doc date)", "PR Creation date", "Delivery Date")
 RC_DATE_COLUMNS = ("RC valid from", "RC valid to")
 
@@ -826,36 +971,40 @@ def evaluate_rule(rule_no, fn, row, ctx):
 
 # ---------------------------------------------------------------------------
 # Point #9 grouping helpers (Multiple POs to same vendor/purchase-group/
-# plant/Purchasing Date/RFQ). Used by BOTH build_context() (to build the
+# plant/Purchasing Date, +RFQ). Used by BOTH build_context() (to build the
 # aggregates) and rule_19_multiple_po_same_day() (to look a PO up in them)
 # so the two can never define a key differently and silently disagree.
 #
-# Two keys are used:
-#   - _po9_full_key(row):  all five dimensions - an exact match here means
-#                           Not Verified ("all five parameters are the same").
-#   - _po9_core_key(row):  Vendor + Purchasing Group + Plant only - the
-#                           natural "this could plausibly be the same
-#                           purchasing event" population used to explain a
-#                           Verified result (which single remaining
-#                           dimension - Purchasing Date and/or RFQ no. -
-#                           is what actually differs).
+# _po9_four_key(row) is the CORE 4-dimension key: Vendor + Purchasing Group
+# + Plant + Purchasing Date ("PO Date(Doc date)", NOT "PO Created date" -
+# see CHANGELOG). This is what decides a match WHENEVER either side's RFQ
+# is blank (per the Final sheet's "Changes to be done" instruction for this
+# point: "If the RFQ No. is blank, check only the remaining 4 parameters
+# for verification").
 #
-# "Purchasing Date" = PURCHASING_DATE_COLUMN = "PO Date(Doc date)", NOT
-# "PO Created date" - see CHANGELOG item 2(a).
+# RFQ (RFQ_NO_COLUMN = "order acknowledgement") is layered on top in
+# rule_19_multiple_po_same_day() / build_context() rather than being baked
+# into a single 5-part tuple key, because a blank RFQ on EITHER side must
+# make the two POs comparable on the 4-parameter key alone - a plain tuple
+# match can't express "ignore this field when it's blank".
+#
+# _po9_core_key(row) (Vendor + Purchasing Group + Plant only, no date) is
+# used purely to build the "Verified" explanation - the population of
+# other POs sharing vendor/group/plant, so the remark can say which
+# remaining dimension (Purchasing Date and/or RFQ) is what differs.
 #
 # Neither key filters out excluded (Deletion indicator='L' / Returns
-# Item='X') rows - see CHANGELOG item 2(b) for why that exclusion was
-# proven wrong for this specific point against the client's ground truth.
-# An excluded row's OWN result is still forced to Not Applicable
-# separately, by evaluate_rule() above.
+# Item='X') rows - see CHANGELOG for why that exclusion was proven wrong
+# for this specific point against the client's ground truth. An excluded
+# row's OWN result is still forced to Not Applicable separately, by
+# evaluate_rule() above.
 # ---------------------------------------------------------------------------
-def _po9_full_key(row):
+def _po9_four_key(row):
     return (
         s(row, "Vendor Code"),
         s(row, "Purchase Group"),
         s(row, "Plant"),
         s(row, PURCHASING_DATE_COLUMN),
-        s(row, RFQ_NO_COLUMN),
     )
 
 
@@ -865,6 +1014,20 @@ def _po9_core_key(row):
         s(row, "Purchase Group"),
         s(row, "Plant"),
     )
+
+
+def _po9_rfq_matches(own_rfq, other_rfq):
+    """
+    Per the Final sheet's "Changes to be done" instruction for point #9:
+    check all 5 parameters (Vendor, Purchasing Group, Plant, Purchasing
+    Date, RFQ no.); if the RFQ No. is blank, check only the remaining 4
+    parameters. Symmetric: a blank RFQ on EITHER side means the RFQ
+    dimension is skipped for that comparison (treated as matching);
+    if BOTH sides have a non-blank RFQ, they must be equal to match.
+    """
+    if own_rfq == "" or other_rfq == "":
+        return True
+    return own_rfq == other_rfq
 
 
 def _format_po_list(pos, limit=5):
@@ -951,7 +1114,7 @@ def rule_05_delivery_after_pr(row, ctx):
 
 def rule_06_quantity_control(row, ctx):
     """
-    POINT #15 - REWRITTEN THIS REVISION (see CHANGELOG item 1).
+    POINT #15.
 
     Client's formula (confirmed with worked examples):
 
@@ -959,8 +1122,7 @@ def rule_06_quantity_control(row, ctx):
 
     This is a direct, single-line comparison of THIS row's own "PO Qty."
     against THIS row's own linked "PR Qty." - there is no cross-PO
-    cumulative aggregation any more (ctx["pr_cumulative_po_qty"] and its
-    accumulator in build_context() have been removed as dead code).
+    cumulative aggregation.
 
     - PR Qty < PO Qty            -> Not Verified (PO qty cannot exceed PR qty)
     - PO Qty <= PR Qty <= ceiling -> Verified
@@ -968,9 +1130,15 @@ def rule_06_quantity_control(row, ctx):
 
     where ceiling = PO Qty x (1 + Overdelivery Tolerance % / 100).
     "Under Delivery tolerance" is intentionally NOT consulted for this
-    rule any more - the client's formula only references Overdelivery
-    Tolerance. If "Overdelivery Tolerance Limit" is blank, this falls
-    back to 0% (no allowed buffer) and logs an assumption.
+    rule - the client's formula only references Overdelivery Tolerance.
+    If "Overdelivery Tolerance Limit" is blank, this falls back to 0%
+    (no allowed buffer) and logs an assumption.
+
+    NOTE: the Final sheet's own "Changes to be done" column for this point
+    describes a different, CUMULATIVE-PO-Qty formula, but its "Testing"
+    column marks that entry "ON HOLD" - so it is deliberately NOT applied
+    here. This function implements the newer, non-cumulative, client-
+    confirmed formula above instead (see CHANGELOG).
     """
     po_type = s(row, "PO Type")
     if po_type in {"ZSER", "ZCSR"}:
@@ -1053,9 +1221,47 @@ def rule_08_rc_consistency(row, ctx):
 
 
 def rule_09_tax_logic(row, ctx):
-    """HEADER-LEVEL rule (see build_po_header_records) - reports as new point #3."""
-    vendor_state = s(row, "Vendor State").upper()
+    """
+    HEADER-LEVEL rule (see build_po_header_records) - reports as new point #3.
+
+    FIXED THIS REVISION per client feedback: "If tax code is 0, 48 - then no
+    gst and data missing of Vendor state." Tax Codes '0' and '48' map (via
+    the Tax Master) to categories 'No GST' and 'Input Tax' respectively -
+    both of which already fall under GST_NOT_APPLICABLE_TOKENS and should
+    resolve straight to Not Applicable ("no GST"). The PREVIOUS ordering
+    checked Vendor State FIRST and returned Data Missing whenever Vendor
+    State was blank, before the Tax Master lookup ever ran - so a line with
+    Tax Code 0/48 but a blank Vendor State incorrectly showed "Data Missing"
+    instead of "Not Applicable". A Vendor State is only actually needed to
+    decide the Gujarat/non-Gujarat (SGST+CGST vs IGST) comparison, so it is
+    now looked up AFTER the Tax Master / GST-not-applicable check, not
+    before it. Vendor State blank still correctly produces Data Missing,
+    but only for tax codes that genuinely require the Gujarat comparison -
+    no longer for tax codes like 0/48 whose category already says GST does
+    not apply, and no longer blocks that determination.
+    """
     tax_code = s(row, "Tax code")
+
+    if not tax_code:
+        return MANUAL, "Tax code is missing/blank"
+
+    tax_master = ctx.get("tax_master", {})
+    tax = tax_master.get(normalize_tax_code(tax_code))  # normalize before lookup ("07" -> "7")
+
+    if not tax:
+        return MANUAL, f"Tax Code {tax_code} not found in Tax Master"
+
+    category_token = _normalize_category_tokens(tax["category"])
+
+    # No-GST / not-applicable categories (e.g. Tax Code 0 -> "No GST", Tax
+    # Code 48 -> "Input Tax") are decided straight from the Tax Master -
+    # Vendor State is irrelevant here and is NOT required for this branch.
+    if category_token in GST_NOT_APPLICABLE_TOKENS:
+        return NA, f"Tax Code {tax_code} category '{tax['category']}' is not a GST in-state/out-of-state code (VAT/CST/exempt/Input Tax/No GST/etc.)"
+
+    # Only categories that actually need a Gujarat/non-Gujarat comparison
+    # (SGST+CGST vs IGST) require Vendor State from here on.
+    vendor_state = s(row, "Vendor State").upper()
 
     if not vendor_state:
         gstin = s(row, GSTIN_COLUMN)
@@ -1069,19 +1275,8 @@ def rule_09_tax_logic(row, ctx):
                 f"verify against the real extract header."
             )
 
-    if not vendor_state or not tax_code:
-        return MANUAL, "Vendor state or tax code missing (Vendor State blank and GSTIN unavailable/unrecognised)"
-
-    tax_master = ctx.get("tax_master", {})
-    tax = tax_master.get(normalize_tax_code(tax_code))  # normalize before lookup ("07" -> "7")
-
-    if not tax:
-        return MANUAL, f"Tax Code {tax_code} not found in Tax Master"
-
-    category_token = _normalize_category_tokens(tax["category"])
-
-    if category_token in GST_NOT_APPLICABLE_TOKENS:
-        return NA, f"Tax Code {tax_code} category '{tax['category']}' is not a GST in-state/out-of-state code (VAT/CST/exempt/etc.)"
+    if not vendor_state:
+        return MANUAL, f"Vendor State is missing/blank (and could not be derived from GSTIN) - needed to compare Tax Code {tax_code} ({tax['category']}) against Gujarat/non-Gujarat"
 
     is_gujarat = vendor_state in ("GUJARAT", GUJARAT_STATE_CODE)
 
@@ -1101,13 +1296,12 @@ def rule_09_tax_logic(row, ctx):
 
 def rule_10_vendor_material_tax_consistency(row, ctx):
     """
-    POINT #16. Aggregation FIX this revision (see CHANGELOG item 3): the
-    vendor_material_tax set built in build_context() no longer skips
-    excluded (Deletion indicator='L' / Returns Item='X') rows - confirmed
-    against the client's ground truth on PO 4500493241 (tax 01, live) vs
-    PO 4500492489 (tax 03, Returns Item='X'), same vendor/material, which
-    the client's manual audit says IS Not Verified (the two tax codes
-    still conflict even though one line was returned).
+    POINT #16. The vendor_material_tax set built in build_context() does
+    NOT skip excluded (Deletion indicator='L' / Returns Item='X') rows -
+    confirmed against the client's ground truth on PO 4500493241 (tax 01,
+    live) vs PO 4500492489 (tax 03, Returns Item='X'), same vendor/
+    material, which the client's manual audit says IS Not Verified (the
+    two tax codes still conflict even though one line was returned).
     """
     vendor = s(row, "Vendor Code")
     material = s(row, "Material Code")
@@ -1157,11 +1351,50 @@ def rule_12_general_payment_term(row, ctx):
     return NOT_VERIFIED, f"Payment days = {payment_days:.0f} (<21)"
 
 
-def _has_freight_condition(po_number, item_no, cnd_by_po):
-    for c in cnd_by_po.get(po_number, []):
-        if s(c, "Item no").lstrip("0") == str(item_no).lstrip("0") and s(c, "Condition Type") in FREIGHT_CONDITION_TYPES:
-            return True
-    return False
+def _condition_types_for_item(po_number, item_no, cnd_by_po):
+    """All Condition Type values recorded against this PO+item (order preserved)."""
+    item_s = str(item_no).lstrip("0")
+    return [
+        s(c, "Condition Type")
+        for c in cnd_by_po.get(po_number, [])
+        if s(c, "Item no").lstrip("0") == item_s and s(c, "Condition Type")
+    ]
+
+
+def _freight_condition_match(po_number, item_no, cnd_by_po):
+    """
+    Returns (matched_freight_type_or_None, all_condition_types_present).
+
+    FIXED THIS REVISION per client feedback ("If inco term is EYW and
+    condition types are R000,NAVM,PBXX,NAVS,JEXS,ZPB0,R001,ZIB2,ZPB1 - on
+    these condition types - why it is showing verified?"): these listed
+    codes are ordinary pricing/tax conditions (gross price, non-deductible
+    tax, etc.) that legitimately co-occur ALONGSIDE a real freight
+    condition (e.g. ZRA3/ZRB3) on the same PO line - they are NOT
+    themselves in FREIGHT_CONDITION_TYPES and were never being matched as
+    freight (verified against the real POAUDITCND data: every line whose
+    ONLY condition types are from this list is correctly Not Verified).
+    The actual problem was that the remark only said "Freight condition
+    present" without naming which condition type triggered it, so a
+    reviewer scanning a line with types like
+    ['ZRB3','NAVM','PBXX','NAVS','JEXS'] had no way to see - without
+    re-deriving it themselves - that 'ZRB3' (not the other four) was what
+    made it Verified. This helper now surfaces the actual matched type (or
+    confirms none matched) so rule_13/rule_14 can say so explicitly.
+    """
+    all_types = _condition_types_for_item(po_number, item_no, cnd_by_po)
+    for t in all_types:
+        if t in FREIGHT_CONDITION_TYPES:
+            return t, all_types
+    return None, all_types
+
+
+def _other_condition_types_note(matched_type, all_types):
+    """Formats the non-freight condition types also present, for remark transparency."""
+    others = sorted({t for t in all_types if t != matched_type})
+    if not others:
+        return ""
+    return f" (other condition type(s) on this line, not freight: {others})"
 
 
 def rule_13_eyw_freight_required(row, ctx):
@@ -1173,7 +1406,7 @@ def rule_13_eyw_freight_required(row, ctx):
     """
     po_type = s(row, "PO Type")
     if po_type in MANUAL_CHECK_PO_TYPES:
-        return MANUAL, (
+        return MANUAL_CHECK, (
             f"PO type {po_type} is an import PO type flagged by the client for manual "
             f"check rather than an automated EYW freight-condition verdict."
         )
@@ -1183,9 +1416,18 @@ def rule_13_eyw_freight_required(row, ctx):
         return NA, f"Inco term is {inco_term}, not EYW"
     po_number = s(row, "PO number")
     item_no = s(row, "PO Line item")
-    if _has_freight_condition(po_number, item_no, ctx["cnd_by_po"]):
-        return VERIFIED, "Freight condition present for EYW PO line"
-    return NOT_VERIFIED, "EYW PO line missing a freight condition"
+    matched_type, all_types = _freight_condition_match(po_number, item_no, ctx["cnd_by_po"])
+    if matched_type:
+        return VERIFIED, (
+            f"Freight condition '{matched_type}' present for EYW PO line"
+            f"{_other_condition_types_note(matched_type, all_types)}"
+        )
+    if all_types:
+        return NOT_VERIFIED, (
+            f"EYW PO line missing a freight condition (condition type(s) present: "
+            f"{sorted(set(all_types))}, none recognised as freight)"
+        )
+    return NOT_VERIFIED, "EYW PO line missing a freight condition (no condition records found for this line)"
 
 
 def rule_14_exw_fca_no_freight(row, ctx):
@@ -1197,7 +1439,7 @@ def rule_14_exw_fca_no_freight(row, ctx):
     """
     po_type = s(row, "PO Type")
     if po_type in MANUAL_CHECK_PO_TYPES:
-        return MANUAL, (
+        return MANUAL_CHECK, (
             f"PO type {po_type} is an import PO type flagged by the client for manual "
             f"check rather than an automated EXW/FCA freight-condition verdict."
         )
@@ -1207,9 +1449,16 @@ def rule_14_exw_fca_no_freight(row, ctx):
         return NA, f"Inco term is {inco_term}, not EXW/FCA"
     po_number = s(row, "PO number")
     item_no = s(row, "PO Line item")
-    if _has_freight_condition(po_number, item_no, ctx["cnd_by_po"]):
-        return NOT_VERIFIED, "EXW/FCA PO line has a freight condition (should be omitted)"
-    return VERIFIED, "No freight condition on EXW/FCA PO line"
+    matched_type, all_types = _freight_condition_match(po_number, item_no, ctx["cnd_by_po"])
+    if matched_type:
+        return NOT_VERIFIED, (
+            f"EXW/FCA PO line has freight condition '{matched_type}' (should be omitted)"
+            f"{_other_condition_types_note(matched_type, all_types)}"
+        )
+    return VERIFIED, (
+        f"No freight condition on EXW/FCA PO line"
+        + (f" (other condition type(s) present, none are freight: {sorted(set(all_types))})" if all_types else "")
+    )
 
 
 def rule_15_rate_approval(row, ctx):
@@ -1291,61 +1540,86 @@ def rule_19_multiple_po_same_day(row, ctx):
     """
     HEADER-LEVEL rule (see build_po_header_records) - reports as new point #9.
 
-    REWRITTEN THIS REVISION - see CHANGELOG item 2 for the full rationale
-    and the ground-truth verification (14/14 client-checked rows match).
+    Logic (per the Final sheet's "Changes to be done" instruction for this
+    point - see CHANGELOG "THIS REVISION" entry 2 for full rationale and
+    the client's worked example, which this reproduces exactly):
 
-    Logic:
-      1. Exact match on all five dimensions (Vendor, Purchasing Group,
-         Plant, Purchasing Date = "PO Date(Doc date)", RFQ no.) against
-         >=1 other PO number -> Not Verified, remark states all five
-         parameters are the same and names the other PO(s).
-      2. Otherwise, look among other POs that already share Vendor +
-         Purchasing Group + Plant (the "core" population - the only POs
-         where a difference in Purchasing Date/RFQ is actually a
-         meaningful audit signal) and report which of those two remaining
-         dimensions differs.
-      3. If no other PO shares even Vendor + Purchasing Group + Plant,
-         Verified with a generic "no comparable PO" remark.
+      1. Compute this PO's 4-parameter core key (Vendor, Purchasing Group,
+         Plant, Purchasing Date = "PO Date(Doc date)") and look up every
+         OTHER PO number sharing that same 4-parameter key.
+      2. For each such other PO, the two are considered a match if EITHER
+         PO's RFQ (RFQ_NO_COLUMN = "order acknowledgement") is blank
+         (match decided on the 4 core parameters only), OR if both are
+         non-blank and equal (match on all 5 parameters). If both are
+         non-blank and DIFFERENT, that other PO does NOT count as a match.
+      3. If ANY other PO matches -> Not Verified, naming the matching
+         PO(s) and stating plainly whether the match was on the 4 core
+         parameters (RFQ blank on one side) or all 5 (RFQ also equal).
+      4. If no other PO shares even the 4-parameter core key -> Verified,
+         generic remark.
+      5. If other POs DO share the 4-parameter core key but none of them
+         match (i.e. they were all excluded purely because both sides had
+         a non-blank, differing RFQ) -> Verified, remark names RFQ as the
+         differentiator.
 
-    Grouping keys come from _po9_full_key()/_po9_core_key() (shared with
+    Grouping keys come from _po9_four_key()/_po9_core_key() (shared with
     build_context()) so this can never disagree with how the aggregates
     were built. Neither key filters out excluded rows for this point -
-    see CHANGELOG item 2(b).
+    see CHANGELOG for why.
     """
     po_number = s(row, "PO number")
 
-    full_key = _po9_full_key(row)
-    others_full = ctx["po9_full_groups"].get(full_key, set()) - {po_number}
-    if others_full:
-        return NOT_VERIFIED, (
-            f"Same Vendor, Purchasing Group, Plant, Purchasing Date and RFQ no. as "
-            f"PO(s) {_format_po_list(others_full)} - all five parameters are the same"
+    four_key = _po9_four_key(row)
+    own_rfq = s(row, RFQ_NO_COLUMN)
+
+    others_four = ctx["po9_four_groups"].get(four_key, set()) - {po_number}
+
+    # Matched POs are split into two buckets so the remark can say exactly
+    # which parameters were actually compared, per the client's wording
+    # ("Remarks for 4 parameters applied only then 4 parameters are same
+    # and RFQ number is applied"):
+    #   matched_4_only - matched because RFQ was blank on at least one
+    #                     side, so only the 4 core parameters decided it.
+    #   matched_5      - matched on all 5 parameters, RFQ included
+    #                     (both sides non-blank and equal).
+    matched_4_only = set()
+    matched_5 = set()
+    rfq_only_diff = set()
+    for other_po in others_four:
+        other_rfq = ctx["po9_rfq_by_po"].get((four_key, other_po), "")
+        if not _po9_rfq_matches(own_rfq, other_rfq):
+            rfq_only_diff.add(other_po)
+        elif own_rfq == "" or other_rfq == "":
+            matched_4_only.add(other_po)
+        else:
+            matched_5.add(other_po)
+
+    if matched_4_only or matched_5:
+        parts = []
+        if matched_4_only:
+            parts.append(
+                f"4 parameters (Vendor, Purchasing Group, Plant, Purchasing Date) are "
+                f"the same as PO(s) {_format_po_list(matched_4_only)} - RFQ no. is blank "
+                f"on at least one side so it was not compared"
+            )
+        if matched_5:
+            parts.append(
+                f"all 5 parameters (Vendor, Purchasing Group, Plant, Purchasing Date and "
+                f"RFQ no.) are the same as PO(s) {_format_po_list(matched_5)}"
+            )
+        return NOT_VERIFIED, "; ".join(parts)
+
+    if not others_four:
+        return VERIFIED, "No other PO found with the same Vendor, Purchasing Group, Plant and Purchasing Date"
+
+    if rfq_only_diff:
+        return VERIFIED, (
+            f"Same Vendor, Purchasing Group, Plant and Purchasing Date as "
+            f"PO(s) {_format_po_list(rfq_only_diff)}, but RFQ no. is different on both "
+            f"sides - not treated as a duplicate"
         )
 
-    core_key = _po9_core_key(row)
-    others_core = ctx["po9_core_groups"].get(core_key, set()) - {po_number}
-    if not others_core:
-        return VERIFIED, "No other PO found with the same Vendor, Purchasing Group and Plant"
-
-    self_date = s(row, PURCHASING_DATE_COLUMN)
-    self_rfq = s(row, RFQ_NO_COLUMN)
-    rep = ctx["po9_core_rep"]
-
-    rfq_diff = {po for po in others_core if rep.get((core_key, po), (None, None))[1] != self_rfq}
-    date_diff = {po for po in others_core if rep.get((core_key, po), (None, None))[0] != self_date}
-
-    reasons = []
-    if rfq_diff:
-        reasons.append(f"RFQ number is different (also see PO(s) {_format_po_list(rfq_diff)})")
-    if date_diff:
-        reasons.append(f"Purchasing Date is different (also see PO(s) {_format_po_list(date_diff)})")
-
-    if reasons:
-        return VERIFIED, "; ".join(reasons)
-    return VERIFIED, (
-        "No other PO found with the same Vendor, Purchasing Group, Plant, "
-        "Purchasing Date and RFQ no."
-    )
+    return VERIFIED, "No other PO found with the same Vendor, Purchasing Group, Plant and Purchasing Date"
 
 
 def rule_rc_overlap(row, ctx):
@@ -1365,10 +1639,10 @@ def rule_rc_overlap(row, ctx):
 # ---------------------------------------------------------------------------
 # Rule registry + HEADER vs LINE classification
 #
-# RENUMBERED (see CHANGELOG at top): pointNo values below are the NEW
-# numbers. Header points are now contiguous 1-9; line points 10-19. Each
-# tuple's rule_no (first element) is what actually gets written out as
-# `pointNo` - the function names are unrelated legacy identifiers.
+# pointNo values below are the NEW numbers (see CHANGELOG). Header points
+# are contiguous 1-9; line points 10-19. Each tuple's rule_no (first
+# element) is what actually gets written out as `pointNo` - the function
+# names are unrelated legacy identifiers.
 # ---------------------------------------------------------------------------
 HEADER_LEVEL_RULE_NOS = {1, 2, 3, 4, 5, 6, 7, 8, 9}
 
@@ -1382,7 +1656,7 @@ PO_LINE_RULES = [
     (6, "EYW inco-term requires freight condition", rule_13_eyw_freight_required),
     (7, "EXW/FCA must not have freight condition", rule_14_exw_fca_no_freight),
     (8, "Rate approval by authorised approver", rule_15_rate_approval),
-    (9, "Multiple POs to same Vendor/Purchasing Group/Plant/Purchasing Date/RFQ (all five must match for Not Verified)", rule_19_multiple_po_same_day),
+    (9, "Multiple POs to same Vendor/Purchasing Group/Plant/Purchasing Date (RFQ used to distinguish when both non-blank)", rule_19_multiple_po_same_day),
     # ---- LINE-LEVEL (10-19) ----
     (10, "Release Verification (PR released before PO)", rule_01_release_verification),
     (11, "PR assigned to each PO line", rule_02_pr_assigned),
@@ -1514,26 +1788,29 @@ def build_context(po_rows, cnd_by_po, rc_rows):
     """
     Builds every cross-row aggregate the rule functions look up via ctx.
 
-    IMPORTANT (this revision):
-      - Point #9's aggregates (po9_full_groups / po9_core_groups /
-        po9_core_rep) and point #16's aggregate (vendor_material_tax) NO
-        LONGER skip excluded (Deletion indicator='L' / Returns Item='X')
-        rows when aggregating - the opposite of last revision's fix. This
-        was proven against the client's ground-truth "before/after"
-        workbook: a cancelled or returned PO/line must still count as a
-        real duplicate-creation event (point #9) or a real conflicting
-        tax code (point #16), even though its OWN result is still forced
-        to Not Applicable by evaluate_rule(). See CHANGELOG items 2(b)
-        and 3 at the top of this file.
-      - Point #15 no longer has an aggregate here at all - it was
-        rewritten to a direct per-line comparison (see rule_06). The old
-        pr_cumulative_po_qty accumulator has been removed.
+    - Point #9's aggregates (po9_four_groups / po9_rfq_by_po / po9_core_groups)
+      and point #16's aggregate (vendor_material_tax) do NOT skip excluded
+      (Deletion indicator='L' / Returns Item='X') rows when aggregating -
+      confirmed against the client's ground-truth "before/after" workbook:
+      a cancelled or returned PO/line must still count as a real
+      duplicate-creation event (point #9) or a real conflicting tax code
+      (point #16), even though its OWN result is still forced to Not
+      Applicable by evaluate_rule(). See CHANGELOG.
+    - Point #9's RFQ handling uses a 4-parameter core key
+      (_po9_four_key: Vendor/Purchasing Group/Plant/Purchasing Date) plus
+      a separate per-(four_key, po_number) representative RFQ value
+      (po9_rfq_by_po), rather than baking RFQ into the grouping tuple
+      itself - this is what lets rule_19 treat a blank RFQ on either side
+      as "skip the RFQ dimension" per the client's instruction (see
+      CHANGELOG, "THIS REVISION").
+    - Point #15 has no aggregate here at all - it is a direct per-line
+      comparison (see rule_06_quantity_control).
     """
     po_material_groups = defaultdict(list)
     vendor_material_tax = defaultdict(set)
-    po9_full_groups = defaultdict(set)
+    po9_four_groups = defaultdict(set)
     po9_core_groups = defaultdict(set)
-    po9_core_rep = {}
+    po9_rfq_by_po = {}
     rc_overlaps = {}
 
     by_vendor_material = defaultdict(list)
@@ -1574,40 +1851,51 @@ def build_context(po_rows, cnd_by_po, rc_rows):
         po_material_groups[(po_number, material)].append(row)
 
         # Point #16: tax codes from EVERY row (including excluded ones)
-        # feed the per-(vendor, material) tax-code set - see CHANGELOG
-        # item 3.
+        # feed the per-(vendor, material) tax-code set - see CHANGELOG.
         vendor = s(row, "Vendor Code")
         tax_code = s(row, "Tax code")
         if vendor and material and tax_code:
             vendor_material_tax[(vendor, material)].add(tax_code)
 
         # Point #9: every row (including excluded ones) feeds the
-        # duplicate-PO aggregates - see CHANGELOG item 2(b).
-        full_key = _po9_full_key(row)
-        po9_full_groups[full_key].add(po_number)
+        # duplicate-PO aggregates - see CHANGELOG.
+        four_key = _po9_four_key(row)
+        po9_four_groups[four_key].add(po_number)
+        # First RFQ value seen for this (four_key, po_number) is treated as
+        # the PO's representative RFQ. Assumption: a single PO's lines all
+        # share the same order-acknowledgement/RFQ value; if they don't,
+        # only the first-seen value is used (logged below).
+        rep_key = (four_key, po_number)
+        rfq_value = s(row, RFQ_NO_COLUMN)
+        if rep_key not in po9_rfq_by_po:
+            po9_rfq_by_po[rep_key] = rfq_value
+        elif rfq_value and po9_rfq_by_po[rep_key] and rfq_value != po9_rfq_by_po[rep_key]:
+            log_assumption(
+                9,
+                f"PO {po_number}: lines disagree on '{RFQ_NO_COLUMN}' "
+                f"('{po9_rfq_by_po[rep_key]}' vs '{rfq_value}') - the first value "
+                f"encountered was used as this PO's representative RFQ for point #9.",
+            )
 
         core_key = _po9_core_key(row)
         po9_core_groups[core_key].add(po_number)
-        po9_core_rep.setdefault(
-            (core_key, po_number),
-            (s(row, PURCHASING_DATE_COLUMN), s(row, RFQ_NO_COLUMN)),
-        )
 
     log_assumption(
         9,
-        f"Point #9's RFQ dimension (column '{RFQ_NO_COLUMN}') still does not exist in the "
-        f"POAUDIT extract - the client has confirmed AIA IT still needs to add it. Until it "
-        f"does, every row's RFQ no. resolves to blank, so grouping is effectively driven by "
-        f"Vendor + Purchasing Group + Plant + Purchasing Date (PO Date(Doc date)) only. "
-        f"Confirm the column name (assumed: '{RFQ_NO_COLUMN}') once it is added.",
+        f"Point #9's RFQ dimension is sourced from the '{RFQ_NO_COLUMN}' column (per the "
+        f"Final sheet's 'Add RFQ number = order acknowledgement' instruction). Two POs "
+        f"sharing Vendor + Purchasing Group + Plant + Purchasing Date ('{PURCHASING_DATE_COLUMN}') "
+        f"are flagged Not Verified unless BOTH have a non-blank RFQ and those RFQ values "
+        f"differ - i.e. a blank RFQ on either side means only the 4 core parameters are "
+        f"checked, per the client's instruction.",
     )
 
     return {
         "po_material_groups": po_material_groups,
         "vendor_material_tax": vendor_material_tax,
-        "po9_full_groups": po9_full_groups,
+        "po9_four_groups": po9_four_groups,
+        "po9_rfq_by_po": po9_rfq_by_po,
         "po9_core_groups": po9_core_groups,
-        "po9_core_rep": po9_core_rep,
         "cnd_by_po": cnd_by_po,
         "rc_overlaps": rc_overlaps,
     }
@@ -1617,6 +1905,10 @@ STATUS_TO_RESULT_FLAGS = {
     NOT_VERIFIED: {"verified": False, "not_applicable": False, "missing_data": False, "manual_verification": False},
     NA: {"verified": False, "not_applicable": True, "missing_data": False, "manual_verification": False},
     MANUAL: {"verified": False, "not_applicable": False, "missing_data": True, "manual_verification": True},
+    # ZIRM/ZICP routing on points #6/#7: a deliberate "human must check
+    # this" outcome, NOT a data-quality problem - missing_data stays
+    # False so it isn't confused with genuinely missing/unparseable data.
+    MANUAL_CHECK: {"verified": False, "not_applicable": False, "missing_data": False, "manual_verification": True},
 }
 
 
@@ -1751,14 +2043,14 @@ def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None, header_
             f"{excluded_count} of {len(po_rows)} in-scope PO line(s) were excluded from "
             f"ALL 19 audit points (marked Not Applicable on every point, line-level and "
             f"header-level alike) because they have Deletion indicator = 'L' and/or "
-            f"Returns Item = 'X'. This ONLY affects each such row's OWN result. This "
-            f"revision, these same excluded lines are DELIBERATELY still counted when "
-            f"building the point #9 (duplicate-PO) and point #16 (vendor/material tax "
-            f"consistency) aggregates, i.e. they still affect the results of OTHER, live "
-            f"line items where relevant - confirmed against the client's manually-verified "
-            f"ground truth (see CHANGELOG items 2(b) and 3). Point #15 no longer uses a "
-            f"cross-row aggregate at all, so exclusion there simply means the excluded "
-            f"line's own result is Not Applicable, with no effect on any other line.",
+            f"Returns Item = 'X'. This ONLY affects each such row's OWN result. These "
+            f"same excluded lines are DELIBERATELY still counted when building the point "
+            f"#9 (duplicate-PO) and point #16 (vendor/material tax consistency) "
+            f"aggregates, i.e. they still affect the results of OTHER, live line items "
+            f"where relevant - confirmed against the client's manually-verified ground "
+            f"truth (see CHANGELOG). Point #15 no longer uses a cross-row aggregate at "
+            f"all, so exclusion there simply means the excluded line's own result is Not "
+            f"Applicable, with no effect on any other line.",
         )
 
     ctx = build_context(po_rows, cnd_by_po, rc_rows)

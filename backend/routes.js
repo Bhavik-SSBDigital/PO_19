@@ -38,6 +38,7 @@ import {
 import {
   updateAuditPointSeverity,
   getAuditPointConfig,
+  reloadPointConfig,
 } from "./controller/risk-categorization-controller.js";
 
 import {
@@ -140,6 +141,10 @@ router.post(
 router.get("/reports/audit-point-config", getAuditPointConfig);
 router.post("/reports/audit-point-config", getAuditPointConfig);
 router.post("/risk-categorization/update-severity", updateAuditPointSeverity);
+// Admin-only. Call after `node scripts/seed-point-definitions.js` so a
+// running server picks up edited title/summary/logic text without a
+// restart - see scripts/POINT_CHANGE_PROCESS.md.
+router.post("/risk-categorization/reload-point-config", reloadPointConfig);
 
 // --- Buyer point-level remarks (LINE-LEVEL) ---
 router.post(

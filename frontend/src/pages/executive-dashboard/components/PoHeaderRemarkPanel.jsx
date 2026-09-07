@@ -21,7 +21,6 @@ import { toast } from "react-toastify";
 import {
   getPoHeaderRemarks,
   submitPoHeaderRemark,
-  updatePoHeaderRemark,
   deletePoHeaderRemark,
 } from "../../../api/api-functions";
 
@@ -41,27 +40,48 @@ const PoHeaderRemarkPanel = ({
   isAdmin,
   isProcurementManager,
   locked: lockedProp = false,
+  // Remarks already embedded on the parent's response (e.g.
+  // header.headerRemarksByPoint[pointNo] from getHeaderForPo /
+  // getPoHeaderSummary). Seeds state immediately so the trigger button
+  // shows the right label on first paint instead of "Add Remark" until
+  // the dialog is opened once and load() has a chance to run.
+  initialRemarks = [],
+  // Optional — lets a parent re-sync its own copy (e.g. a summary count
+  // elsewhere on the page) whenever this point's remarks change.
+  onRemarksChanged,
   compact = false,
 }) => {
   const canSubmit = isBuyer;
 
-  const [remarks, setRemarks] = useState([]);
+  const [remarks, setRemarks] = useState(initialRemarks);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [draft, setDraft] = useState("");
   const [open, setOpen] = useState(false);
   const [locked, setLocked] = useState(lockedProp);
 
+  // Keep in sync whenever the parent re-fetches and hands down fresh
+  // embedded remarks (e.g. after switching POs, or a header refresh).
+  useEffect(() => {
+    setRemarks(initialRemarks);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialRemarks]);
+
   const ownRemark = remarks.find(
     (r) => currentUserId != null && String(r.submittedBy) === String(currentUserId)
   );
+
+  const applyRemarks = (next, nextLocked) => {
+    setRemarks(next);
+    if (nextLocked !== undefined) setLocked(nextLocked);
+    onRemarksChanged?.(next);
+  };
 
   const load = async () => {
     setLoading(true);
     try {
       const res = await getPoHeaderRemarks({ po_number: poNumber, pointNo });
-      setRemarks(res?.remarks || []);
-      setLocked(Boolean(res?.remarksLocked));
+      applyRemarks(res?.remarks || [], Boolean(res?.remarksLocked));
     } catch (error) {
       toast.error(error?.response?.data?.message || error?.message || "Failed to load remarks");
     } finally {
@@ -80,7 +100,10 @@ const PoHeaderRemarkPanel = ({
 
   useEffect(() => {
     if (!open) return;
-    setDraft(ownRemark ? ownRemark.remark : "");
+    // No "edit in place" flow here either — see canSubmit && !locked &&
+    // !ownRemark below. The draft box is only ever used to add a brand
+    // new remark, so it never needs to be prefilled from an existing one.
+    if (!ownRemark) setDraft("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, remarks]);
 
@@ -89,20 +112,15 @@ const PoHeaderRemarkPanel = ({
   }, [lockedProp]);
 
   const handleSubmit = async () => {
-    if (!draft.trim()) return;
+    if (!draft.trim() || ownRemark) return;
     setSubmitting(true);
     try {
-      if (ownRemark) {
-        await updatePoHeaderRemark({ id: ownRemark.id, remark: draft.trim() });
-        toast.success("Remark updated");
-      } else {
-        await submitPoHeaderRemark({
-          po_number: poNumber,
-          pointNo,
-          remark: draft.trim(),
-        });
-        toast.success("Remark added");
-      }
+      await submitPoHeaderRemark({
+        po_number: poNumber,
+        pointNo,
+        remark: draft.trim(),
+      });
+      toast.success("Remark added");
       await load();
     } catch (error) {
       toast.error(error?.response?.data?.message || error?.message || "Failed to save remark");
@@ -125,20 +143,34 @@ const PoHeaderRemarkPanel = ({
     <>
       <Button
         size="small"
-        variant="outlined"
+        variant={remarks.length > 0 ? "contained" : "outlined"}
+        color={
+          remarks.length > 0
+            ? ownRemark
+              ? "primary"
+              : "info"
+            : canSubmit && locked
+            ? "warning"
+            : canSubmit
+            ? "success"
+            : "inherit"
+        }
         onClick={() => setOpen(true)}
         startIcon={locked && canSubmit ? <LockRoundedIcon fontSize="small" /> : null}
         sx={{
           textTransform: "none",
-          fontWeight: 600,
+          fontWeight: 700,
           borderRadius: "20px",
           minWidth: "120px",
-          borderColor: "#c7d2fe",
-          color: "#4338ca",
         }}
       >
+        {/* EXACTLY two labels once there's something to act on — "Add
+            Remark" (nothing yet, you can submit one) or "View Remarks"
+            (one or more exist — read-only trigger, never "update").
+            Color follows the same rule: green = you can add one, blue/
+            indigo = remarks exist to read, amber = locked. */}
         {remarks.length > 0
-          ? `Remarks (${remarks.length})`
+          ? "View Remarks"
           : canSubmit
           ? locked
             ? "Locked"
@@ -169,7 +201,7 @@ const PoHeaderRemarkPanel = ({
               <CircularProgress size={24} />
             </Box>
           ) : (
-            <Stack spacing={2} sx={{ mb: canSubmit && !locked ? 3 : 0 }}>
+            <Stack spacing={2} sx={{ mb: canSubmit && !locked && !ownRemark ? 3 : 0 }}>
               {locked && (
                 <Chip
                   icon={<LockRoundedIcon fontSize="small" />}
@@ -185,7 +217,7 @@ const PoHeaderRemarkPanel = ({
                 </Typography>
               )}
               {remarks.map((r) => {
-                const isMine = currentUserId != null && String(r.submittedBy) === String(currentUserId);
+                const isMine = r.isMine ?? (currentUserId != null && String(r.submittedBy) === String(currentUserId));
                 return (
                   <Box
                     key={r.id}
@@ -195,10 +227,15 @@ const PoHeaderRemarkPanel = ({
                       bgcolor: isMine ? "#eff6ff" : "#f8fafc",
                       border: "1px solid",
                       borderColor: isMine ? "#bfdbfe" : "grey.200",
+                      borderLeft: "4px solid",
+                      borderLeftColor: isMine ? "#2563eb" : "#94a3b8",
                     }}
                   >
                     <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                      <Typography variant="body2" sx={{ wordBreak: "break-word", pr: 2 }}>
+                      <Typography
+                        variant="body2"
+                        sx={{ wordBreak: "break-word", pr: 2, fontWeight: 700, color: "text.primary" }}
+                      >
                         {r.remark}
                       </Typography>
                       {isMine && canSubmit && !locked && (
@@ -212,7 +249,10 @@ const PoHeaderRemarkPanel = ({
                         size="small"
                         color={isMine ? "primary" : "default"}
                         variant="outlined"
-                        label={`${r.submitter?.firstName || ""} ${r.submitter?.lastName || r.submitter?.username || ""}`.trim()}
+                        label={
+                          r.submittedByName ||
+                          `${r.submitter?.firstName || ""} ${r.submitter?.lastName || r.submitter?.username || ""}`.trim()
+                        }
                         sx={{ height: 24, fontSize: "0.75rem", fontWeight: 600, bgcolor: "white" }}
                       />
                       {isMine && <Chip size="small" label="Your remark" sx={{ height: 24, fontSize: "0.7rem" }} />}
@@ -223,14 +263,14 @@ const PoHeaderRemarkPanel = ({
             </Stack>
           )}
 
-          {canSubmit && !locked && (
+          {canSubmit && !locked && !ownRemark && (
             <Box sx={{ display: "flex", gap: 1, alignItems: "flex-start" }}>
               <TextField
                 size="medium"
                 fullWidth
                 multiline
                 maxRows={3}
-                placeholder={ownRemark ? "Edit your remark..." : "Type your remark here..."}
+                placeholder="Type your remark here..."
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => {
@@ -242,12 +282,13 @@ const PoHeaderRemarkPanel = ({
               />
               <Button
                 variant="contained"
+                color="success"
                 disabled={submitting || !draft.trim()}
                 onClick={handleSubmit}
                 sx={{ height: "40px", px: 3, boxShadow: "none" }}
                 startIcon={submitting ? <CircularProgress size={16} color="inherit" /> : <SendRoundedIcon />}
               >
-                {ownRemark ? "Update" : "Send"}
+                Add Remark
               </Button>
             </Box>
           )}

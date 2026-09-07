@@ -252,6 +252,17 @@ export const getExecutiveSummary = async (req, res) => {
     const byPoNumber = {};
     const monthlyExceptions = {};
 
+    // NEW — maps po_number -> "YYYY-MM", derived once from each line row's
+    // po_created_date (first occurrence wins; all line items of a PO
+    // normally share the same PO creation date). This is what lets the
+    // HEADER-LEVEL monthly trend below be bucketed by month even though
+    // PoHeaderResult itself has no po_created_date column of its own.
+    const poCreatedMonth = {};
+    // NEW — header-level counterpart to monthlyExceptions: one entry per
+    // month, counting each PO once if it has >=1 not-verified header point
+    // in that month (by the PO's own po_created_date, via poCreatedMonth).
+    const headerMonthlyExceptions = {};
+
     const byPlantCompliance = {};
     const byVendorCompliance = {};
     const byPoNumberCompliance = {};
@@ -266,6 +277,15 @@ export const getExecutiveSummary = async (req, res) => {
     for (const row of rows) {
       poNumbers.add(row.po_number);
       if (row.purchase_req) prNumbers.add(row.purchase_req);
+
+      // NEW — record this PO's creation month once, regardless of whether
+      // this particular line has an exception. Used below to bucket the
+      // header-level monthly trend by month.
+      if (row.po_created_date && !poCreatedMonth[row.po_number]) {
+        poCreatedMonth[row.po_number] = new Date(row.po_created_date)
+          .toISOString()
+          .slice(0, 7);
+      }
 
       if (row.po_status === "H") {
         holdPoNumbers.add(row.po_number);
@@ -456,6 +476,12 @@ export const getExecutiveSummary = async (req, res) => {
 
     for (const hr of headerRecords) {
       if (hr.remarksLocked) headerClosedCount++;
+
+      // NEW — tracks whether THIS PO's header has at least one
+      // not-verified point, so it can be counted once into
+      // headerMonthlyExceptions below (mirrors lineHasException above).
+      let headerHasException = false;
+
       for (const point of hr.results || []) {
         const pointNo = String(point.pointNo);
         if (!headerControlWise[pointNo]) continue; // ignore anything unexpected
@@ -472,6 +498,21 @@ export const getExecutiveSummary = async (req, res) => {
         } else {
           headerNotVerifiedCount++;
           headerControlWise[pointNo].notVerified++;
+          headerHasException = true;
+        }
+      }
+
+      // NEW — bucket this PO into its creation month if it has any
+      // not-verified header point. poCreatedMonth was populated from the
+      // line rows above, keyed by po_number, so this stays in sync with
+      // whatever date/plant/vendor/purchase-group filters are active.
+      if (headerHasException) {
+        const monthKey = poCreatedMonth[hr.po_number];
+        if (monthKey) {
+          headerMonthlyExceptions[monthKey] = headerMonthlyExceptions[
+            monthKey
+          ] || { count: 0 };
+          headerMonthlyExceptions[monthKey].count += 1;
         }
       }
     }
@@ -674,6 +715,17 @@ export const getExecutiveSummary = async (req, res) => {
             month,
             count: v.count,
             valueExposure: Number(v.valueExposure.toFixed(2)),
+          })),
+        // NEW — header-level counterpart to monthlyExceptionTrend above.
+        // Same month keys where data exists, but each data point is ONE
+        // PO (by po_created_date), not one PO line, and only reflects
+        // not-verified HEADER points (1-9). No valueExposure here since
+        // net_value lives on line items, not on the PO header record.
+        headerMonthlyExceptionTrend: Object.entries(headerMonthlyExceptions)
+          .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+          .map(([month, v]) => ({
+            month,
+            count: v.count,
           })),
         holdPoAgeing: Object.entries(holdAgeingBuckets).map(([bucket, v]) => ({
           bucket,

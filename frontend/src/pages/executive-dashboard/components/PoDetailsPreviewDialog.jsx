@@ -692,6 +692,7 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
                                 isAdmin={roleFlags.isAdmin}
                                 isProcurementManager={roleFlags.isProcurementManager}
                                 locked={lineLocked}
+                                initialRemarks={row.buyerRemarks}
                                 compact
                               />
                             ) : (

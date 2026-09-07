@@ -12,7 +12,21 @@ import {
   getPoTypesList,
   getPlantsList,
 } from "../utility/master-data.js";
-import { POINT_DEFINITIONS_BY_NO } from "../utility/point-reference.js";
+// FIXED: was importing POINT_DEFINITIONS_BY_NO from the deprecated
+// point-reference.js shim. That file builds its export ONCE, at module
+// import time (`export const POINT_DEFINITIONS = listPointDefinitions();`),
+// before anything in this process has ever called
+// ensurePointDefinitionsLoaded() - so the map was permanently frozen empty
+// and every pointTitle/label in this report silently fell back to "" / "#N"
+// forever, even after other pages populated the cache. Every other
+// controller in this codebase goes through point-definitions.js directly
+// and awaits ensurePointDefinitionsLoaded() first (see dashboard-controller.js,
+// risk-categorization-controller.js) - this file now does the same so point
+// titles here can never drift from what those pages show.
+import {
+  ensurePointDefinitionsLoaded,
+  getPointDefinition,
+} from "../utility/point-definitions.js";
 
 const SUBMITTER_SELECT = {
   id: true,
@@ -123,7 +137,7 @@ function buildReportRow(remark) {
   const ar = remark.auditResult || {};
   const vendor = getVendorInfo(ar.vendor_code);
   const point = findSystemPoint(ar, remark.pointNo);
-  const pointDef = POINT_DEFINITIONS_BY_NO[String(remark.pointNo)];
+  const pointDef = getPointDefinition(remark.pointNo);
 
   return {
     poNumber: remark.po_number,
@@ -227,6 +241,7 @@ async function fetchRemarksAndRows(req, { paginate }) {
 
 export const getPoRemarksReport = async (req, res) => {
   try {
+    await ensurePointDefinitionsLoaded();
     const { rows, total, page, pageSize } = await fetchRemarksAndRows(req, {
       paginate: true,
     });
@@ -247,7 +262,8 @@ export const getPoRemarksReport = async (req, res) => {
  * dropdowns never show options that would return zero results:
  *
  *   - points: every point number that has EVER been remarked on, labeled
- *     with its title from POINT_DEFINITIONS_BY_NO.
+ *     with its title from point-definitions.js (DB-backed, same source
+ *     every other page reads).
  *   - vendors: every vendor that has an audit result WITH a remark against
  *     it, labeled via master-data vendor lookup (falls back to the
  *     snapshot nameOfVendor on the audit result, same fallback chain used
@@ -261,6 +277,7 @@ export const getPoRemarksReport = async (req, res) => {
  */
 export const getPoRemarksReportFilters = async (req, res) => {
   try {
+    await ensurePointDefinitionsLoaded();
     const user = req.user || {};
     if (!(user.isAdmin || user.isProcurementManager || user.isBuyer)) {
       return res.status(403).json({ message: "Not authorized" });
@@ -295,12 +312,13 @@ export const getPoRemarksReportFilters = async (req, res) => {
           : Promise.resolve([]),
       ]);
 
-    const points = distinctPoints.map((p) => ({
-      code: String(p.pointNo),
-      label: POINT_DEFINITIONS_BY_NO[String(p.pointNo)]?.title
-        ? `#${p.pointNo} — ${POINT_DEFINITIONS_BY_NO[String(p.pointNo)].title}`
-        : `#${p.pointNo}`,
-    }));
+    const points = distinctPoints.map((p) => {
+      const def = getPointDefinition(p.pointNo);
+      return {
+        code: String(p.pointNo),
+        label: def.title ? `#${p.pointNo} — ${def.title}` : `#${p.pointNo}`,
+      };
+    });
 
     const vendorMap = new Map();
     for (const r of remarksWithVendor) {
@@ -383,6 +401,7 @@ const REPORT_COLUMNS = [
 
 export const downloadPoRemarksReport = async (req, res) => {
   try {
+    await ensurePointDefinitionsLoaded();
     const { rows } = await fetchRemarksAndRows(req, { paginate: false });
 
     const sheetData = [

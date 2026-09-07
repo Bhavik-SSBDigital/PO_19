@@ -76,7 +76,20 @@ const PoHeaderChecksPanel = ({
   const [busy, setBusy] = useState(false);
 
   if (!header) return null;
-  const { points = [], totalPoints = 0, verifiedCount = 0, notVerifiedCount = 0, locked, lockedBy, lockedAt } = header;
+  const {
+    points = [],
+    totalPoints = 0,
+    verifiedCount = 0,
+    notVerifiedCount = 0,
+    locked,
+    lockedBy,
+    lockedAt,
+    // Grouped by pointNo-as-string, always present on the shaped header
+    // returned by getHeaderForPo/getHeadersForPos/getPoHeaderSummary -
+    // seeds each row's remarks panel so its trigger is correct on first
+    // paint instead of "Add Remark" until someone opens it.
+    headerRemarksByPoint = {},
+  } = header;
 
   const canToggleLock = isBuyer;
 
@@ -256,6 +269,7 @@ const PoHeaderChecksPanel = ({
                     isAdmin={isAdmin}
                     isProcurementManager={isProcurementManager}
                     locked={locked}
+                    initialRemarks={headerRemarksByPoint[String(row.pointNo)] || []}
                     compact
                   />
                 </TableCell>

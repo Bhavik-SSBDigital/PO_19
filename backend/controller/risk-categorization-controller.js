@@ -41,6 +41,41 @@ export const getAuditPointConfig = async (req, res) => {
   }
 };
 
+// POST /risk-categorization/reload-point-config
+// Admin-only. Forces this server process to drop its in-memory
+// severity/point-definitions caches and re-read AuditPointConfig from the
+// DB immediately. Use this right after running
+// `node scripts/seed-point-definitions.js` (which writes straight to the
+// DB and has no way to reach an already-running server on its own) so the
+// content change is live everywhere in this process without a restart.
+//
+// NOTE: if the backend runs as more than one process (PM2 cluster mode,
+// multiple containers, etc.), each process has its OWN cache and this
+// endpoint only reloads the process that receives the request - call it
+// against every instance (or just restart the fleet) after a content
+// change so no instance is left serving stale point text.
+export const reloadPointConfig = async (req, res) => {
+  try {
+    const role = req.user?.role || req.headers["x-user-role"];
+    if (role && !["admin", "isAdmin"].includes(role)) {
+      return res.status(403).json({
+        message: "Only an admin can reload audit point configuration",
+      });
+    }
+    invalidateSeverityCache();
+    invalidatePointDefinitionsCache();
+    await Promise.all([ensureSeverityLoaded(), ensurePointDefinitionsLoaded()]);
+    const points = listPointDefinitions();
+    res.status(200).json({
+      message: "Point configuration reloaded from DB",
+      pointCount: points.length,
+    });
+  } catch (error) {
+    console.error("Error in reloadPointConfig:", error);
+    res.status(500).json({ message: "Failed to reload point configuration" });
+  }
+};
+
 // POST /risk-categorization/update-severity  { pointNo, severity }
 // Admin-only. Adjust the `req.user?.role` check below to match however
 // your auth middleware attaches the logged-in user's role.

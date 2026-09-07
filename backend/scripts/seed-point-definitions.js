@@ -48,8 +48,8 @@ const DEFINITIONS = [
     summary:
       "Confirms the tax code matches the vendor's state — SGST+CGST for Gujarat vendors, IGST for out-of-state vendors.",
     logic:
-      "Manual Review if vendor state or tax code missing, or if Tax Code isn't found in the Tax Master. Not Applicable for non-GST-regime categories. Otherwise Verified/Not Verified based on Gujarat vs non-Gujarat vendor state against SGST+CGST vs IGST category.",
-    dataPoints: "Vendor State, Tax code, Tax Master Category",
+      "Manual Review if Tax code is blank or not found in the Tax Master. Tax Master category is checked FIRST: 'No GST' / 'Input Tax' / exempt-style categories (e.g. Tax Codes 0 and 48) resolve straight to Not Applicable without ever needing Vendor State. Only categories that genuinely need a Gujarat/non-Gujarat comparison then require Vendor State (falling back to the GSTIN state code if blank) - Manual Review only fires for a missing Vendor State on that remaining branch. Otherwise Verified/Not Verified based on Gujarat vs non-Gujarat vendor state against SGST+CGST vs IGST category.",
+    dataPoints: "Tax code, Tax Master Category, Vendor State, GSTIN",
   },
   {
     pointNo: 4,
@@ -80,9 +80,9 @@ const DEFINITIONS = [
     severity: "Medium",
     title: "EYW Inco-Term Requires Freight Condition",
     summary:
-      "Confirms PO lines using Inco Term EYW carry a freight condition type (ZBF1/ZBF2/ZRA3/ZRB3/ZRE3).",
+      "Confirms PO lines using Inco Term EYW carry a freight condition type (ZBF1/ZBF2/ZRA3/ZRB3/ZRE3/ZFB5).",
     logic:
-      "Not Applicable if Inco term isn't EYW. Verified if a matching freight condition exists on that PO+line in POAUDITCND, else Not Verified.",
+      'Not Applicable if Inco term isn\'t EYW. Verified if a matching freight condition exists on that PO+line in POAUDITCND, else Not Verified. The remark names the exact matched condition type (e.g. "ZRB3") and lists any other, non-freight condition types also present on the line.',
     dataPoints:
       "Inco term, PO number, PO Line item, Condition Type (POAUDITCND)",
   },
@@ -92,9 +92,9 @@ const DEFINITIONS = [
     severity: "Medium",
     title: "EXW/FCA Must NOT Carry a Freight Condition",
     summary:
-      "Confirms PO lines using Inco Term EXW or FCA do not carry a freight condition.",
+      "Confirms PO lines using Inco Term EXW or FCA do not carry a freight condition (ZBF1/ZBF2/ZRA3/ZRB3/ZRE3/ZFB5).",
     logic:
-      "Not Applicable if Inco term isn't EXW/FCA. Not Verified if a freight condition exists on that PO+line, else Verified.",
+      "Not Applicable if Inco term isn't EXW/FCA. Not Verified if a freight condition exists on that PO+line, else Verified. The remark names the exact matched condition type when Not Verified, and lists any other, non-freight condition types also present on the line.",
     dataPoints:
       "Inco term, PO number, PO Line item, Condition Type (POAUDITCND)",
   },
@@ -104,9 +104,9 @@ const DEFINITIONS = [
     severity: "Critical",
     title: "Rate Approval by Authorised Approver",
     summary:
-      "Confirms a rate has an approval tag on record, signed off by a recognised approver.",
+      "Confirms a rate has an actual approval outcome on record ('DWS-APPROVED'), signed off by a recognised approver.",
     logic:
-      "Not Applicable if no rate-approval tag is found in 'Our Ref.'. Verified if the recognised approver initials also appear, else Not Verified.",
+      "Not Applicable if 'Our Ref.' carries no DWS-APPROVED-style tag (a plain 'Rate Approval' workflow tag, without an approved outcome, does NOT count and is intentionally not searched for). Verified if one of the recognised approver initials (KKB/SRS/PJP/DAULAT/NHV/CVS) also appears, else Not Verified.",
     dataPoints: "Our Ref.",
   },
   {
@@ -115,11 +115,11 @@ const DEFINITIONS = [
     severity: "Critical",
     title: "Multiple POs to Same Vendor, Same Day",
     summary:
-      "Flags possible order-splitting: the same vendor, plant, and purchasing group issued more than one PO on the same date.",
+      "Flags possible order-splitting: the same vendor, purchasing group, plant, and purchasing date were used on more than one PO, unless a differing RFQ number on both sides explains it.",
     logic:
-      "Not Verified if other PO numbers share the same Vendor Code + PO Created date + Plant + Purchase Group; Verified otherwise.",
+      "Compares Vendor Code + Purchase Group + Plant + Purchasing Date ('PO Date(Doc date)', not 'PO Created date') across POs. If another PO shares all four, it counts as a match UNLESS both POs have a non-blank RFQ no. (sourced from the 'order acknowledgement' column) and those RFQ numbers differ - a blank RFQ on either side is not treated as a differentiator. Not Verified if any other PO matches; the remark states whether the match was on the 4 core parameters (RFQ blank on one side) or all 5 (RFQ also equal). Verified if no other PO shares even the 4 core parameters, or if every PO that does share them was excluded solely because of a non-blank, differing RFQ.",
     dataPoints:
-      "Vendor Code, PO Created date, Plant, Purchase Group, PO number",
+      "Vendor Code, Purchase Group, Plant, PO Date(Doc date), order acknowledgement (RFQ no.), PO number",
   },
 
   // ---------------- LINE-LEVEL (10-19) ----------------
@@ -183,11 +183,11 @@ const DEFINITIONS = [
     severity: "High",
     title: "PO Quantity vs PR Quantity (Tolerance)",
     summary:
-      "Confirms cumulative PO quantity raised against a PR line does not exceed the PR quantity beyond the allowed tolerance.",
+      "Confirms this PO line's own PR quantity sits between its PO quantity and PO quantity plus the allowed overdelivery buffer - a direct per-line check, not a cumulative one.",
     logic:
-      "Not Applicable for PO types ZSER/ZCSR or when PR qty is unavailable. Sums PO Qty across every PO line referencing the same PR+PR-line, compares against PR Qty, and allows the % in tolerance limits.",
+      "Not Applicable for PO types ZSER/ZCSR or when no PR is assigned. Direct single-line comparison: Not Verified if PR Qty < PO Qty (PO qty may never exceed PR qty); Verified if PO Qty <= PR Qty <= PO Qty x (1 + Overdelivery Tolerance % / 100); Not Verified if PR Qty exceeds that ceiling. 'Under Delivery tolerance' is not used by this rule. A blank Overdelivery Tolerance Limit is treated as 0% (no buffer).",
     dataPoints:
-      "PO Type, Purchase Req, PR line Item no., PR Qty., PO Qty., Under Delivery tolerance, Overdelivery Tolerance Limit",
+      "PO Type, Purchase Req, PR Qty., PO Qty., Overdelivery Tolerance Limit",
   },
   {
     pointNo: 16,

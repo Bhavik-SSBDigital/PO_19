@@ -251,7 +251,7 @@ function withPointReference(results, remarksByPoint = new Map()) {
  */
 const withExceptionPoints = async (row, user) => {
   const vendor = getVendorInfo(row.vendor_code);
-  const header = await getHeaderForPo(row.po_number);
+  const header = await getHeaderForPo(row.po_number, user);
   const remarksByPoint = await getRemarksMapForAuditResult(row.id, user);
 
   return {
@@ -279,7 +279,10 @@ const withExceptionPoints = async (row, user) => {
 // once, so header status AND buyer remarks are each fetched in a single
 // query instead of once per row.
 async function withExceptionPointsBatch(rows, user) {
-  const headerMap = await getHeadersForPos(rows.map((r) => r.po_number));
+  const headerMap = await getHeadersForPos(
+    rows.map((r) => r.po_number),
+    user,
+  );
   const remarksMap = await getRemarksMapForAuditResults(
     rows.map((r) => r.id),
     user,
@@ -462,7 +465,7 @@ export const get_po_lines = async (req, res) => {
       orderBy: { po_line_item: "asc" },
     });
 
-    const header = await getHeaderForPo(poNumber);
+    const header = await getHeaderForPo(poNumber, user);
     const remarksMap = await getRemarksMapForAuditResults(
       rows.map((r) => r.id),
       user,

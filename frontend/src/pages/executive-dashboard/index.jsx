@@ -48,7 +48,6 @@ import {
   ControlWiseTooltip,
   SeverityTooltip,
   PoTypeTooltip,
-  MonthlyTooltip,
 } from "./components/tooltips";
 
 // --- DASHBOARD PALETTE (v2) ---
@@ -69,6 +68,11 @@ const GRID_COLOR = "#f1f5f9";
 const HEADER_ACCENT = "#4f46e5";
 const HEADER_ACCENT_BG = "#eef2ff";
 const OVERVIEW_ACCENT = "#0f172a";
+// Monthly Exception Trend now plots two series side by side - keep their
+// colors distinct from every other chart's palette above so the legend
+// reads unambiguously as "line-item" vs "header".
+const TREND_LINE_COLOR = "#4f46e5";
+const TREND_HEADER_COLOR = "#f97316";
 
 const ChartGradients = () => (
   <defs>
@@ -92,6 +96,10 @@ const ChartGradients = () => (
       <stop offset="0%" stopColor="#a5b4fc" stopOpacity={1} />
       <stop offset="100%" stopColor="#6366f1" stopOpacity={0.95} />
     </linearGradient>
+    <linearGradient id="gradHeaderLine" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stopColor="#fb923c" />
+      <stop offset="100%" stopColor="#ea580c" />
+    </linearGradient>
   </defs>
 );
 
@@ -111,6 +119,37 @@ const horizontalChartHeight = (
 const formatMonthLabel = (m) => {
   const parsed = moment(m, "YYYY-MM");
   return parsed.isValid() ? parsed.format("MMM 'YY") : m;
+};
+
+// Merges the line-item monthly trend (charts.monthlyExceptionTrend) and the
+// header-level monthly trend (charts.headerMonthlyExceptionTrend) into one
+// array keyed by month, since Recharts needs a single data array to plot
+// both series on the same x-axis. Months present in only one series get a
+// 0 for the other so the line doesn't break.
+const mergeMonthlyTrends = (lineData = [], headerData = []) => {
+  const map = new Map();
+  (lineData || []).forEach((d) => {
+    map.set(d.month, {
+      month: d.month,
+      lineCount: d.count,
+      lineValueExposure: d.valueExposure,
+      headerCount: 0,
+    });
+  });
+  (headerData || []).forEach((d) => {
+    const existing = map.get(d.month);
+    if (existing) {
+      existing.headerCount = d.count;
+    } else {
+      map.set(d.month, {
+        month: d.month,
+        lineCount: 0,
+        lineValueExposure: 0,
+        headerCount: d.count,
+      });
+    }
+  });
+  return [...map.values()].sort((a, b) => (a.month < b.month ? -1 : 1));
 };
 
 const InfoTip = ({ text, placement = "top" }) => {
@@ -441,6 +480,64 @@ const HeaderControlWiseTooltip = ({ active, payload }) => {
   );
 };
 
+// Tooltip for the (now two-series) Monthly Exception Trend chart - shows
+// both the line-item count and the header count for the hovered month, so
+// it's clear at a glance which series is which without hovering each line
+// individually.
+const MonthlyTrendTooltip = ({ active, payload }) => {
+  if (!active || !payload || !payload.length) return null;
+  const d = payload[0]?.payload;
+  if (!d) return null;
+  return (
+    <Box
+      sx={{
+        bgcolor: "#fff",
+        border: "1px solid",
+        borderColor: "grey.100",
+        borderRadius: 3,
+        boxShadow: "0 10px 25px -5px rgba(0,0,0,0.1)",
+        p: 2,
+        minWidth: 210,
+      }}
+    >
+      <Typography
+        variant="body2"
+        sx={{ fontWeight: 800, mb: 1, color: "#0f172a" }}
+      >
+        {formatMonthLabel(d.month)}
+      </Typography>
+      <Box sx={{ display: "flex", justifyContent: "space-between", mb: 0.5 }}>
+        <Typography
+          variant="caption"
+          sx={{ color: TREND_LINE_COLOR, fontWeight: 700 }}
+        >
+          Line-Item Exceptions:
+        </Typography>
+        <Typography
+          variant="caption"
+          sx={{ color: "#0f172a", fontWeight: 700 }}
+        >
+          {d.lineCount}
+        </Typography>
+      </Box>
+      <Box sx={{ display: "flex", justifyContent: "space-between" }}>
+        <Typography
+          variant="caption"
+          sx={{ color: TREND_HEADER_COLOR, fontWeight: 700 }}
+        >
+          Header Exceptions:
+        </Typography>
+        <Typography
+          variant="caption"
+          sx={{ color: "#0f172a", fontWeight: 700 }}
+        >
+          {d.headerCount}
+        </Typography>
+      </Box>
+    </Box>
+  );
+};
+
 const isCancel = (err) =>
   err?.code === "ERR_CANCELED" || err?.name === "CanceledError";
 const payloadOf = (d) => d?.payload ?? d ?? {};
@@ -539,6 +636,15 @@ const ExecutiveDashboard = () => {
     ? `Showing figures for purchasing group ${data.scope.restrictedToPurchaseGroup} only`
     : undefined;
   const missingHeaderDataCount = kpis.missingHeaderDataCount || 0;
+
+  // Monthly Exception Trend now shows BOTH the line-item series
+  // (charts.monthlyExceptionTrend) and the header-level series
+  // (charts.headerMonthlyExceptionTrend) on the same chart. Recharts needs
+  // one merged array keyed by month to plot two series together.
+  const monthlyTrendData = mergeMonthlyTrends(
+    charts.monthlyExceptionTrend,
+    charts.headerMonthlyExceptionTrend,
+  );
 
   const openDrilldown = (dimension, value, title, extra = {}) =>
     setDrilldown({ dimension, value, title, ...extra });
@@ -652,7 +758,12 @@ const ExecutiveDashboard = () => {
     );
     (charts.monthlyExceptionTrend || []).forEach((d) =>
       lines.push(
-        `Monthly Exception Trend,${d.month},${d.count},valueExposure=${d.valueExposure}`,
+        `Monthly Exception Trend (Line-Item),${d.month},${d.count},valueExposure=${d.valueExposure}`,
+      ),
+    );
+    (charts.headerMonthlyExceptionTrend || []).forEach((d) =>
+      lines.push(
+        `Monthly Exception Trend (Header-Level),${d.month},${d.count},`,
       ),
     );
 
@@ -1966,12 +2077,32 @@ const ExecutiveDashboard = () => {
           </ChartPanel>
         </Grid>
 
+        {/*
+          ══════════════════════════════════════════════════════════════
+          MONTHLY EXCEPTION TREND — UPDATED: now plots BOTH series on the
+          same chart instead of line-item exceptions only:
+            - "Line-Item Exceptions" (charts.monthlyExceptionTrend) - a PO
+              line counts once per month if it has >=1 not-verified
+              line-level point. Clicking a dot on THIS series still opens
+              the existing line-item month drilldown.
+            - "Header Exceptions" (charts.headerMonthlyExceptionTrend) - a
+              PO counts once per month (by its po_created_date) if it has
+              >=1 not-verified header-level point. Shown for comparison;
+              there's currently no month-scoped header drilldown endpoint,
+              so these dots are not clickable.
+          Both series are merged into one array (mergeMonthlyTrends, near
+          the top of this file) since Recharts needs a single data array
+          to draw multiple lines on a shared x-axis.
+        */}
         <Grid item xs={12}>
           <ChartPanel
             title="Monthly Exception Trend"
-            hint="Click a point to drill in. (Line-item)"
-            info={chartDefs.monthlyExceptionTrend}
-            height={300}
+            hint="Line-item series: click a point to drill in. Header series shown alongside for comparison."
+            info={
+              (chartDefs.monthlyExceptionTrend || "") +
+              " Line-item: a PO line counts once per month if any line-level point is not verified. Header: a PO counts once per month if any header-level point is not verified."
+            }
+            height={320}
           >
             {loading ? (
               <Skeleton
@@ -1982,7 +2113,7 @@ const ExecutiveDashboard = () => {
             ) : (
               <ResponsiveContainer>
                 <LineChart
-                  data={charts.monthlyExceptionTrend || []}
+                  data={monthlyTrendData}
                   margin={{ top: 20, right: 20 }}
                 >
                   <ChartGradients />
@@ -2004,19 +2135,28 @@ const ExecutiveDashboard = () => {
                     tickLine={false}
                     tick={{ fill: "#64748b", fontSize: 12, fontWeight: 500 }}
                   />
-                  <Tooltip content={<MonthlyTooltip />} />
+                  <Tooltip content={<MonthlyTrendTooltip />} />
+                  <Legend
+                    iconType="circle"
+                    wrapperStyle={{
+                      paddingTop: 10,
+                      fontSize: "14px",
+                      fontWeight: 600,
+                    }}
+                  />
                   <Line
                     type="monotone"
-                    dataKey="count"
+                    dataKey="lineCount"
+                    name="Line-Item Exceptions"
                     stroke="url(#gradLine)"
                     strokeWidth={4}
                     dot={(props) => (
                       <circle
-                        key={props.payload.month}
+                        key={`line-${props.payload.month}`}
                         cx={props.cx}
                         cy={props.cy}
                         r={6}
-                        fill="#4f46e5"
+                        fill={TREND_LINE_COLOR}
                         stroke="#ffffff"
                         strokeWidth={3}
                         style={{
@@ -2033,6 +2173,28 @@ const ExecutiveDashboard = () => {
                       />
                     )}
                     activeDot={{ r: 9, strokeWidth: 0, fill: "#7c3aed" }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="headerCount"
+                    name="Header Exceptions"
+                    stroke="url(#gradHeaderLine)"
+                    strokeWidth={4}
+                    dot={(props) => (
+                      <circle
+                        key={`header-${props.payload.month}`}
+                        cx={props.cx}
+                        cy={props.cy}
+                        r={6}
+                        fill={TREND_HEADER_COLOR}
+                        stroke="#ffffff"
+                        strokeWidth={3}
+                        style={{
+                          filter: "drop-shadow(0px 4px 6px rgba(0, 0, 0, 0.1))",
+                        }}
+                      />
+                    )}
+                    activeDot={{ r: 9, strokeWidth: 0, fill: "#ea580c" }}
                   />
                 </LineChart>
               </ResponsiveContainer>
