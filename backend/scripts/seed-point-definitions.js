@@ -15,6 +15,9 @@
 // (see upsert below - severity is only set on create).
 
 import { prisma } from "../lib/prisma.js";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 const DEFINITIONS = [
   // ---------------- HEADER-LEVEL (1-9) ----------------
