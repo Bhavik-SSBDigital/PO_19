@@ -5,9 +5,12 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const fileName = process.argv[2];
+const pruneDisabled = process.argv.includes("--no-prune");
 
 if (!fileName) {
-  console.error("Please provide a filename: node addrc.js <filename>");
+  console.error(
+    "Please provide a filename: node addrc.js <filename> [--no-prune]",
+  );
   process.exit(1);
 }
 
@@ -51,6 +54,65 @@ function pickRcOverlapFields(obj) {
   return out;
 }
 
+function rcKey(vendorCode, rcMaterialCode, rcNumber) {
+  return `${vendorCode}\u0000${rcMaterialCode}\u0000${rcNumber}`;
+}
+
+/* ----------------------------------------------------------------------
+ * pruneStaleRcOverlapRecords
+ * ============================
+ * engine.py's build_rc_overlap_records() reflects the FULL current RC
+ * master (POAUDITRC) plus whichever PO lines currently reference each RC.
+ * If an RC (or a vendor/material/RC combination) no longer appears in a
+ * fresh run - e.g. because the PO lines that referenced it were removed
+ * by drop_lines_with_deletion_indicator(), or the RC master itself
+ * changed - the OLD rc_overlap_results row from a prior run would
+ * otherwise stay in the database forever, same problem as addpo.js /
+ * addheader.js.
+ *
+ * Deletes every rc_overlap_results row whose (vendorCode, rcMaterialCode,
+ * rcNumber) composite key is not in currentKeys (the set present in the
+ * JSON file just imported).
+ *
+ * IMPORTANT ASSUMPTION: this treats the JSON file as the FULL, current
+ * RC Overlap output - which is what engine.py's --rc-json always
+ * produces (it's not incremental/delta output). If you ever need to
+ * import a deliberately partial file, run with --no-prune.
+ * ------------------------------------------------------------------- */
+async function pruneStaleRcOverlapRecords(currentKeys) {
+  const existing = await prisma.rcOverlapResult.findMany({
+    select: {
+      id: true,
+      vendorCode: true,
+      rcMaterialCode: true,
+      rcNumber: true,
+    },
+  });
+
+  const staleIds = existing
+    .filter(
+      (row) =>
+        !currentKeys.has(
+          rcKey(row.vendorCode, row.rcMaterialCode, row.rcNumber),
+        ),
+    )
+    .map((row) => row.id);
+
+  if (staleIds.length === 0) {
+    console.log("🧹 No stale RC overlap records to prune.");
+    return;
+  }
+
+  const { count } = await prisma.rcOverlapResult.deleteMany({
+    where: { id: { in: staleIds } },
+  });
+
+  console.log(
+    `🗑️  Pruned ${count} stale RC overlap record(s) - vendor/material/RC ` +
+      `combination(s) no longer present in the latest extract.`,
+  );
+}
+
 /* ---------------- MAIN PROCESS ---------------- */
 async function processRecords() {
   try {
@@ -63,6 +125,7 @@ async function processRecords() {
 
     let insertedCount = 0;
     let updatedCount = 0;
+    const currentKeys = new Set();
 
     for (let i = 0; i < parsedData.length; i++) {
       try {
@@ -92,6 +155,10 @@ async function processRecords() {
           rcMaterialCode: String(doc.rcMaterialCode),
           rcNumber: String(doc.rcNumber),
         });
+
+        currentKeys.add(
+          rcKey(rcData.vendorCode, rcData.rcMaterialCode, rcData.rcNumber),
+        );
 
         /* ---------- CHECK EXISTING RECORD ----------
          * One row per (vendorCode, rcMaterialCode, rcNumber) - matches the
@@ -133,6 +200,20 @@ async function processRecords() {
     console.log(
       `✅ ${insertedCount} RC overlap records inserted, ${updatedCount} updated`,
     );
+
+    if (pruneDisabled) {
+      console.log("⏭️  Skipping prune step (--no-prune passed).");
+    } else {
+      try {
+        await pruneStaleRcOverlapRecords(currentKeys);
+      } catch (err) {
+        console.error(
+          "⚠️  Prune step failed (upserts above already succeeded):",
+          err.message,
+        );
+      }
+    }
+
     process.exit(0);
   } catch (err) {
     console.error("Fatal error:", err.message);

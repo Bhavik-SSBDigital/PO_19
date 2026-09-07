@@ -5,9 +5,12 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const fileName = process.argv[2];
+const pruneDisabled = process.argv.includes("--no-prune");
 
 if (!fileName) {
-  console.error("Please provide a filename: node addpo.js <filename>");
+  console.error(
+    "Please provide a filename: node addpo.js <filename> [--no-prune]",
+  );
   process.exit(1);
 }
 
@@ -188,6 +191,57 @@ function pickAuditResultFields(obj) {
   return out;
 }
 
+/* ----------------------------------------------------------------------
+ * pruneStaleAuditResults
+ * ========================
+ * engine.py can now drop a PO LINE ITEM entirely from its output - not
+ * mark it Not Applicable, but remove it - when that line item itself
+ * carries Deletion indicator = 'L' (see engine.py's
+ * drop_lines_with_deletion_indicator()). Before this addition, addpo.js
+ * only ever INSERTED or UPDATED audit_results rows present in the new
+ * JSON; a line item that disappeared from a fresh export (now excluded)
+ * was simply never touched, so its OLD audit_results row (from a prior,
+ * older run) stayed in the database and kept being served by the API.
+ *
+ * Deletes every audit_results row whose po_material_number is not in
+ * currentMaterialNumbers (the set of po_material_number values present in
+ * the JSON file just imported). Wrapped in try/catch by the caller so a
+ * pruning failure (e.g. a foreign key constraint from
+ * verification_workflows.audit_result_id) is reported but does not undo
+ * or fail the upserts that already succeeded above.
+ *
+ * IMPORTANT ASSUMPTION: this treats the JSON file as the FULL, current
+ * set of line items from the latest extract - which is what engine.py's
+ * --addpo-json always produces (it's not incremental/delta output). If
+ * you ever need to import a deliberately partial file, run with
+ * --no-prune, or every line item missing from that partial file will be
+ * deleted from the database.
+ * ------------------------------------------------------------------- */
+async function pruneStaleAuditResults(currentMaterialNumbers) {
+  const existing = await prisma.auditResult.findMany({
+    select: { id: true, po_material_number: true },
+  });
+
+  const staleIds = existing
+    .filter((row) => !currentMaterialNumbers.has(row.po_material_number))
+    .map((row) => row.id);
+
+  if (staleIds.length === 0) {
+    console.log("🧹 No stale audit_results records to prune.");
+    return;
+  }
+
+  const { count } = await prisma.auditResult.deleteMany({
+    where: { id: { in: staleIds } },
+  });
+
+  console.log(
+    `🗑️  Pruned ${count} stale audit_results record(s) - PO line item(s) no ` +
+      `longer present in the latest extract (fully excluded, e.g. Deletion ` +
+      `indicator = 'L' on that line).`,
+  );
+}
+
 /* ---------------- MAIN PROCESS ---------------- */
 async function processDocuments() {
   try {
@@ -200,6 +254,7 @@ async function processDocuments() {
 
     let insertedCount = 0;
     let updatedCount = 0;
+    const currentMaterialNumbers = new Set();
 
     for (let i = 0; i < parsedData.length; i++) {
       try {
@@ -273,6 +328,10 @@ async function processDocuments() {
           plant: String(doc.plant || ""),
         });
 
+        if (auditData.po_material_number) {
+          currentMaterialNumbers.add(auditData.po_material_number);
+        }
+
         /* ---------- CHECK EXISTING DOC ---------- */
         const existingQuery = { po_material_number: doc.po_material_number };
         if (doc.fiscalYear) existingQuery.fiscalYear = doc.fiscalYear;
@@ -309,6 +368,20 @@ async function processDocuments() {
     console.log(
       `✅ ${insertedCount} documents inserted, ${updatedCount} updated`,
     );
+
+    if (pruneDisabled) {
+      console.log("⏭️  Skipping prune step (--no-prune passed).");
+    } else {
+      try {
+        await pruneStaleAuditResults(currentMaterialNumbers);
+      } catch (err) {
+        console.error(
+          "⚠️  Prune step failed (upserts above already succeeded):",
+          err.message,
+        );
+      }
+    }
+
     process.exit(0);
   } catch (err) {
     console.error("Fatal error:", err.message);
