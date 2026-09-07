@@ -30,7 +30,91 @@ Output:
     <rc-json>       : unchanged - RC Overlap / point 20.
 
 ===============================================================================
-CHANGELOG - THIS REVISION (Point 3 tax-code 0/48 ordering fix + Point 6/7
+CHANGELOG - THIS REVISION (Deletion Indicator exclusion corrected back to
+LINE level, per client clarification)
+===============================================================================
+
+  CORRECTION to the immediately preceding revision. That revision read the
+  client's feedback ("if delete indicator for any po is found then dont
+  enter that po any where in software") as meaning a Deletion indicator =
+  'L' anywhere on a PO should drop the ENTIRE PO - every line item under
+  that PO number, including lines that are NOT themselves marked 'L'.
+
+  Client clarified this is NOT what was wanted:
+    - PO with 5 line items, 2 marked 'L' and 3 not -> the 3 non-'L' line
+      items must NOT be dropped. Only the 2 'L' line items are removed;
+      the other 3 are audited normally and appear everywhere as usual.
+    - PO with a single line item, and that one line is marked 'L' -> that
+      line is removed, and (simply because nothing is left under that PO
+      number) the PO ends up not appearing anywhere - but this is a
+      CONSEQUENCE of removing the one deleted line, not a rule that
+      inspects or removes the PO as a whole.
+    - General principle: "we must have what doesn't have delete
+      indicator" - i.e. only ever remove the specific line item(s) that
+      carry Deletion indicator = 'L'; every other line item, on any PO,
+      stays in scope and is audited exactly as before.
+
+  FIX: find_pos_with_deletion_indicator() / drop_pos_with_deletion_
+  indicator() (the whole-PO-removal functions from the immediately
+  preceding revision) have been REPLACED with a single
+  drop_lines_with_deletion_indicator(), which removes ONLY the individual
+  line items that carry Deletion indicator = 'L' from po_rows - not their
+  PO-mates. This is still a full removal (not a per-row Not Applicable):
+  a dropped line produces no row in "PO Line Results", no addpo/header
+  JSON record, and does not contribute to any cross-row aggregate. It is
+  still called in run() immediately after filter_to_scope() and before
+  build_context()/any output, so the effect is identical in spirit to the
+  previous revision (deleted lines vanish completely, not just marked
+  NA) - the only thing that changed is the GRANULARITY: per LINE ITEM,
+  not per PO. A PO's non-'L' line items are therefore never affected
+  by another line item on the same PO being marked 'L'.
+
+  SCOPE (unchanged from previous revision): this still only applies to
+  Deletion indicator = 'L'. Returns Item = 'X' continues to be handled
+  the old way - via the existing _is_excluded_line()/EXCLUDED_LINE_REMARK
+  path inside evaluate_rule(), which marks just that one line Not
+  Applicable rather than dropping it, while every other line on that PO
+  (deleted-indicator or not) continues to be audited normally.
+
+  CONSEQUENCE FOR POINT #9 / #16: because Deletion-indicator lines are
+  now dropped before build_context() ever runs (same as the previous
+  revision), they still do NOT contribute to the point #9 (duplicate-PO)
+  or point #16 (vendor-material tax) aggregates - only Returns-Item lines
+  do, per the older CHANGELOG entries further down. This part is
+  unchanged from the immediately preceding revision; only the "does this
+  drop the whole PO or just the flagged line" behavior changed.
+
+===============================================================================
+CHANGELOG - PRIOR REVISION (PO-level Deletion Indicator exclusion - SUPERSEDED
+THIS REVISION, corrected back to line-level - kept for history only)
+===============================================================================
+
+  PROBLEM: the GLOBAL exclusion (see the older "Deletion Indication is not
+  applied" CHANGELOG entry further down) only ever excluded the ONE line
+  item that itself carried Deletion indicator = 'L' - via evaluate_rule()
+  returning a uniform Not Applicable for that row, on every one of the 19
+  points. Every OTHER line item on the SAME PO number (i.e. not itself
+  marked 'L') was still fully audited and still appeared in every output:
+  the PO Line Results sheet, the addpo/header JSON exports, and every
+  cross-row aggregate (RC consistency, vendor-material tax consistency,
+  multiple-PO-same-day, etc.).
+
+  Client feedback (at the time): "if delete indicator for any po is found
+  then dont enter that po any where in software" / "if in deleted po,
+  there are multiple line items then those line items also should not be
+  included." This was implemented as: a Deletion indicator = 'L' anywhere
+  on a PO drops the ENTIRE PO - every line item under that PO number,
+  including lines that are NOT themselves marked 'L'.
+
+  SUPERSEDED THIS REVISION: the client clarified that non-'L' line items
+  on a PO that also has an 'L' line must NOT be dropped - only the
+  specific 'L' line(s) should be removed. See the "THIS REVISION" entry
+  above for the corrected, line-level behavior. This entry is kept for
+  history only; find_pos_with_deletion_indicator()/drop_pos_with_deletion_
+  indicator() no longer exist in this file.
+
+===============================================================================
+CHANGELOG - PRIOR REVISION (Point 3 tax-code 0/48 ordering fix + Point 6/7
 freight-remark transparency fix, per direct client feedback)
 ===============================================================================
 
@@ -945,7 +1029,64 @@ def _is_deleted_line(row):
 
 
 def _is_excluded_line(row):
+    """
+    NOTE: the Deletion-indicator branch here is now effectively a
+    defensive fallback only. In normal operation, ANY po_row that carries
+    Deletion indicator = 'L' has already been dropped from po_rows -
+    entirely, on its own, WITHOUT touching any other line item on the
+    same PO number - by drop_lines_with_deletion_indicator() before
+    evaluate_rule() (which calls this) is ever reached. See the "Deletion
+    Indicator exclusion corrected back to LINE level" CHANGELOG entry at
+    the top of this file. Returns Item = 'X' is handled differently and
+    is NOT dropped upstream - a returned line still only excludes itself
+    here, via this same per-row check, exactly as before.
+    """
     return _is_deleted_line(row) or _is_return_item(row)
+
+
+# ---------------------------------------------------------------------------
+# LINE-level exclusion for Deletion indicator (see CHANGELOG "THIS
+# REVISION"). Removes ONLY the specific line item(s) that carry Deletion
+# indicator = 'L' - never their PO-mates. A PO with 5 line items where 2
+# carry 'L' keeps its other 3 line items fully in scope; a PO whose ONLY
+# line item carries 'L' simply ends up with nothing left under that PO
+# number (a consequence of removing the one line, not a PO-level rule).
+# ---------------------------------------------------------------------------
+def drop_lines_with_deletion_indicator(po_rows):
+    """
+    Removes every line item that itself carries Deletion indicator = 'L'
+    from po_rows - completely (not marked Not Applicable) - before
+    build_context() or any output/JSON is generated, so a dropped line
+    contributes to nothing downstream: no row in "PO Line Results", no
+    addpo/header JSON record, no cross-row aggregate.
+
+    Other line items on the SAME PO number that do NOT carry 'L' are left
+    untouched in po_rows and continue to be audited exactly as normal -
+    this function never looks at or removes a line based on what its
+    PO-mates contain.
+
+    Returns Item = 'X' is intentionally NOT part of this filter - see the
+    module-level CHANGELOG entry and _is_excluded_line() above; a Returns
+    Item line is still only marked Not Applicable in place, not dropped.
+    """
+    kept = [row for row in po_rows if not _is_deleted_line(row)]
+    dropped = len(po_rows) - len(kept)
+    if dropped:
+        log_assumption(
+            "Global Exclusion - Deletion Indicator (line-level)",
+            f"{dropped} PO line item(s) were removed COMPLETELY from the audit - not "
+            f"marked Not Applicable, but dropped before any output, JSON export, or "
+            f"cross-row aggregate was built - because they carry Deletion indicator = "
+            f"'L'. This removal is per LINE ITEM, not per PO: any OTHER, non-'L' line "
+            f"items on the same PO number are left untouched and continue to be fully "
+            f"audited and appear in every output as normal. If every line item under a "
+            f"given PO number happens to carry 'L', that PO will not appear anywhere in "
+            f"the audit at all - simply because none of its line items remain, not "
+            f"because of any PO-level rule. This is separate from Returns Item = 'X' "
+            f"handling, which still marks just the flagged line Not Applicable in place "
+            f"rather than dropping it."
+        )
+    return kept
 
 
 def evaluate_rule(rule_no, fn, row, ctx):
@@ -2036,21 +2177,39 @@ def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None, header_
 
     po_rows = filter_to_scope(po_rows)
 
+    # LINE-level Deletion Indicator exclusion - MUST run before
+    # build_context() and before anything else touches po_rows, so a
+    # line item carrying 'L' is fully gone before any output, JSON export,
+    # or cross-row aggregate is built. Only the flagged line itself is
+    # removed - its PO-mates are untouched. See CHANGELOG "THIS REVISION".
+    # Logs its own assumption entry internally when it drops anything.
+    po_rows = drop_lines_with_deletion_indicator(po_rows)
+
+    # Everything remaining in po_rows by this point has no Deletion
+    # indicator = 'L' line at all (those were already removed above,
+    # individually, without affecting their PO-mates). The only thing
+    # _is_excluded_line() can still match here is a per-line Returns Item
+    # = 'X', which is intentionally still handled the old way (marked Not
+    # Applicable in place, not dropped).
     excluded_count = sum(1 for r in po_rows if _is_excluded_line(r))
     if excluded_count:
         log_assumption(
-            "Global Exclusion",
-            f"{excluded_count} of {len(po_rows)} in-scope PO line(s) were excluded from "
-            f"ALL 19 audit points (marked Not Applicable on every point, line-level and "
-            f"header-level alike) because they have Deletion indicator = 'L' and/or "
-            f"Returns Item = 'X'. This ONLY affects each such row's OWN result. These "
-            f"same excluded lines are DELIBERATELY still counted when building the point "
-            f"#9 (duplicate-PO) and point #16 (vendor/material tax consistency) "
-            f"aggregates, i.e. they still affect the results of OTHER, live line items "
-            f"where relevant - confirmed against the client's manually-verified ground "
-            f"truth (see CHANGELOG). Point #15 no longer uses a cross-row aggregate at "
-            f"all, so exclusion there simply means the excluded line's own result is Not "
-            f"Applicable, with no effect on any other line.",
+            "Global Exclusion - Returns Item (line-level)",
+            f"{excluded_count} of {len(po_rows)} remaining in-scope PO line(s) were "
+            f"excluded from ALL 19 audit points (marked Not Applicable on every point, "
+            f"line-level and header-level alike) because they have Returns Item = 'X'. "
+            f"This ONLY affects each such row's OWN result - the rest of that PO's line "
+            f"items are still fully audited. (Any line item with Deletion indicator = 'L' "
+            f"was already removed COMPLETELY above, before this count, without affecting "
+            f"its PO-mates - see the 'Global Exclusion - Deletion Indicator (line-level)' "
+            f"assumption if any were dropped.) These Returns-Item lines are DELIBERATELY "
+            f"still counted when building the point #9 (duplicate-PO) and point #16 "
+            f"(vendor/material tax consistency) aggregates, i.e. they still affect the "
+            f"results of OTHER, live line items where relevant - confirmed against the "
+            f"client's manually-verified ground truth (see CHANGELOG). Point #15 no "
+            f"longer uses a cross-row aggregate at all, so exclusion there simply means "
+            f"the excluded line's own result is Not Applicable, with no effect on any "
+            f"other line.",
         )
 
     ctx = build_context(po_rows, cnd_by_po, rc_rows)
