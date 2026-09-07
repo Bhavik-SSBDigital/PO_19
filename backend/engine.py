@@ -1159,17 +1159,17 @@ def _po9_core_key(row):
 
 def _po9_rfq_matches(own_rfq, other_rfq):
     """
-    Per the Final sheet's "Changes to be done" instruction for point #9:
-    check all 5 parameters (Vendor, Purchasing Group, Plant, Purchasing
-    Date, RFQ no.); if the RFQ No. is blank, check only the remaining 4
-    parameters. Symmetric: a blank RFQ on EITHER side means the RFQ
-    dimension is skipped for that comparison (treated as matching);
-    if BOTH sides have a non-blank RFQ, they must be equal to match.
+    RFQ comparison logic:
+    - If BOTH sides are blank: treated as a match on 4 parameters (RFQ not compared).
+    - If BOTH sides are non-blank and equal: treated as a match on all 5 parameters.
+    - If RFQ is blank on one side and populated on the other, or both are different:
+      treated as a mismatch (not a duplicate).
     """
-    if own_rfq == "" or other_rfq == "":
+    if own_rfq == "" and other_rfq == "":
         return True
-    return own_rfq == other_rfq
-
+    if own_rfq != "" and other_rfq != "":
+        return own_rfq == other_rfq
+    return False
 
 def _format_po_list(pos, limit=5):
     pos = sorted(pos)
@@ -1681,67 +1681,47 @@ def rule_19_multiple_po_same_day(row, ctx):
     """
     HEADER-LEVEL rule (see build_po_header_records) - reports as new point #9.
 
-    Logic (per the Final sheet's "Changes to be done" instruction for this
-    point - see CHANGELOG "THIS REVISION" entry 2 for full rationale and
-    the client's worked example, which this reproduces exactly):
-
-      1. Compute this PO's 4-parameter core key (Vendor, Purchasing Group,
-         Plant, Purchasing Date = "PO Date(Doc date)") and look up every
-         OTHER PO number sharing that same 4-parameter key.
-      2. For each such other PO, the two are considered a match if EITHER
-         PO's RFQ (RFQ_NO_COLUMN = "order acknowledgement") is blank
-         (match decided on the 4 core parameters only), OR if both are
-         non-blank and equal (match on all 5 parameters). If both are
-         non-blank and DIFFERENT, that other PO does NOT count as a match.
-      3. If ANY other PO matches -> Not Verified, naming the matching
-         PO(s) and stating plainly whether the match was on the 4 core
-         parameters (RFQ blank on one side) or all 5 (RFQ also equal).
-      4. If no other PO shares even the 4-parameter core key -> Verified,
-         generic remark.
-      5. If other POs DO share the 4-parameter core key but none of them
-         match (i.e. they were all excluded purely because both sides had
-         a non-blank, differing RFQ) -> Verified, remark names RFQ as the
-         differentiator.
-
-    Grouping keys come from _po9_four_key()/_po9_core_key() (shared with
-    build_context()) so this can never disagree with how the aggregates
-    were built. Neither key filters out excluded rows for this point -
-    see CHANGELOG for why.
+    Logic:
+      1. Slices on the 4-parameter core key (Vendor, Purchasing Group, Plant,
+         Purchasing Date = "PO Date(Doc date)").
+      2. Compares RFQ (from "order acknowledgement"):
+         - Both blank: matched on 4 parameters ("RFQ no. should be blank for all pos side").
+         - Both non-blank and identical: matched on all 5 parameters.
+         - One blank and one populated, or different non-blank values: not a duplicate.
+      3. Returns Not Verified if duplicate match exists; otherwise Verified.
     """
     po_number = s(row, "PO number")
-
     four_key = _po9_four_key(row)
-    own_rfq = s(row, RFQ_NO_COLUMN)
+    
+    # Use representative RFQ for this PO to keep lines consistent
+    own_rfq = ctx["po9_rfq_by_po"].get((four_key, po_number), s(row, RFQ_NO_COLUMN))
 
     others_four = ctx["po9_four_groups"].get(four_key, set()) - {po_number}
 
-    # Matched POs are split into two buckets so the remark can say exactly
-    # which parameters were actually compared, per the client's wording
-    # ("Remarks for 4 parameters applied only then 4 parameters are same
-    # and RFQ number is applied"):
-    #   matched_4_only - matched because RFQ was blank on at least one
-    #                     side, so only the 4 core parameters decided it.
-    #   matched_5      - matched on all 5 parameters, RFQ included
-    #                     (both sides non-blank and equal).
     matched_4_only = set()
     matched_5 = set()
     rfq_only_diff = set()
+
     for other_po in others_four:
         other_rfq = ctx["po9_rfq_by_po"].get((four_key, other_po), "")
-        if not _po9_rfq_matches(own_rfq, other_rfq):
-            rfq_only_diff.add(other_po)
-        elif own_rfq == "" or other_rfq == "":
+        
+        # Condition 1: Both sides have blank RFQ -> matched on 4 parameters
+        if own_rfq == "" and other_rfq == "":
             matched_4_only.add(other_po)
-        else:
+        # Condition 2: Both sides have non-blank identical RFQ -> matched on 5 parameters
+        elif own_rfq != "" and other_rfq != "" and own_rfq == other_rfq:
             matched_5.add(other_po)
+        # Condition 3: One is blank while other has value, OR both have differing RFQs
+        else:
+            rfq_only_diff.add(other_po)
 
     if matched_4_only or matched_5:
         parts = []
         if matched_4_only:
             parts.append(
                 f"4 parameters (Vendor, Purchasing Group, Plant, Purchasing Date) are "
-                f"the same as PO(s) {_format_po_list(matched_4_only)} - RFQ no. is blank "
-                f"on at least one side so it was not compared"
+                f"the same as PO(s) {_format_po_list(matched_4_only)} - RFQ no. should be blank "
+                f"for all pos side so it was not compared"
             )
         if matched_5:
             parts.append(
@@ -1761,7 +1741,6 @@ def rule_19_multiple_po_same_day(row, ctx):
         )
 
     return VERIFIED, "No other PO found with the same Vendor, Purchasing Group, Plant and Purchasing Date"
-
 
 def rule_rc_overlap(row, ctx):
     rc_no = s(row, "RC no.")
@@ -2113,8 +2092,7 @@ def build_addpo_records(po_rows, ctx):
 def build_po_header_records(po_rows, ctx):
     """
     One record per PO NUMBER. `results` contains ONLY the 9 HEADER-LEVEL
-    points (NEW numbers 1-9), evaluated once per PO instead of once per
-    line.
+    points (NEW numbers 1-9), evaluated once per PO instead of once per line.
 
     Excluded lines (Deletion indicator 'L' / Returns Item 'X') are dropped
     from the per-PO evaluation set first.
@@ -2141,22 +2119,26 @@ def build_po_header_records(po_rows, ctx):
                     (s(r, "PO Line item"), evaluate_rule(rule_no, fn, r, ctx))
                     for r in eligible_rows
                 ]
-                statuses = {status for _li, (status, _remark) in per_line}
+                statuses = {st for _li, (st, _remark) in per_line}
+                
                 if len(statuses) == 1:
                     status, remark = per_line[0][1]
                 else:
-                    status = MANUAL
-                    detail = "; ".join(f"line {li or '?'}: {st}" for li, (st, _r) in per_line)
-                    remark = (
-                        f"Header-level rule returned different results across this PO's "
-                        f"eligible line items - needs manual review ({detail})"
-                    )
-                    log_assumption(
-                        rule_no,
-                        f"PO {po_number}: header-level point {rule_no} disagreed across "
-                        f"eligible line items and was routed to Data Missing/manual "
-                        f"review instead of picking one line's answer.",
-                    )
+                    # If lines have mixed outcomes, prioritize Not Verified > Verified > NA
+                    # to prevent defaulting to "Manual Verification" / "Data Missing".
+                    if NOT_VERIFIED in statuses:
+                        status = NOT_VERIFIED
+                        remark = next(r for _li, (st, r) in per_line if st == NOT_VERIFIED)
+                    elif VERIFIED in statuses:
+                        status = VERIFIED
+                        remark = next(r for _li, (st, r) in per_line if st == VERIFIED)
+                    elif NA in statuses:
+                        status = NA
+                        remark = next(r for _li, (st, r) in per_line if st == NA)
+                    else:
+                        status = per_line[0][1][0]
+                        remark = per_line[0][1][1]
+
             flags = STATUS_TO_RESULT_FLAGS[status]
             results.append({"pointNo": str(rule_no), "remarks": [remark], **flags})
 
@@ -2170,7 +2152,6 @@ def build_po_header_records(po_rows, ctx):
             "results": results,
         })
     return records
-
 
 def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None, header_json_path=None, rc_json_path=None):
     po_rows, cnd_rows, rc_rows, cnd_by_po = load_all(poaudit_path, cnd_path, rc_path)
