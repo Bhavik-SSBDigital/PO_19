@@ -19,7 +19,12 @@ import HeaderContent from "./HeaderContent";
 
 // ==============================|| MAIN LAYOUT - HEADER ||============================== //
 
-const Header = ({ open, handleDrawerToggle }) => {
+const Header = ({ 
+  open, 
+  handleDrawerToggle, 
+  // 1. Add title prop with a default fallback
+  title = "AI Based P2P Compliance & Procurement Intelligence Platform" 
+}) => {
   const theme = useTheme();
   const matchDownMD = useMediaQuery(theme.breakpoints.down("lg"));
 
@@ -49,18 +54,21 @@ const Header = ({ open, handleDrawerToggle }) => {
           <MenuOpenRoundedIcon sx={{ fontSize: "1.3rem" }} />
         )}
       </IconButton>
-      <Box sx={{ flexGrow: 1 }}>
+      
+      {/* 2. Container takes up available space */}
+      <Box sx={{ flexGrow: 1, overflow: "hidden", px: 2 }}>
         <Typography
-  variant="h4"
-  sx={{
-    width: "540px",
-    pl: 2,
-    fontWeight: 700,
-    color: "#2e3780",
-  }}
->
-  AI Based P2P Compliance & Procurement Intelligence Platform
-</Typography>
+          variant="h4"
+          noWrap // 3. Prevents awkward multiline wrapping
+          sx={{
+            fontWeight: 700,
+            color: "#2e3780",
+            // 4. Responsive font sizing instead of fixed width
+            fontSize: { xs: "1.1rem", sm: "1.3rem", md: "1.5rem" }, 
+          }}
+        >
+          {title}
+        </Typography>
       </Box>
       <HeaderContent />
     </Toolbar>
@@ -74,7 +82,6 @@ const Header = ({ open, handleDrawerToggle }) => {
     sx: {
       borderBottom: `1px solid ${theme.palette.divider}`,
       boxShadow: "rgba(0, 0, 0, 0.15) 1.95px 1.95px 2.6px",
-      // Optional: You can swap the above shadow for theme.customShadows.z1 if it's defined in your theme
     },
   };
 
@@ -94,6 +101,7 @@ const Header = ({ open, handleDrawerToggle }) => {
 Header.propTypes = {
   open: PropTypes.bool,
   handleDrawerToggle: PropTypes.func,
+  title: PropTypes.string, // Document the new prop
 };
 
 export default Header;
