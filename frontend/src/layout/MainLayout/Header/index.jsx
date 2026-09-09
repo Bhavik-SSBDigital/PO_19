@@ -51,11 +51,16 @@ const Header = ({ open, handleDrawerToggle }) => {
       </IconButton>
       <Box sx={{ flexGrow: 1 }}>
         <Typography
-          variant="h4"
-          sx={{ width: "260px", pl: 2, fontWeight: 700, color: "#2e3780" }}
-        >
-          AI Based P2P Compliance & Procurement Intelligence Platform
-        </Typography>
+  variant="h4"
+  sx={{
+    width: "520px",
+    pl: 2,
+    fontWeight: 700,
+    color: "#2e3780",
+  }}
+>
+  AI Based P2P Compliance & Procurement Intelligence Platform
+</Typography>
       </Box>
       <HeaderContent />
     </Toolbar>
