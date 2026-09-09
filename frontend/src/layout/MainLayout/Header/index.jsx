@@ -23,7 +23,7 @@ const Header = ({
   open, 
   handleDrawerToggle, 
   // 1. Add title prop with a default fallback
-  title = "AI Based P2P Compliance & Procurement Intelligence Platform" 
+  title = "AIA PROCUREMENT AUDIT" 
 }) => {
   const theme = useTheme();
   const matchDownMD = useMediaQuery(theme.breakpoints.down("lg"));
