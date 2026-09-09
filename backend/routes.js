@@ -47,12 +47,14 @@ import {
   deletePoRemark,
   updatePoRemark,
   setAuditResultCheckedStatus,
+  togglePointChecked,
 } from "./controller/po-remarks-controller.js";
 
 import {
   getPoRemarksReport,
   downloadPoRemarksReport,
   getPoRemarksReportFilters,
+  downloadIssueTrackerReport,
 } from "./controller/po-remarks-report-controller.js";
 
 import {
@@ -62,6 +64,7 @@ import {
   updatePoHeaderRemark,
   deletePoHeaderRemark,
   setPoHeaderCheckedStatus,
+  toggleHeaderPointChecked,
 } from "./controller/po-header-controller.js";
 
 const router = express.Router();
@@ -178,6 +181,27 @@ router.post(
   requireAuth,
   requireAnyOf("isBuyer", "isAdmin", "isProcurementManager"),
   setAuditResultCheckedStatus,
+);
+
+router.post(
+  "/po-remarks/toggle-point-checked",
+  requireAuth,
+  requireAnyOf("isBuyer"),
+  togglePointChecked,
+);
+
+router.post(
+  "/po-header-remarks/toggle-point-checked",
+  requireAuth,
+  requireAnyOf("isBuyer"),
+  toggleHeaderPointChecked,
+);
+
+router.post(
+  "/reports/po-remarks-report/issue-tracker-download",
+  requireAuth,
+  requireAnyOf("isBuyer", "isAdmin", "isProcurementManager"),
+  downloadIssueTrackerReport,
 );
 
 // --- HEADER-LEVEL (PO-wide) system ---

@@ -91,3 +91,18 @@ export const setPoHeaderCheckedStatus = (payload) =>
 // Compliance" chart — results are PO numbers, not PO line items.
 export const getExecutiveHeaderDrilldown = (payload) =>
   post("/reports/executive-header-drilldown", payload);
+
+// NEW — per-point "Mark as Checked" (no remark needed), mutually
+// exclusive with having a remark on that point.
+export const togglePointChecked = (payload) =>
+  post("/po-remarks/toggle-point-checked", payload);
+
+export const toggleHeaderPointChecked = (payload) =>
+  post("/po-header-remarks/toggle-point-checked", payload);
+
+// NEW — Issue Tracker Excel export, same filter payload shape as
+// downloadPoRemarksReport (see po-remarks-report/index.jsx).
+export const downloadIssueTrackerReport = (payload) =>
+  apiClient.post("/reports/po-remarks-report/issue-tracker-download", payload, {
+    responseType: "blob",
+  });

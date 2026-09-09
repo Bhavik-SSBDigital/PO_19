@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Box,
   Button,
@@ -13,6 +13,7 @@ import {
   Typography,
   Tooltip as MuiTooltip,
 } from "@mui/material";
+import SectionTallyBar from "../../../components/SectionTallyBar";
 import LayersRoundedIcon from "@mui/icons-material/LayersRounded";
 import LockRoundedIcon from "@mui/icons-material/LockRounded";
 import LockOpenRoundedIcon from "@mui/icons-material/LockOpenRounded";
@@ -46,16 +47,14 @@ const HeaderVerificationChip = ({ point }) => {
 };
 
 /**
- * THE single source of truth for showing a PO's header-level (points 7,
- * 8, 9, 11, 12, 13, 14, 15, 19) checks, ANYWHERE in the app:
- *   - the search page (full mode, when a PO number is searched)
- *   - the search page (compact banner, when a PO+line item is searched -
- *     "Header Checks: Closed", expandable into this same panel)
- *   - the dashboard's PO preview dialog / drilldown
- *
- * Closing is PO-LEVEL and entirely separate from any line item's own
- * lock. `locked`/`lockedBy`/`lockedAt` here always come from
- * PoHeaderResult, never from an AuditResult row.
+ * Live tally fix: this component now owns a LOCAL `localPoints` state
+ * (seeded from header.points, remarksCount derived from
+ * headerRemarksByPoint) and a LOCAL `localLocked` state (seeded from
+ * header.locked). PoHeaderRemarkPanel reports back through
+ * `onRemarksChanged` after every successful check/remark action, and
+ * `handlePointUpdate` patches just that one point AND, if the backend
+ * says the section auto-closed, flips `localLocked` too — all without
+ * waiting for the parent to refetch.
  *
  * `variant`:
  *   "full"    - full points table + remarks + close/reopen button.
@@ -64,18 +63,17 @@ const HeaderVerificationChip = ({ point }) => {
  */
 const PoHeaderChecksPanel = ({
   poNumber,
-  header, // { points, totalPoints, verifiedCount, notVerifiedCount, locked, lockedBy, lockedAt }
+  header,
   currentUserId,
   isBuyer,
   isAdmin,
   isProcurementManager,
   variant = "full",
-  onChanged, // called after a successful lock/reopen, so the parent can refetch
+  onChanged,
 }) => {
   const [expanded, setExpanded] = useState(variant === "full");
   const [busy, setBusy] = useState(false);
 
-  if (!header) return null;
   const {
     points = [],
     totalPoints = 0,
@@ -84,24 +82,58 @@ const PoHeaderChecksPanel = ({
     locked,
     lockedBy,
     lockedAt,
-    // Grouped by pointNo-as-string, always present on the shaped header
-    // returned by getHeaderForPo/getHeadersForPos/getPoHeaderSummary -
-    // seeds each row's remarks panel so its trigger is correct on first
-    // paint instead of "Add Remark" until someone opens it.
     headerRemarksByPoint = {},
-  } = header;
+  } = header || {};
+
+  // NEW — local, live-patchable copies.
+  const [localPoints, setLocalPoints] = useState([]);
+  const [localLocked, setLocalLocked] = useState(Boolean(locked));
+
+  useEffect(() => {
+    setLocalPoints(
+      points.map((p) => ({
+        ...p,
+        checked: Boolean(p.checked),
+        remarksCount: (headerRemarksByPoint[String(p.pointNo)] || []).length,
+      })),
+    );
+    setLocalLocked(Boolean(locked));
+    // Re-seed whenever the parent gives us a fresh header object (new PO,
+    // or after an explicit lock/reopen refetch via onChanged). Between
+    // fetches, handlePointUpdate patches take over.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [header, poNumber]);
+
+  // NEW
+  const handlePointUpdate = (patch) => {
+    setLocalPoints((prev) =>
+      prev.map((p) =>
+        String(p.pointNo) === String(patch.pointNo)
+          ? { ...p, checked: patch.checked, remarksCount: patch.remarksCount }
+          : p,
+      ),
+    );
+    if (patch.remarksLocked !== undefined) {
+      setLocalLocked(Boolean(patch.remarksLocked));
+    }
+  };
+
+  if (!header) return null;
 
   const canToggleLock = isBuyer;
 
   const toggleLock = async () => {
     setBusy(true);
     try {
-      const res = await setPoHeaderCheckedStatus({ po_number: poNumber, checked: !locked });
+      const res = await setPoHeaderCheckedStatus({ po_number: poNumber, checked: !localLocked });
       toast.success(
         res?.remarksLocked
           ? "PO header marked as checked — this applies to the whole PO"
           : "PO header reopened",
       );
+      // Optimistic local flip so the UI reflects it instantly even before
+      // the parent's refetch (triggered below) resolves.
+      setLocalLocked(Boolean(res?.remarksLocked));
       onChanged?.();
     } catch (error) {
       toast.error(error?.response?.data?.message || error?.message || "Failed to update header status");
@@ -110,7 +142,7 @@ const PoHeaderChecksPanel = ({
     }
   };
 
-  const statusChip = locked ? (
+  const statusChip = localLocked ? (
     <Chip
       icon={<LockRoundedIcon fontSize="small" />}
       label={`Header Checks: Closed${lockedAt ? ` — ${moment(lockedAt).format("DD-MMM-YYYY")}` : ""}`}
@@ -188,22 +220,25 @@ const PoHeaderChecksPanel = ({
         {canToggleLock && (
           <Button
             size="small"
-            variant={locked ? "outlined" : "contained"}
+            variant={localLocked ? "outlined" : "contained"}
             disabled={busy}
             onClick={toggleLock}
             sx={{ textTransform: "none", fontWeight: 700 }}
           >
-            {busy ? "…" : locked ? "Reopen Header" : "Mark Header as Checked"}
+            {busy ? "…" : localLocked ? "Reopen Header" : "Mark Header as Checked"}
           </Button>
         )}
       </Box>
 
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
         These checks apply to <strong>PO {poNumber}</strong> as a whole, not any one line item.
-        {locked
+        {localLocked
           ? " This PO's header has been closed — every line item of this PO shows it as checked, and no further header remarks can be added."
           : " Closing this applies to every line item of this PO at once."}
       </Typography>
+
+      {/* Reads `localPoints`, not `points` — this is what makes it live */}
+      <SectionTallyBar points={localPoints} locked={localLocked} label="Header points reviewed" />
 
       <TableContainer component={Paper} variant="outlined" sx={{ borderColor: "#c7d2fe" }}>
         <Table size="small">
@@ -219,7 +254,7 @@ const PoHeaderChecksPanel = ({
             </TableRow>
           </TableHead>
           <TableBody>
-            {points.map((row, index) => (
+            {localPoints.map((row, index) => (
               <TableRow key={row.pointNo ?? index} hover>
                 <TableCell sx={{ verticalAlign: "top", fontWeight: 700 }}>{row.pointNo}</TableCell>
                 <TableCell sx={{ verticalAlign: "top" }}>
@@ -268,14 +303,17 @@ const PoHeaderChecksPanel = ({
                     isBuyer={isBuyer}
                     isAdmin={isAdmin}
                     isProcurementManager={isProcurementManager}
-                    locked={locked}
+                    locked={localLocked}
                     initialRemarks={headerRemarksByPoint[String(row.pointNo)] || []}
+                    initialChecked={row.checked}
+                    systemResult={row.systemResultLabel}
+                    onRemarksChanged={handlePointUpdate}
                     compact
                   />
                 </TableCell>
               </TableRow>
             ))}
-            {points.length === 0 && (
+            {localPoints.length === 0 && (
               <TableRow>
                 <TableCell colSpan={7} align="center" sx={{ color: "text.secondary", py: 3 }}>
                   No header-level results found for this PO yet.

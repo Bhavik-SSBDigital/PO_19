@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-// material-ui
 import {
   Typography,
   Box,
@@ -21,22 +20,18 @@ import LockOpenRoundedIcon from "@mui/icons-material/LockOpenRounded";
 
 import { toast } from "react-toastify";
 
+import SectionTallyBar from "../../../components/SectionTallyBar";
 import PointRemarkPanel from "../../executive-dashboard/components/PointRemarkPanel";
 import {
   getPoRemarks,
   setAuditResultCheckedStatus,
 } from "../../../api/api-functions";
 
-// ── Shared chip exported so AuditResultReview can reuse it ──────────────────
 export const VerificationChip = ({ result }) => {
   if (result.manual_verification) {
     return (
       <Chip
-        icon={
-          <PanToolAltRoundedIcon
-            style={{ fontSize: "13px", color: "#b45309" }}
-          />
-        }
+        icon={<PanToolAltRoundedIcon style={{ fontSize: "13px", color: "#b45309" }} />}
         size="small"
         label="Manual Verify"
         sx={{
@@ -59,12 +54,7 @@ export const VerificationChip = ({ result }) => {
         size="small"
         label="Not Applicable"
         color="default"
-        sx={{
-          borderRadius: "20px",
-          width: "130px",
-          fontSize: "12px",
-          fontWeight: "700",
-        }}
+        sx={{ borderRadius: "20px", width: "130px", fontSize: "12px", fontWeight: "700" }}
       />
     );
   }
@@ -75,12 +65,7 @@ export const VerificationChip = ({ result }) => {
         size="small"
         label="Data Missing"
         color="warning"
-        sx={{
-          borderRadius: "20px",
-          width: "120px",
-          fontSize: "12px",
-          fontWeight: "700",
-        }}
+        sx={{ borderRadius: "20px", width: "120px", fontSize: "12px", fontWeight: "700" }}
       />
     );
   }
@@ -91,12 +76,7 @@ export const VerificationChip = ({ result }) => {
         size="small"
         label="Verified"
         color="success"
-        sx={{
-          borderRadius: "20px",
-          width: "110px",
-          fontSize: "12px",
-          fontWeight: "700",
-        }}
+        sx={{ borderRadius: "20px", width: "110px", fontSize: "12px", fontWeight: "700" }}
       />
     );
   }
@@ -106,62 +86,76 @@ export const VerificationChip = ({ result }) => {
       size="small"
       label="Not Verified"
       color="error"
-      sx={{
-        borderRadius: "20px",
-        width: "110px",
-        fontSize: "12px",
-        fontWeight: "700",
-      }}
+      sx={{ borderRadius: "20px", width: "110px", fontSize: "12px", fontWeight: "700" }}
     />
   );
 };
 
 const getSeverityColor = (severity) => {
   switch (severity?.toLowerCase()) {
-    case "critical":
-      return "error";
-    case "high":
-      return "warning";
-    case "medium":
-      return "info";
-    case "low":
-      return "success";
-    default:
-      return "default";
+    case "critical": return "error";
+    case "high": return "warning";
+    case "medium": return "info";
+    case "low": return "success";
+    default: return "default";
   }
 };
 
 // ==============================|| AUDIT RESULTS TABLE (LINE-LEVEL ONLY) ||=
 //
-// This table shows ONLY line-item-level checks (searchData.results - the
-// 10 line-level points). It intentionally shows NOTHING header-level -
-// header-level points belong to PoHeaderChecksPanel, rendered by the
-// PARENT page, not here.
-//
-// Buyer Remarks column: PointRemarkPanel is seeded with `row.buyerRemarks`
-// (already embedded + visibility-filtered by the backend on the search
-// response), so the remark count/preview is correct on first paint - no
-// click-to-reveal delay, and no separate fetch needed just to know a
-// remark exists.
+// Live tally fix: this component now owns a LOCAL `rows` state, seeded
+// from searchData.results (with each row's remarksCount computed from
+// its own buyerRemarks array). PointRemarkPanel reports back through
+// `onRemarksChanged` after every successful check/remark action, and
+// `handlePointUpdate` patches just that one row — so SectionTallyBar
+// (which reads `rows`, not searchData.results) re-renders immediately,
+// with no network round trip and no page refresh.
 const AuditResults = ({ searchData }) => {
-  // Who's logged in.
   const role = localStorage.getItem("role");
   const currentUserId = localStorage.getItem("userId");
   const isBuyer = role === "isBuyer";
   const isAdmin = role === "isAdmin";
   const isProcurementManager = role === "isProcurementManager";
-  // Only a Buyer may toggle the checked/locked state of a line item.
   const canToggleLock = isBuyer;
 
   const poNumber = searchData?.po_number;
   const poLineItem = searchData?.lineItem || searchData?.po_line_item;
 
-  // Whether THIS LINE ITEM's remarks are locked ("checked"). This is the
-  // line-level lock (AuditResult.remarksLocked) - entirely separate from
-  // the PO's header lock, which is shown/controlled by
-  // PoHeaderChecksPanel elsewhere on the page.
   const [locked, setLocked] = useState(false);
   const [lockBusy, setLockBusy] = useState(false);
+
+  // NEW — local, live-patchable copy of the results array.
+  const [rows, setRows] = useState([]);
+
+  useEffect(() => {
+    const results = searchData?.results || [];
+    setRows(
+      results.map((r) => ({
+        ...r,
+        checked: Boolean(r.checked),
+        remarksCount: r.buyerRemarks?.length || 0,
+      })),
+    );
+    // Re-seed every time the underlying search result changes (new PO,
+    // new line item, or an explicit refetch) — after that, patches from
+    // onRemarksChanged take over until the next real fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchData]);
+
+  // NEW — called by PointRemarkPanel right after check/remark/delete
+  // succeeds on the backend.
+  const handlePointUpdate = (patch) => {
+    setRows((prev) =>
+      prev.map((r) =>
+        String(r.pointNo) === String(patch.pointNo)
+          ? { ...r, checked: patch.checked, remarksCount: patch.remarksCount }
+          : r,
+      ),
+    );
+    if (patch.remarksLocked !== undefined) {
+      setLocked(Boolean(patch.remarksLocked));
+    }
+  };
 
   useEffect(() => {
     if (!poNumber || !poLineItem) {
@@ -193,15 +187,11 @@ const AuditResults = ({ searchData }) => {
       });
       setLocked(Boolean(res?.remarksLocked));
       toast.success(
-        res?.remarksLocked
-          ? "Line item marked as checked"
-          : "Line item reopened",
+        res?.remarksLocked ? "Line item marked as checked" : "Line item reopened",
       );
     } catch (error) {
       toast.error(
-        error?.response?.data?.message ||
-          error?.message ||
-          "Failed to update checked status",
+        error?.response?.data?.message || error?.message || "Failed to update checked status",
       );
     } finally {
       setLockBusy(false);
@@ -231,13 +221,7 @@ const AuditResults = ({ searchData }) => {
         {poNumber && poLineItem && (
           <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
             <Chip
-              icon={
-                locked ? (
-                  <LockRoundedIcon fontSize="small" />
-                ) : (
-                  <LockOpenRoundedIcon fontSize="small" />
-                )
-              }
+              icon={locked ? <LockRoundedIcon fontSize="small" /> : <LockOpenRoundedIcon fontSize="small" />}
               label={locked ? "Line Item Checked — Remarks Locked" : "Open"}
               color={locked ? "warning" : "default"}
               size="small"
@@ -258,48 +242,33 @@ const AuditResults = ({ searchData }) => {
         )}
       </Box>
 
+      {/* Reads `rows`, not searchData.results — this is what makes it live */}
+      <SectionTallyBar points={rows} locked={locked} label="Line points reviewed" />
+
       <TableContainer component={Paper} variant="outlined">
         <Table size="small">
           <TableHead sx={{ bgcolor: "#f5f5f5" }}>
             <TableRow>
               <TableCell sx={{ fontWeight: 600, width: "5%" }}>Pt #</TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "20%" }}>
-                Title & Summary
-              </TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "20%" }}>
-                Logic
-              </TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "7%" }}>
-                Severity
-              </TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "10%" }}>
-                Status
-              </TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "12%" }}>
-                System Remarks
-              </TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "26%" }}>
-                Buyer Remarks
-              </TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "20%" }}>Title & Summary</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "20%" }}>Logic</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "7%" }}>Severity</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "10%" }}>Status</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "12%" }}>System Remarks</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "26%" }}>Buyer Remarks</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
-            {searchData.results.map((row, index) => (
+            {rows.map((row, index) => (
               <TableRow key={row.pointNo ?? index} hover>
-                <TableCell sx={{ verticalAlign: "top", fontWeight: 700 }}>
-                  {row.pointNo}
-                </TableCell>
+                <TableCell sx={{ verticalAlign: "top", fontWeight: 700 }}>{row.pointNo}</TableCell>
 
                 <TableCell sx={{ verticalAlign: "top" }}>
                   <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
                     {row.title || `Point ${row.pointNo}`}
                   </Typography>
                   {row.summary && (
-                    <Typography
-                      variant="body2"
-                      color="textSecondary"
-                      sx={{ mt: 0.5 }}
-                    >
+                    <Typography variant="body2" color="textSecondary" sx={{ mt: 0.5 }}>
                       {row.summary}
                     </Typography>
                   )}
@@ -311,12 +280,7 @@ const AuditResults = ({ searchData }) => {
 
                 <TableCell sx={{ verticalAlign: "top" }}>
                   {row.severity && (
-                    <Chip
-                      label={row.severity}
-                      size="small"
-                      color={getSeverityColor(row.severity)}
-                      variant="outlined"
-                    />
+                    <Chip label={row.severity} size="small" color={getSeverityColor(row.severity)} variant="outlined" />
                   )}
                 </TableCell>
 
@@ -334,9 +298,7 @@ const AuditResults = ({ searchData }) => {
                       ))}
                     </ul>
                   ) : (
-                    <Typography variant="body2" color="textSecondary">
-                      None
-                    </Typography>
+                    <Typography variant="body2" color="textSecondary">None</Typography>
                   )}
                 </TableCell>
 
@@ -352,12 +314,13 @@ const AuditResults = ({ searchData }) => {
                       isProcurementManager={isProcurementManager}
                       locked={locked}
                       initialRemarks={row.buyerRemarks}
+                      initialChecked={row.checked}
+                      systemResult={row.systemResultLabel}
+                      onRemarksChanged={handlePointUpdate}
                       compact
                     />
                   ) : (
-                    <Typography variant="caption" color="text.secondary">
-                      —
-                    </Typography>
+                    <Typography variant="caption" color="text.secondary">—</Typography>
                   )}
                 </TableCell>
               </TableRow>

@@ -54,7 +54,7 @@ const Header = ({ open, handleDrawerToggle }) => {
           variant="h4"
           sx={{ width: "260px", pl: 2, fontWeight: 700, color: "#2e3780" }}
         >
-          AI Based P2P Compliance
+          AI Based P2P Compliance & Procurement Intelligence Platform
         </Typography>
       </Box>
       <HeaderContent />

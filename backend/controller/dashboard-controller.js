@@ -17,10 +17,6 @@ import {
   getPoTypeName,
 } from "../utility/master-data.js";
 import { RC_PLACEHOLDER_PO_TYPES } from "../utility/rc-placeholder.js";
-// CHANGED: point content (title/summary/logic) now comes from the DB, not
-// a file - see utility/point-definitions.js. ensurePointDefinitionsLoaded()
-// must be awaited before getPointDefinition() is used, same pattern as
-// ensureSeverityLoaded()/severityOf().
 import {
   ensurePointDefinitionsLoaded,
   getPointDefinition,
@@ -48,22 +44,6 @@ const PURCHASE_GROUPS = [
   "P64",
 ];
 
-/**
- * ACCESS CONTROL NOTE:
- *
- * buildWhere() takes the authenticated user (req.user) as well as the
- * request body, and:
- *   - Buyer (and not also Admin/PM): purchase_group is forced to their own
- *     group via getPurchaseGroupCode(username), REGARDLESS of whatever
- *     purchaseGroup filter the client might have sent.
- *   - Everyone else (Admin, PM, and any other dashboard-visible role):
- *     unrestricted, may still narrow voluntarily via the filter bar.
- *
- * getExecutiveSummary, getExecutiveDrilldown, getExecutiveHeaderDrilldown,
- * and getExecutiveHeaderKpiDrilldown all go through this same buildWhere(),
- * so line-level AND header-level numbers are always drawn from the same
- * scoped dataset.
- */
 function buildWhere(body = {}, user = {}) {
   const where = { type: "PO" };
 
@@ -198,9 +178,6 @@ function richBucketToJson(key, bucket) {
   };
 }
 
-// Compliance % helper shared by every "-wise compliance" chart, LINE-LEVEL
-// and HEADER-LEVEL alike. na/manual points are excluded from the
-// denominator.
 function compliancePctOf(v) {
   return v.verified + v.notVerified > 0
     ? Number(((v.verified / (v.verified + v.notVerified)) * 100).toFixed(1))
@@ -229,11 +206,6 @@ export const getExecutiveSummary = async (req, res) => {
     let highRiskExceptions = 0;
     let exceptionValueExposure = 0;
 
-    // LINE-LEVEL control-wise tallies. Only LINE_TABLE_RULE_NOS (NEW
-    // numbers 10-19) are seeded here - header-level points (NEW numbers
-    // 1-9) no longer live in AuditResult.results at all, so they're
-    // computed separately below (headerControlWise), once per PO instead
-    // of once per line.
     const controlWise = {};
     for (const pointNo of LINE_TABLE_RULE_NOS) {
       controlWise[String(pointNo)] = {
@@ -252,15 +224,7 @@ export const getExecutiveSummary = async (req, res) => {
     const byPoNumber = {};
     const monthlyExceptions = {};
 
-    // NEW — maps po_number -> "YYYY-MM", derived once from each line row's
-    // po_created_date (first occurrence wins; all line items of a PO
-    // normally share the same PO creation date). This is what lets the
-    // HEADER-LEVEL monthly trend below be bucketed by month even though
-    // PoHeaderResult itself has no po_created_date column of its own.
     const poCreatedMonth = {};
-    // NEW — header-level counterpart to monthlyExceptions: one entry per
-    // month, counting each PO once if it has >=1 not-verified header point
-    // in that month (by the PO's own po_created_date, via poCreatedMonth).
     const headerMonthlyExceptions = {};
 
     const byPlantCompliance = {};
@@ -278,9 +242,6 @@ export const getExecutiveSummary = async (req, res) => {
       poNumbers.add(row.po_number);
       if (row.purchase_req) prNumbers.add(row.purchase_req);
 
-      // NEW — record this PO's creation month once, regardless of whether
-      // this particular line has an exception. Used below to bucket the
-      // header-level monthly trend by month.
       if (row.po_created_date && !poCreatedMonth[row.po_number]) {
         poCreatedMonth[row.po_number] = new Date(row.po_created_date)
           .toISOString()
@@ -316,10 +277,6 @@ export const getExecutiveSummary = async (req, res) => {
       let lineHasException = false;
       for (const point of row.results || []) {
         const pointNo = String(point.pointNo);
-        // Defensive: header-level points should never be in row.results
-        // anymore (engine.py/addpo.js only write LINE_ONLY_RULES there),
-        // but skip them here too in case an older import still has them,
-        // so they never silently double-count into the line-level chart.
         if (HEADER_LEVEL_RULE_NOS.includes(Number(pointNo))) continue;
 
         controlWise[pointNo] = controlWise[pointNo] || {
@@ -445,14 +402,6 @@ export const getExecutiveSummary = async (req, res) => {
       notVerified: notVerifiedCount,
     });
 
-    // ------------------------------------------------------------------
-    // HEADER-LEVEL block. Reuses the SAME scoped/filtered po_number set
-    // already collected above (poNumbers) so header compliance always
-    // agrees with whatever date/plant/vendor/purchase-group filters are
-    // active on the line-level charts - no separate filter-matching logic
-    // needed on PoHeaderResult itself. Each PO counts ONCE here, no
-    // matter how many line items it has.
-    // ------------------------------------------------------------------
     const headerRecords = poNumbers.size
       ? await prisma.poHeaderResult.findMany({
           where: { po_number: { in: [...poNumbers] } },
@@ -477,14 +426,11 @@ export const getExecutiveSummary = async (req, res) => {
     for (const hr of headerRecords) {
       if (hr.remarksLocked) headerClosedCount++;
 
-      // NEW — tracks whether THIS PO's header has at least one
-      // not-verified point, so it can be counted once into
-      // headerMonthlyExceptions below (mirrors lineHasException above).
       let headerHasException = false;
 
       for (const point of hr.results || []) {
         const pointNo = String(point.pointNo);
-        if (!headerControlWise[pointNo]) continue; // ignore anything unexpected
+        if (!headerControlWise[pointNo]) continue;
         const status = classifyPoint(point);
         if (status === "na") {
           headerNaCount++;
@@ -502,10 +448,6 @@ export const getExecutiveSummary = async (req, res) => {
         }
       }
 
-      // NEW — bucket this PO into its creation month if it has any
-      // not-verified header point. poCreatedMonth was populated from the
-      // line rows above, keyed by po_number, so this stays in sync with
-      // whatever date/plant/vendor/purchase-group filters are active.
       if (headerHasException) {
         const monthKey = poCreatedMonth[hr.po_number];
         if (monthKey) {
@@ -631,9 +573,6 @@ export const getExecutiveSummary = async (req, res) => {
         overallComplianceScore: complianceScore,
         highRiskExceptions,
         exceptionValueExposure: Number(exceptionValueExposure.toFixed(2)),
-        // header-level (PO-wide) KPIs, kept in their own nested object so
-        // nothing that reads the flat line-level keys above breaks. Each
-        // PO counts once regardless of line-item count.
         header: {
           totalPOsWithHeaderData: headerRecords.length,
           verifiedCount: headerVerifiedCount,
@@ -662,12 +601,6 @@ export const getExecutiveSummary = async (req, res) => {
             };
           })
           .sort((a, b) => Number(a.pointNo) - Number(b.pointNo)),
-        // header-level control-wise compliance. Same shape as
-        // controlWiseCompliance above (so it can reuse the same chart
-        // component), but each data point is ONE PO, not one PO line, and
-        // only covers points 1-9. Render this as its own clearly-labeled
-        // panel - do NOT merge into controlWiseCompliance, since the
-        // denominators mean different things (line-count vs PO-count).
         headerControlWiseCompliance,
         poWiseExceptions: poWiseExceptionsAll,
         exceptionBySeverity: SEVERITY_LEVELS.map((severity) => ({
@@ -716,11 +649,6 @@ export const getExecutiveSummary = async (req, res) => {
             count: v.count,
             valueExposure: Number(v.valueExposure.toFixed(2)),
           })),
-        // NEW — header-level counterpart to monthlyExceptionTrend above.
-        // Same month keys where data exists, but each data point is ONE
-        // PO (by po_created_date), not one PO line, and only reflects
-        // not-verified HEADER points (1-9). No valueExposure here since
-        // net_value lives on line items, not on the PO header record.
         headerMonthlyExceptionTrend: Object.entries(headerMonthlyExceptions)
           .sort((a, b) => (a[0] < b[0] ? -1 : 1))
           .map(([month, v]) => ({
@@ -978,22 +906,6 @@ export const getExecutiveDrilldown = async (req, res) => {
   }
 };
 
-/**
- * POST /reports/executive-header-drilldown
- *
- * The HEADER-LEVEL counterpart to getExecutiveDrilldown. Clicking a bar
- * on the "PO Header-Level Compliance" chart lands here instead - the
- * result list is PO NUMBERS (one row per PO), not PO line items, because
- * a header-level point's result belongs to the whole PO. Reuses the same
- * buildWhere() scoping (dates/plant/vendor/purchase-group/role) by first
- * collecting the in-scope PO numbers from AuditResult, then reading their
- * po_header_results rows - identical scoping approach to the header block
- * in getExecutiveSummary above.
- *
- * SCOPED TO ONE HEADER POINT (`pointNo` is required). For a general
- * "list all POs matching this overall KPI" view with no specific point,
- * see getExecutiveHeaderKpiDrilldown below instead.
- */
 export const getExecutiveHeaderDrilldown = async (req, res) => {
   try {
     await Promise.all([ensureSeverityLoaded(), ensurePointDefinitionsLoaded()]);
@@ -1087,34 +999,13 @@ export const getExecutiveHeaderDrilldown = async (req, res) => {
   }
 };
 
-/**
- * POST /reports/executive-header-kpi-drilldown
- *
- * Backs the 4 header-level KPI CARDS on the Executive Dashboard (Header
- * Compliance / POs Closed / Verified (Header) / Not Verified (Header)).
- * Unlike getExecutiveHeaderDrilldown above (scoped to ONE header POINT,
- * from clicking a bar on the "PO Header-Level Compliance" chart), this
- * has no pointNo - it lists PO numbers filtered by an overall
- * `dimension`:
- *
- *   - "all"            : every in-scope PO that has header data loaded
- *   - "closed"         : header remarksLocked === true
- *   - "open"           : header remarksLocked === false
- *   - "verifiedAny"    : PO has at least one Verified header point
- *   - "notVerifiedAny" : PO has at least one Not Verified header point
- *
- * Same buildWhere()/scopeOf() scoping as the rest of this controller, so
- * results always agree with the dashboard's active filters and the
- * user's purchase-group restriction. Each row IS a whole PO - clicking it
- * on the frontend opens the same header-only preview
- * (PoDetailsPreviewDialog's isHeaderOnly branch) that line items use.
- */
 export const getExecutiveHeaderKpiDrilldown = async (req, res) => {
   try {
     await Promise.all([ensureSeverityLoaded(), ensurePointDefinitionsLoaded()]);
     const user = req.user || {};
     const {
       dimension = "all",
+      value,
       page = 1,
       pageSize = 25,
       ...filterBody
@@ -1123,11 +1014,23 @@ export const getExecutiveHeaderKpiDrilldown = async (req, res) => {
     const where = buildWhere(filterBody, user);
     const scopedRows = await prisma.auditResult.findMany({
       where,
-      select: { po_number: true },
+      select: { po_number: true, po_created_date: true },
     });
+
     const poNumbers = [
       ...new Set(scopedRows.map((r) => r.po_number).filter(Boolean)),
     ];
+
+    const poCreatedMonth = {};
+    if (dimension === "month") {
+      scopedRows.forEach((r) => {
+        if (r.po_created_date && !poCreatedMonth[r.po_number]) {
+          poCreatedMonth[r.po_number] = new Date(r.po_created_date)
+            .toISOString()
+            .slice(0, 7);
+        }
+      });
+    }
 
     if (!poNumbers.length) {
       return res.status(200).json({
@@ -1136,6 +1039,7 @@ export const getExecutiveHeaderKpiDrilldown = async (req, res) => {
         page: Number(page),
         pageSize: Number(pageSize) || 25,
         dimension,
+        value,
         scope: scopeOf(user),
       });
     }
@@ -1157,6 +1061,12 @@ export const getExecutiveHeaderKpiDrilldown = async (req, res) => {
         case "notVerifiedAny":
           return (hr.results || []).some(
             (p) => classifyPoint(p) === "notVerified",
+          );
+        case "month":
+          return (
+            (hr.results || []).some(
+              (p) => classifyPoint(p) === "notVerified",
+            ) && poCreatedMonth[hr.po_number] === value
           );
         case "all":
         default:
@@ -1207,6 +1117,7 @@ export const getExecutiveHeaderKpiDrilldown = async (req, res) => {
       page: Number(page),
       pageSize: take,
       dimension,
+      value,
       scope: scopeOf(user),
     });
   } catch (error) {

@@ -10,21 +10,11 @@ import {
   getPoTypeName,
 } from "../utility/master-data.js";
 import { getHeaderForPo } from "../utility/header-results.js";
-
-/**
- * po-header-controller.js
- * ========================
- * Everything about the HEADER-LEVEL (PO-wide) audit system lives here.
- *
- * ACCESS CONTROL:
- *   - Admin / Procurement Manager: full access to every PO's header, and
- *     to every buyer's header remark on it.
- *   - Buyer: scoped to their own purchasing group for VIEWING the header
- *     at all; but for individual remark TEXT, a Buyer only ever sees
- *     remarks THEY personally submitted (see getPoHeaderRemarks and the
- *     headerRemarksByPoint block in getPoHeaderSummary below).
- *   - Anyone else: 403.
- */
+import { computeTally } from "../utility/point-tally.js";
+import {
+  findSystemPoint,
+  normalizeBuyerResult,
+} from "../utility/system-result.js";
 
 const SUBMITTER_SELECT = {
   id: true,
@@ -48,17 +38,46 @@ function canWriteHeaderRemarks(user, headerRecord) {
   return !!ownGroup && headerRecord.purchase_group === ownGroup;
 }
 
-/**
- * POST /getPOHeaderSummary
- * Body: { po_number }
- *
- * Returns the PO's header-level points + lock status, a lightweight list
- * of its line items, PLUS (new) headerRemarksByPoint — every header-level
- * buyer remark, grouped by pointNo, already filtered to what the caller
- * is allowed to see (Buyer: own remarks only; Admin/PM: everyone's).
- * This lets the frontend render remarks immediately without a follow-up
- * call to /po-header-remarks/search.
- */
+// Header-level counterpart to recomputeAndMaybeAutoClose() in
+// po-remarks-controller.js. Same rule: union of checkedPoints and
+// distinct remarked pointNos must cover every point in
+// PoHeaderResult.results before the PO's header auto-closes.
+async function recomputeAndMaybeAutoCloseHeader(po_number, userId) {
+  const fresh = await prisma.poHeaderResult.findUnique({
+    where: { po_number },
+    select: { results: true, checkedPoints: true, remarksLocked: true },
+  });
+  if (!fresh) return null;
+
+  const remarkedPointNos = (
+    await prisma.poHeaderRemark.findMany({
+      where: { po_number },
+      distinct: ["pointNo"],
+      select: { pointNo: true },
+    })
+  ).map((r) => r.pointNo);
+
+  const tally = computeTally(
+    fresh.results,
+    fresh.checkedPoints,
+    remarkedPointNos,
+  );
+
+  if (tally.isComplete && !fresh.remarksLocked) {
+    await prisma.poHeaderResult.update({
+      where: { po_number },
+      data: {
+        remarksLocked: true,
+        remarksLockedBy: userId,
+        remarksLockedAt: new Date(),
+      },
+    });
+    return { ...tally, remarksLocked: true, autoClosed: true };
+  }
+
+  return { ...tally, remarksLocked: fresh.remarksLocked, autoClosed: false };
+}
+
 export const getPoHeaderSummary = async (req, res) => {
   try {
     await ensureSeverityLoaded();
@@ -109,14 +128,6 @@ export const getPoHeaderSummary = async (req, res) => {
         .json({ message: "Not authorized to view this PO" });
     }
 
-    // getHeaderForPo() is now THE single place that fetches header
-    // remarks (see utility/header-results.js) - it already returns
-    // `headerRemarksByPoint` on the shaped header, pre-filtered to what
-    // this caller may see (Buyer: own remarks only; Admin/PM: everyone's).
-    // Reusing it here (instead of re-querying PoHeaderRemark separately)
-    // means this response and every other endpoint that calls
-    // getHeaderForPo/getHeadersForPos can never disagree about remark
-    // counts for the same PO.
     const header = await getHeaderForPo(po_number, user);
     const headerRemarksByPoint = header.headerRemarksByPoint;
 
@@ -158,7 +169,7 @@ export const getPoHeaderSummary = async (req, res) => {
       poTypeName: getPoTypeName(headerRecord?.po_type),
       purchaseGroup: scopeGroup,
       purchaseGroupName: getPurchaseGroupName(scopeGroup),
-      header,
+      header, // now also carries checkedPoints + tally (see header-results.js)
       headerRemarksByPoint,
       lineItemCount: lineItems.length,
       lineItems,
@@ -171,12 +182,6 @@ export const getPoHeaderSummary = async (req, res) => {
   }
 };
 
-/**
- * POST /po-header-remarks/search
- *
- * Visibility rule: Admin / Procurement Manager see every header remark on
- * the PO. A Buyer sees ONLY the remarks THEY personally submitted.
- */
 export const getPoHeaderRemarks = async (req, res) => {
   try {
     const user = req.user || {};
@@ -203,7 +208,6 @@ export const getPoHeaderRemarks = async (req, res) => {
       where.pointNo = Number(pointNo);
     }
 
-    // Buyer -> restrict to remarks they authored. Admin / PM -> unrestricted.
     if (user.isBuyer && !(user.isAdmin || user.isProcurementManager)) {
       where.submittedBy = user.id || user.userId;
     }
@@ -214,6 +218,22 @@ export const getPoHeaderRemarks = async (req, res) => {
       orderBy: { submittedAt: "desc" },
     });
 
+    let tally = null;
+    if (headerRecord) {
+      const remarkedPointNos = (
+        await prisma.poHeaderRemark.findMany({
+          where: { po_number },
+          distinct: ["pointNo"],
+          select: { pointNo: true },
+        })
+      ).map((r) => r.pointNo);
+      tally = computeTally(
+        headerRecord.results,
+        headerRecord.checkedPoints,
+        remarkedPointNos,
+      );
+    }
+
     return res.status(200).json({
       total: remarks.length,
       remarks,
@@ -221,6 +241,8 @@ export const getPoHeaderRemarks = async (req, res) => {
       canWrite: headerRecord
         ? canWriteHeaderRemarks(user, headerRecord)
         : false,
+      checkedPoints: headerRecord?.checkedPoints ?? [],
+      tally,
     });
   } catch (error) {
     console.error("Error in getPoHeaderRemarks:", error);
@@ -237,7 +259,8 @@ export const submitPoHeaderRemark = async (req, res) => {
         .json({ message: "Only buyers can submit remarks" });
     }
 
-    const { po_number, pointNo, remark } = req.body || {};
+    const { po_number, pointNo, remark, isSystemResultWrong, buyerResult } =
+      req.body || {};
     if (!po_number) {
       return res.status(400).json({ message: "po_number is required" });
     }
@@ -287,19 +310,42 @@ export const submitPoHeaderRemark = async (req, res) => {
       });
     }
 
+    const systemPoint = findSystemPoint(headerRecord.results, pointNo);
+    const resolvedBuyerResult = normalizeBuyerResult(buyerResult, systemPoint);
+    const resolvedIsWrong = Boolean(isSystemResultWrong);
+
     const created = await prisma.poHeaderRemark.create({
       data: {
         po_number,
         pointNo: Number(pointNo),
         remark: String(remark).trim(),
         submittedBy: userId,
+        isSystemResultWrong: resolvedIsWrong,
+        buyerResult: resolvedBuyerResult,
       },
       include: { submitter: { select: SUBMITTER_SELECT } },
     });
 
-    return res
-      .status(201)
-      .json({ message: "Header remark submitted", remark: created });
+    if ((headerRecord.checkedPoints || []).includes(Number(pointNo))) {
+      await prisma.poHeaderResult.update({
+        where: { po_number },
+        data: {
+          checkedPoints: headerRecord.checkedPoints.filter(
+            (p) => p !== Number(pointNo),
+          ),
+        },
+      });
+    }
+
+    const tally = await recomputeAndMaybeAutoCloseHeader(po_number, userId);
+
+    return res.status(201).json({
+      message: tally?.autoClosed
+        ? "Header remark submitted. Every header point on this PO is now covered — it has been closed automatically."
+        : "Header remark submitted",
+      remark: created,
+      tally,
+    });
   } catch (error) {
     console.error("Error in submitPoHeaderRemark:", error);
     return res.status(500).json({ message: "Failed to submit header remark" });
@@ -313,7 +359,7 @@ export const updatePoHeaderRemark = async (req, res) => {
       return res.status(403).json({ message: "Only buyers can edit remarks" });
     }
 
-    const { id, remark } = req.body || {};
+    const { id, remark, isSystemResultWrong, buyerResult } = req.body || {};
     if (!id) return res.status(400).json({ message: "Remark id is required" });
     if (!remark || !String(remark).trim()) {
       return res.status(400).json({ message: "Remark text is required" });
@@ -343,9 +389,19 @@ export const updatePoHeaderRemark = async (req, res) => {
       });
     }
 
+    const systemPoint = findSystemPoint(
+      existing.poHeaderResult.results,
+      existing.pointNo,
+    );
+    const data = { remark: String(remark).trim() };
+    if (isSystemResultWrong !== undefined)
+      data.isSystemResultWrong = Boolean(isSystemResultWrong);
+    if (buyerResult !== undefined)
+      data.buyerResult = normalizeBuyerResult(buyerResult, systemPoint);
+
     const updated = await prisma.poHeaderRemark.update({
       where: { id },
-      data: { remark: String(remark).trim() },
+      data,
       include: { submitter: { select: SUBMITTER_SELECT } },
     });
 
@@ -398,12 +454,6 @@ export const deletePoHeaderRemark = async (req, res) => {
   }
 };
 
-/**
- * POST /setPoHeaderCheckedStatus
- * Body: { po_number, checked }
- * The PO-level close/reopen toggle. Completely separate from
- * setAuditResultCheckedStatus (line-level).
- */
 export const setPoHeaderCheckedStatus = async (req, res) => {
   try {
     const user = req.user || {};
@@ -461,5 +511,99 @@ export const setPoHeaderCheckedStatus = async (req, res) => {
     return res
       .status(500)
       .json({ message: "Failed to update PO header checked status" });
+  }
+};
+
+/**
+ * POST /po-header-remarks/toggle-point-checked
+ * Body: { po_number, pointNo, checked }
+ * Header-level counterpart to togglePointChecked in po-remarks-controller.js.
+ */
+export const toggleHeaderPointChecked = async (req, res) => {
+  try {
+    const user = req.user || {};
+    if (!user.isBuyer) {
+      return res
+        .status(403)
+        .json({ message: "Only buyers can mark points as checked" });
+    }
+
+    const { po_number, pointNo, checked } = req.body || {};
+    if (!po_number) {
+      return res.status(400).json({ message: "po_number is required" });
+    }
+    if (pointNo === undefined || pointNo === null || pointNo === "") {
+      return res.status(400).json({ message: "pointNo is required" });
+    }
+    if (typeof checked !== "boolean") {
+      return res.status(400).json({ message: "checked (boolean) is required" });
+    }
+
+    const headerRecord = await prisma.poHeaderResult.findUnique({
+      where: { po_number },
+    });
+    if (!headerRecord) {
+      return res
+        .status(404)
+        .json({ message: "PO header record not found for this PO number" });
+    }
+    if (!canWriteHeaderRemarks(user, headerRecord)) {
+      return res.status(403).json({
+        message:
+          "You can only check points for POs in your own purchasing group",
+      });
+    }
+    if (headerRecord.remarksLocked) {
+      return res.status(403).json({
+        message: "This PO's header checks are already closed.",
+      });
+    }
+
+    const n = Number(pointNo);
+    const userId = user.id || user.userId;
+
+    if (checked) {
+      const hasRemark = await prisma.poHeaderRemark.findFirst({
+        where: { po_number, pointNo: n },
+      });
+      if (hasRemark) {
+        return res.status(409).json({
+          message:
+            "This point already has a remark. Delete the remark first if you want to mark it Checked instead.",
+        });
+      }
+      if (!(headerRecord.checkedPoints || []).includes(n)) {
+        await prisma.poHeaderResult.update({
+          where: { po_number },
+          data: { checkedPoints: { push: n } },
+        });
+      }
+    } else {
+      await prisma.poHeaderResult.update({
+        where: { po_number },
+        data: {
+          checkedPoints: (headerRecord.checkedPoints || []).filter(
+            (p) => p !== n,
+          ),
+        },
+      });
+    }
+
+    const tally = await recomputeAndMaybeAutoCloseHeader(po_number, userId);
+
+    return res.status(200).json({
+      message: tally?.autoClosed
+        ? "Point marked as checked. Every header point on this PO is now covered — it has been closed automatically."
+        : checked
+          ? "Point marked as checked."
+          : "Point unmarked.",
+      checkedPoints: tally?.checkedPointNos ?? [],
+      tally,
+    });
+  } catch (error) {
+    console.error("Error in toggleHeaderPointChecked:", error);
+    return res
+      .status(500)
+      .json({ message: "Failed to update point checked status" });
   }
 };

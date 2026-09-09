@@ -25,6 +25,7 @@ import {
   getPoRemarksReport,
   downloadPoRemarksReport,
   getPoRemarksReportFilterOptions,
+  downloadIssueTrackerReport,
 } from "../../api/api-functions";
 import { getRbac } from "utils/session";
 
@@ -68,6 +69,7 @@ export default function PoRemarksReportPage() {
   const [pageSize, setPageSize] = useState(25);
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [downloadingIssueTracker, setDownloadingIssueTracker] = useState(false);
 
   // Dropdown option lists, sourced from /reports/po-remarks-report/filters
   const [options, setOptions] = useState({
@@ -180,6 +182,28 @@ export default function PoRemarksReportPage() {
     }
   };
 
+  const handleDownloadIssueTracker = async () => {
+    setDownloadingIssueTracker(true);
+    try {
+      const res = await downloadIssueTrackerReport(buildPayload({ sort: "po" }));
+      const blob = new Blob([res.data], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `issue-tracker-${new Date().toISOString().slice(0, 10)}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Failed to download issue tracker:", err);
+    } finally {
+      setDownloadingIssueTracker(false);
+    }
+  };
+
   const setField = (key) => (value) =>
     setFilters((f) => ({ ...f, [key]: value }));
 
@@ -194,14 +218,24 @@ export default function PoRemarksReportPage() {
             </Typography>
           )}
         </Typography>
-        <Button
-          variant="contained"
-          startIcon={<DownloadIcon />}
-          onClick={handleDownload}
-          disabled={downloading}
-        >
-          {downloading ? "Preparing..." : "Download Report"}
-        </Button>
+        <Stack direction="row" spacing={1}>
+          <Button
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={handleDownloadIssueTracker}
+            disabled={downloadingIssueTracker}
+          >
+            {downloadingIssueTracker ? "Preparing..." : "Issue Tracker (Excel)"}
+          </Button>
+          <Button
+            variant="contained"
+            startIcon={<DownloadIcon />}
+            onClick={handleDownload}
+            disabled={downloading}
+          >
+            {downloading ? "Preparing..." : "Download Report"}
+          </Button>
+        </Stack>
       </Stack>
 
       <Grid container spacing={2} mb={2}>
@@ -373,6 +407,8 @@ export default function PoRemarksReportPage() {
               <TableCell>PO / Line</TableCell>
               <TableCell>Point</TableCell>
               <TableCell>Buyer's Remark</TableCell>
+              <TableCell>Buyer's Result</TableCell>
+              <TableCell>Result Altered?</TableCell>
               <TableCell>Submitted By</TableCell>
               <TableCell>System Result</TableCell>
               <TableCell>System Remarks</TableCell>
@@ -384,13 +420,13 @@ export default function PoRemarksReportPage() {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={9} align="center">
+                <TableCell colSpan={11} align="center">
                   <CircularProgress size={24} />
                 </TableCell>
               </TableRow>
             ) : rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={9} align="center">
+                <TableCell colSpan={11} align="center">
                   No remarks found
                 </TableCell>
               </TableRow>
@@ -409,6 +445,14 @@ export default function PoRemarksReportPage() {
                     )}
                   </TableCell>
                   <TableCell sx={{ maxWidth: 260 }}>{r.buyerRemark}</TableCell>
+                  <TableCell>{r.buyerResult || "—"}</TableCell>
+                  <TableCell>
+                    <Chip
+                      size="small"
+                      label={r.isSystemResultWrong || r.resultAltered?.startsWith("Yes") ? "Yes" : "No"}
+                      color={r.isSystemResultWrong || r.resultAltered?.startsWith("Yes") ? "error" : "default"}
+                    />
+                  </TableCell>
                   <TableCell>{r.submittedByName}</TableCell>
                   <TableCell>
                     <Chip

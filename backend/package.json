@@ -7,6 +7,8 @@
     "create-admin": "node createAdmin.js",
     "seed": "node seed.js",
     "add-po": "node addpo.js",
+    "seed-points": "node scripts/seed-point-definitions.js",
+    "verify-points": "node scripts/verify-point-definitions.js",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
     "prisma:studio": "prisma studio"

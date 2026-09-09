@@ -6,6 +6,8 @@ import {
   exceptionPointsOf,
   ensureSeverityLoaded,
 } from "../utility/severity.js";
+import { computeTally } from "../utility/point-tally.js";
+import { systemResultLabel } from "../utility/system-result.js";
 import {
   getVendorName,
   getVendorInfo,
@@ -227,7 +229,12 @@ async function getRemarksMapForAuditResults(auditResultIds, user) {
 // (new numbers 10-19). Now also attaches `buyerRemarks` per point, scoped
 // to what the requesting user is allowed to see. getPointDefinition()
 // always returns a usable fallback object even for an unseeded pointNo.
-function withPointReference(results, remarksByPoint = new Map()) {
+function withPointReference(
+  results,
+  remarksByPoint = new Map(),
+  checkedPoints = [],
+) {
+  const checkedSet = new Set((checkedPoints || []).map(Number));
   return (results || []).map((p) => {
     const def = getPointDefinition(p.pointNo);
     return {
@@ -238,8 +245,18 @@ function withPointReference(results, remarksByPoint = new Map()) {
       summary: def.summary,
       logic: def.logic,
       buyerRemarks: remarksByPoint.get(String(p.pointNo)) || [],
+      checked: checkedSet.has(Number(p.pointNo)),
+      systemResultLabel: systemResultLabel(p),
     };
   });
+}
+
+// Shared tally helper for both call sites below.
+function tallyForRow(row, remarksByPoint) {
+  const remarkedPointNos = [...remarksByPoint.keys()]
+    .filter((k) => (remarksByPoint.get(k) || []).length > 0)
+    .map(Number);
+  return computeTally(row.results, row.checkedPoints, remarkedPointNos);
 }
 
 /**
@@ -259,7 +276,8 @@ const withExceptionPoints = async (row, user) => {
     lineItemKey:
       row.po_material_number || `${row.po_number}-${lineItemOf(row) ?? row.id}`,
     lineItem: lineItemOf(row),
-    results: withPointReference(row.results, remarksByPoint),
+    results: withPointReference(row.results, remarksByPoint, row.checkedPoints),
+    lineTally: tallyForRow(row, remarksByPoint),
     header,
     exceptionPoints: exceptionPointsOf(row).map((ep) => {
       const def = getPointDefinition(ep.pointNo);
@@ -297,7 +315,12 @@ async function withExceptionPointsBatch(rows, user) {
         row.po_material_number ||
         `${row.po_number}-${lineItemOf(row) ?? row.id}`,
       lineItem: lineItemOf(row),
-      results: withPointReference(row.results, remarksByPoint),
+      results: withPointReference(
+        row.results,
+        remarksByPoint,
+        row.checkedPoints,
+      ),
+      lineTally: tallyForRow(row, remarksByPoint),
       header: headerMap.get(row.po_number) || {
         poNumber: row.po_number,
         points: [],

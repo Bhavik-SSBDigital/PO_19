@@ -1,10 +1,28 @@
 import { useEffect, useMemo, useState } from "react";
 import moment from "moment";
 import {
-  Box, Button, CircularProgress, Dialog, DialogActions, DialogContent,
-  DialogTitle, Grid, IconButton, Paper, Table, TableBody, TableCell,
-  TableContainer, TableHead, TableRow, Typography, Chip, Divider,
-  Select, MenuItem, FormControl,
+  Box,
+  Button,
+  CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Grid,
+  IconButton,
+  Paper,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Typography,
+  Chip,
+  Divider,
+  Select,
+  MenuItem,
+  FormControl,
 } from "@mui/material";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
@@ -17,17 +35,9 @@ import { toast } from "react-toastify";
 import { post } from "utils/axiosApi";
 import { setAuditResultCheckedStatus } from "../../../api/api-functions";
 import PoHeaderChecksPanel from "./PoHeaderChecksPanel";
-// Same Buyer Remarks panel already used on the Search Audit Data page's
-// line-item results table (results-table.jsx). Wired in here too so
-// remarks a Buyer adds are visible (read-only for Admin/PM, editable for
-// Buyer) from every place this preview dialog is opened.
+import SectionTallyBar from "../../../components/SectionTallyBar";
 import PointRemarkPanel from "./PointRemarkPanel";
 
-// "results", "header", "lineItems" and "exceptionPoints" are rendered by
-// dedicated blocks below, not the generic array-of-objects dumper - so
-// exclude them all here. remarksLocked/By/At are excluded from the
-// generic "Other Fields" dumper because they have their own dedicated
-// status chip + toggle button (see the Line-Level Checks header below).
 const PO_SUMMARY_RAW_KEYS = new Set([
   "vendor_code", "vendorCode", "nameOfVendor", "vendorName",
   "GSTInOfVendor", "vendorGstin",
@@ -180,51 +190,17 @@ const PoSummaryHeader = ({ details }) => {
   );
 };
 
-/**
- * Shared, dependency-free preview of a PO line's audit details/results.
- * Used by the Executive Dashboard's PO-Wise Exceptions table, the
- * Drilldown dialog tables, and the Header-KPI drilldown.
- *
- * `details.header` (compact: { points, totalPoints, verifiedCount,
- * notVerifiedCount, locked, lockedBy, lockedAt }) is rendered via the SAME
- * PoHeaderChecksPanel used on the search page, so header status reads
- * identically wherever it appears across the app.
- *
- * LINE-ITEM level status/remarks: the "Line-Level Checks" table below
- * carries its own status chip + "Mark as Checked"/"Reopen" toggle (Buyers
- * only), and a "Buyer Remarks" column using the same PointRemarkPanel
- * already used on the Search Audit Data page.
- *
- * LINE ITEM SWITCHING (NEW): whichever line item this dialog was opened
- * with is still what loads first, by default, exactly as before - that
- * default is untouched. What's new is a "Viewing: [line item]" dropdown
- * at the top of the dialog (populated from the existing
- * /reports/po-lines endpoint) that lets you jump to ANY other line item
- * of the same PO, or back to "PO Header — All Line Items", without
- * leaving the dialog or losing your place in whatever table/drilldown
- * opened it. The PO-header view now also renders a full Line Items
- * breakdown table (using the lineItems array the header-summary endpoint
- * already returns) so every line item, its exception/closed status, is
- * visible and clickable from one place - this is what backs the
- * "View Line Item Breakdown" menu action wherever it appears.
- *
- * `onHeaderChanged` (optional): fired after a header OR line-item
- * lock/unlock action succeeds, in addition to this dialog refreshing its
- * own view, so the parent (dashboard page, drilldown table, etc.) can
- * refetch its own summary/rows and keep every number on screen in sync.
- */
 const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChanged }) => {
   const [loading, setLoading] = useState(false);
   const [details, setDetails] = useState(null);
   const [error, setError] = useState("");
 
-  // Line item status toggle (line-level "checked" lock), mirrors
-  // search-audit-data/components/results-table.jsx.
   const [lineLocked, setLineLocked] = useState(false);
   const [lineLockBusy, setLineLockBusy] = useState(false);
 
-  // NEW — quick-switch dropdown options: every line item of this PO,
-  // fetched once per PO via the existing /reports/po-lines endpoint.
+  // NEW — local, live-patchable copy of the line-level results.
+  const [resultsRows, setResultsRows] = useState([]);
+
   const [lineItemOptions, setLineItemOptions] = useState([]);
   const [lineItemOptionsLoading, setLineItemOptionsLoading] = useState(false);
 
@@ -236,11 +212,6 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
     isProcurementManager: role === "isProcurementManager",
   };
 
-  // `lineItemOverride`:
-  //  - undefined -> use preview.lineItem (the ORIGINAL default the dialog
-  //    was opened with — unchanged behavior).
-  //  - ""        -> load the PO-header view (all line items) for this PO.
-  //  - "10"      -> load that specific line item.
   const load = async (lineItemOverride) => {
     if (!preview) return;
     setLoading(true);
@@ -277,10 +248,6 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preview]);
 
-  // Fetch the PO's full line-item list for the switcher dropdown as soon
-  // as we know which PO we're previewing — independent of whether the
-  // detail load (above) has resolved yet, so the dropdown is usable
-  // immediately.
   useEffect(() => {
     if (!preview?.poNumber) {
       setLineItemOptions([]);
@@ -305,29 +272,17 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
 
   const isHeaderOnly = details?.scope === "po-header";
 
-  // The line item currently on screen, whatever got it there (initial
-  // default, a manual switch, or a lock-toggle refresh) — used to keep
-  // switching, refreshing, and "open full page" all pointed at the same
-  // line item instead of silently reverting to the original default.
   const currentLineItem = isHeaderOnly ? "" : (details?.lineItem ?? preview?.lineItem ?? "");
 
-  // NEW — jump to any other line item (or back to the PO header) without
-  // closing the dialog.
   const switchLineItem = (lineItem) => {
     load(lineItem || "");
   };
 
-  // Any header lock/unlock action affects the PO's compliance numbers
-  // dashboard-wide. Refresh the dialog on whichever view is currently
-  // showing, then let the parent refetch its own summary/rows.
   const handleHeaderChanged = async () => {
     await load(currentLineItem);
     onHeaderChanged?.();
   };
 
-  // Line-item counterpart — entirely independent lock
-  // (AuditResult.remarksLocked), same refresh pattern, and likewise
-  // reloads whichever line item is currently displayed.
   const toggleLineLock = async () => {
     if (!details?.po_number || !details?.lineItem) return;
     setLineLockBusy(true);
@@ -356,7 +311,30 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
 
   useEffect(() => {
     setLineLocked(Boolean(details?.remarksLocked));
+    // NEW — reseed the local, live-patchable results rows whenever
+    // `details` changes (new fetch / line-item switch).
+    setResultsRows(
+      (details?.results || []).map((r) => ({
+        ...r,
+        checked: Boolean(r.checked),
+        remarksCount: r.buyerRemarks?.length || 0,
+      })),
+    );
   }, [details]);
+
+  // NEW — same contract as results-table.jsx's handlePointUpdate.
+  const handleResultUpdate = (patch) => {
+    setResultsRows((prev) =>
+      prev.map((r) =>
+        String(r.pointNo) === String(patch.pointNo)
+          ? { ...r, checked: patch.checked, remarksCount: patch.remarksCount }
+          : r,
+      ),
+    );
+    if (patch.remarksLocked !== undefined) {
+      setLineLocked(Boolean(patch.remarksLocked));
+    }
+  };
 
   const scalarEntries = useMemo(() => {
     if (!details || isHeaderOnly) return [];
@@ -372,9 +350,6 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
     );
   }, [details, isHeaderOnly]);
 
-  // Used by "Open in New Tab" / "Go to Full Search Page" so they always
-  // point at whichever line item is currently on screen, not the line
-  // item the dialog originally opened with.
   const effectivePreview = preview
     ? { poNumber: preview.poNumber, lineItem: isHeaderOnly ? undefined : currentLineItem || undefined }
     : null;
@@ -396,9 +371,6 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
         </IconButton>
       </DialogTitle>
       <DialogContent dividers>
-        {/* NEW — line item quick-switch, available regardless of which
-            view (header or a specific line) is currently showing, and
-            regardless of how the dialog was opened. */}
         {preview?.poNumber && (
           <Box sx={{ mb: 2.5, display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
             <Typography variant="caption" sx={{ fontWeight: 700, color: "text.secondary" }}>
@@ -469,10 +441,6 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
               onChanged={handleHeaderChanged}
             />
 
-            {/* NEW — the "breakdown": every line item of this PO, its
-                exception/closed status, and a way to jump straight into
-                it. Backs "View Line Item Breakdown" wherever that menu
-                action opens this dialog with just a poNumber. */}
             {Array.isArray(details.lineItems) && details.lineItems.length > 0 && (
               <Box sx={{ mt: 3 }}>
                 <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1.5 }}>
@@ -548,8 +516,6 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
           <Box>
             <PoSummaryHeader details={details} />
 
-            {/* Compact header-status banner - same component/behavior as
-                the search page, so status reads identically everywhere. */}
             {details.header && (
               <PoHeaderChecksPanel
                 poNumber={details.po_number}
@@ -581,7 +547,7 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
               </Box>
             )}
 
-            {Array.isArray(details.results) && details.results.length > 0 && (
+            {resultsRows.length > 0 && (
               <Box sx={{ mb: 3 }}>
                 <Box
                   sx={{
@@ -597,10 +563,6 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
                     Line-Level Checks
                   </Typography>
 
-                  {/* Line-item status chip + closing toggle, same
-                      capability/permissions as the Search Audit Data
-                      page's results-table.jsx: only a Buyer can toggle,
-                      Admin/PM see the status read-only. */}
                   {details.po_number && details.lineItem && (
                     <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
                       <Chip
@@ -630,6 +592,10 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
                     </Box>
                   )}
                 </Box>
+
+                {/* Reads `resultsRows`, not details.results — live tally */}
+                <SectionTallyBar points={resultsRows} locked={lineLocked} label="Line points reviewed" />
+
                 <TableContainer component={Paper} variant="outlined">
                   <Table size="small">
                     <TableHead>
@@ -644,7 +610,7 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {details.results.map((row, idx) => (
+                      {resultsRows.map((row, idx) => (
                         <TableRow key={row.pointNo ?? idx}>
                           <TableCell sx={{ verticalAlign: "top", fontWeight: 700 }}>{row.pointNo}</TableCell>
                           <TableCell sx={{ verticalAlign: "top" }}>
@@ -693,6 +659,9 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
                                 isProcurementManager={roleFlags.isProcurementManager}
                                 locked={lineLocked}
                                 initialRemarks={row.buyerRemarks}
+                                initialChecked={row.checked}
+                                systemResult={row.systemResultLabel}
+                                onRemarksChanged={handleResultUpdate}
                                 compact
                               />
                             ) : (

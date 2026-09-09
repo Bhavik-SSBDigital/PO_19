@@ -33,8 +33,6 @@ import {
   PieChart,
   Pie,
   Cell,
-  LineChart,
-  Line,
 } from "recharts";
 import moment from "moment";
 import { toast } from "react-toastify";
@@ -61,16 +59,11 @@ const BAR_COLOR = "#4f46e5";
 const VERIFIED_COLOR = "#059669";
 const NOT_VERIFIED_COLOR = "#dc2626";
 const GRID_COLOR = "#f1f5f9";
-// Header-level charts get their OWN accent color (indigo/purple family,
-// distinct from line-level's emerald/red) so a glance at the dashboard
-// tells you which "world" (per-PO vs per-line) a panel belongs to,
-// without reading every label.
+// Header-level charts get their OWN accent color
 const HEADER_ACCENT = "#4f46e5";
 const HEADER_ACCENT_BG = "#eef2ff";
 const OVERVIEW_ACCENT = "#0f172a";
-// Monthly Exception Trend now plots two series side by side - keep their
-// colors distinct from every other chart's palette above so the legend
-// reads unambiguously as "line-item" vs "header".
+// Monthly Exception Trend colors
 const TREND_LINE_COLOR = "#4f46e5";
 const TREND_HEADER_COLOR = "#f97316";
 
@@ -88,17 +81,9 @@ const ChartGradients = () => (
       <stop offset="0%" stopColor="#818cf8" stopOpacity={1} />
       <stop offset="100%" stopColor="#4f46e5" stopOpacity={0.9} />
     </linearGradient>
-    <linearGradient id="gradLine" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stopColor="#4f46e5" />
-      <stop offset="100%" stopColor="#7c3aed" />
-    </linearGradient>
     <linearGradient id="gradHeaderBar" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stopColor="#a5b4fc" stopOpacity={1} />
       <stop offset="100%" stopColor="#6366f1" stopOpacity={0.95} />
-    </linearGradient>
-    <linearGradient id="gradHeaderLine" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stopColor="#fb923c" />
-      <stop offset="100%" stopColor="#ea580c" />
     </linearGradient>
   </defs>
 );
@@ -121,11 +106,6 @@ const formatMonthLabel = (m) => {
   return parsed.isValid() ? parsed.format("MMM 'YY") : m;
 };
 
-// Merges the line-item monthly trend (charts.monthlyExceptionTrend) and the
-// header-level monthly trend (charts.headerMonthlyExceptionTrend) into one
-// array keyed by month, since Recharts needs a single data array to plot
-// both series on the same x-axis. Months present in only one series get a
-// 0 for the other so the line doesn't break.
 const mergeMonthlyTrends = (lineData = [], headerData = []) => {
   const map = new Map();
   (lineData || []).forEach((d) => {
@@ -155,19 +135,15 @@ const mergeMonthlyTrends = (lineData = [], headerData = []) => {
 const InfoTip = ({ text, placement = "top" }) => {
   if (!text) return null;
   return (
-    <MuiTooltip title={text} placement={placement} arrow enterTouchDelay={0}>
-      <InfoOutlinedIcon
-        sx={{
-          fontSize: 18,
-          ml: 0.75,
-          color: "text.disabled",
-          cursor: "help",
-          verticalAlign: "text-bottom",
-          transition: "color 0.2s",
-          "&:hover": { color: "#4f46e5" },
-        }}
-      />
-    </MuiTooltip>
+    <InfoOutlinedIcon
+      sx={{
+        fontSize: 18,
+        ml: 0.75,
+        color: "text.disabled",
+        verticalAlign: "text-bottom",
+        transition: "color 0.2s",
+      }}
+    />
   );
 };
 
@@ -208,7 +184,7 @@ const KpiCard = ({
           >
             {label}
           </Typography>
-          <InfoTip text={info} />
+          {info && <InfoTip text={info} />}
         </Box>
         {loading ? (
           <Skeleton width="60%" height={48} sx={{ borderRadius: 2 }} />
@@ -239,7 +215,8 @@ const KpiCard = ({
       )}
     </CardContent>
   );
-  return (
+
+  const cardElement = (
     <Card
       elevation={0}
       sx={{
@@ -267,6 +244,15 @@ const KpiCard = ({
         content
       )}
     </Card>
+  );
+
+  // Wraps the entire KPI Card block so hovering anywhere shows the logic
+  return info ? (
+    <MuiTooltip title={info} placement="top" arrow>
+      <Box sx={{ height: "100%" }}>{cardElement}</Box>
+    </MuiTooltip>
+  ) : (
+    cardElement
   );
 };
 
@@ -311,7 +297,21 @@ const ChartPanel = ({
         >
           {icon}
           {title}
-          <InfoTip text={info} />
+          {info && (
+            <MuiTooltip title={info} placement="top" arrow>
+              <InfoOutlinedIcon
+                sx={{
+                  fontSize: 18,
+                  ml: 0.75,
+                  color: "text.disabled",
+                  cursor: "help",
+                  verticalAlign: "text-bottom",
+                  transition: "color 0.2s",
+                  "&:hover": { color: "#4f46e5" },
+                }}
+              />
+            </MuiTooltip>
+          )}
         </Typography>
         {hint && (
           <Typography
@@ -404,9 +404,6 @@ const ComplianceTooltip = ({ active, payload, labelKey, labelFormatter }) => {
   );
 };
 
-// Tooltip for the header-level control-wise chart - identical shape to
-// ControlWiseTooltip but explicitly labeled "PO count" instead of "line
-// count" so no one misreads the denominator.
 const HeaderControlWiseTooltip = ({ active, payload }) => {
   if (!active || !payload || !payload.length) return null;
   const d = payload[0]?.payload;
@@ -480,10 +477,6 @@ const HeaderControlWiseTooltip = ({ active, payload }) => {
   );
 };
 
-// Tooltip for the (now two-series) Monthly Exception Trend chart - shows
-// both the line-item count and the header count for the hovered month, so
-// it's clear at a glance which series is which without hovering each line
-// individually.
 const MonthlyTrendTooltip = ({ active, payload }) => {
   if (!active || !payload || !payload.length) return null;
   const d = payload[0]?.payload;
@@ -573,9 +566,6 @@ const ExecutiveDashboard = () => {
 
   const [drilldown, setDrilldown] = useState(null);
   const [headerDrilldown, setHeaderDrilldown] = useState(null);
-  // NEW — driven by the 4 header-level KPI cards (Header Compliance / POs
-  // Closed / Verified (Header) / Not Verified (Header)). Separate from
-  // headerDrilldown above, which is scoped to a single chart POINT.
   const [headerKpiDrilldown, setHeaderKpiDrilldown] = useState(null);
   const [poPreview, setPoPreview] = useState(null);
   const abortRef = useRef(null);
@@ -624,9 +614,6 @@ const ExecutiveDashboard = () => {
     loadOptions();
   }, []);
 
-  // kpis now carries a SINGLE canonical totalPOCount at the top level.
-  // Neither the line-level nor header-level sections below repeat a
-  // "total PO" figure of their own - see the Overview strip.
   const kpis = data?.kpis || {};
   const headerKpis = kpis.header || {};
   const charts = data?.charts || {};
@@ -637,10 +624,6 @@ const ExecutiveDashboard = () => {
     : undefined;
   const missingHeaderDataCount = kpis.missingHeaderDataCount || 0;
 
-  // Monthly Exception Trend now shows BOTH the line-item series
-  // (charts.monthlyExceptionTrend) and the header-level series
-  // (charts.headerMonthlyExceptionTrend) on the same chart. Recharts needs
-  // one merged array keyed by month to plot two series together.
   const monthlyTrendData = mergeMonthlyTrends(
     charts.monthlyExceptionTrend,
     charts.headerMonthlyExceptionTrend,
@@ -650,28 +633,9 @@ const ExecutiveDashboard = () => {
     setDrilldown({ dimension, value, title, ...extra });
   const openHeaderDrilldown = (pointNo, title, extra = {}) =>
     setHeaderDrilldown({ pointNo, title, ...extra });
-  // NEW — opens the "all POs matching this KPI" list dialog. `dimension`
-  // is one of "all" | "closed" | "open" | "verifiedAny" | "notVerifiedAny",
-  // matching getExecutiveHeaderKpiDrilldown on the backend.
-  const openHeaderKpiDrilldown = (dimension, title) =>
-    setHeaderKpiDrilldown({ dimension, title });
+  const openHeaderKpiDrilldown = (dimension, title, value) =>
+    setHeaderKpiDrilldown({ dimension, title, value });
 
-  // `mode` comes from PoWiseExceptionsTable's row menu: "newtab",
-  // "breakdown", or "modal" ("View First Line Item Details").
-  //  - "newtab"    -> open the full search page for the PO's first line
-  //                   item, unchanged.
-  //  - "breakdown" -> FIXED: previously this fell through to the same
-  //                   branch as a plain row click (always the first line
-  //                   item's preview) - the "View Line Item Breakdown"
-  //                   menu entry looked like it did nothing different.
-  //                   It now opens the shared preview dialog scoped to
-  //                   just the PO number (no line item), which renders
-  //                   the PO-header view - including the full Line Items
-  //                   breakdown table (every line item, its
-  //                   exception/closed status, and a one-click way to
-  //                   jump into any of them).
-  //  - anything else ("modal") -> unchanged: preview the PO's first line
-  //                   item directly.
   const handleRowAction = (row, mode) => {
     if (!row) return;
     const lineItem = getFirstLineItem(row);
@@ -704,7 +668,7 @@ const ExecutiveDashboard = () => {
     const lines = ["Section,Key,Value,Extra"];
 
     Object.entries(kpis).forEach(([k, v]) => {
-      if (k === "header") return; // exported separately below
+      if (k === "header") return;
       if (!k.toLowerCase().includes("hold")) {
         lines.push(`Overview / Line-Level KPI,${csvEscape(k)},${csvEscape(v)},`);
       }
@@ -974,14 +938,7 @@ const ExecutiveDashboard = () => {
         </Paper>
       )}
 
-      {/*
-        ══════════════════ OVERVIEW STRIP ══════════════════
-        The ONE place "Total POs" is shown. This number is never repeated
-        (with a possibly different value) anywhere else on the page - the
-        Header and Line-Item sections below only show compliance metrics
-        (verified / not-verified / %), not counts, specifically so the
-        client never sees two different "total PO" figures.
-      */}
+      {/* OVERVIEW STRIP */}
       <Typography
         variant="overline"
         sx={{
@@ -1020,7 +977,7 @@ const ExecutiveDashboard = () => {
             value={kpis.totalPOLineItems ?? "—"}
             sublabel="Sum of line items across all POs above. Click to view all PO lines."
             loading={loading}
-            info={kpiDefs.totalPOLineItems}
+            info={kpiDefs.totalPOLineItems || "Total count of individual PO line items"}
             onClick={
               kpis.totalPOLineItems
                 ? () => openDrilldown("all", true, "All PO Lines")
@@ -1034,7 +991,7 @@ const ExecutiveDashboard = () => {
             value={kpis.totalPRCount ?? "—"}
             sublabel="Click to view all PO lines"
             loading={loading}
-            info={kpiDefs.totalPRCount}
+            info={kpiDefs.totalPRCount || "Distinct Purchase Requisitions driving these POs"}
             onClick={
               kpis.totalPRCount
                 ? () => openDrilldown("all", true, "All PO Lines")
@@ -1052,7 +1009,7 @@ const ExecutiveDashboard = () => {
             }
             sublabel="Line-item exceptions. Click to drill in"
             loading={loading}
-            info={kpiDefs.exceptionValueExposure}
+            info={kpiDefs.exceptionValueExposure || "Total financial value of lines flagged with at least one exception"}
             onClick={
               kpis.exceptionValueExposure
                 ? () =>
@@ -1095,17 +1052,7 @@ const ExecutiveDashboard = () => {
       )}
       {!missingHeaderDataCount && <Box sx={{ mb: 5 }} />}
 
-      {/*
-        ══════════════════ HEADER-LEVEL (distinct indigo styling) ══════════════════
-        Moved ahead of Line-Item Level per request: header-level detail
-        should render first on the page, both in the KPI cards and in
-        the charts grid below. All 4 KPI cards below are now clickable —
-        each opens HeaderKpiDrilldownDialog with a `dimension` matching
-        getExecutiveHeaderKpiDrilldown on the backend, listing PO numbers.
-        Clicking a PO in that list opens the SAME header-only preview
-        (PoDetailsPreviewDialog's isHeaderOnly branch) the line-item table
-        already uses, via setPoPreview({ poNumber }) with no lineItem.
-      */}
+      {/* HEADER-LEVEL (distinct indigo styling) */}
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1.5 }}>
         <LayersRoundedIcon sx={{ color: HEADER_ACCENT, fontSize: 20 }} />
         <Typography
@@ -1127,6 +1074,7 @@ const ExecutiveDashboard = () => {
             }
             loading={loading}
             sublabel="Verified ÷ (Verified + Not Verified), per PO. Click to view all POs with header data."
+            info={kpiDefs.headerComplianceScore || "Verified ÷ (Verified + Not Verified) PO headers"}
             onClick={
               headerKpis.totalPOsWithHeaderData
                 ? () =>
@@ -1146,6 +1094,7 @@ const ExecutiveDashboard = () => {
             valueColor="#059669"
             loading={loading}
             sublabel={`${headerKpis.openPOCount ?? 0} still open — out of the same Total POs above. Click to view closed POs.`}
+            info={kpiDefs.closedPOCount || "POs where header checks are locked."}
             onClick={
               headerKpis.closedPOCount
                 ? () =>
@@ -1165,6 +1114,7 @@ const ExecutiveDashboard = () => {
             valueColor="#059669"
             loading={loading}
             sublabel="Across all header points, all in-scope POs. Click to view POs with a verified header point."
+            info={kpiDefs.headerVerifiedCount || "POs with at least one verified header point."}
             onClick={
               headerKpis.verifiedCount
                 ? () =>
@@ -1184,6 +1134,7 @@ const ExecutiveDashboard = () => {
             valueColor="#dc2626"
             loading={loading}
             sublabel="Across all header points, all in-scope POs. Click to view POs with a not-verified header point."
+            info={kpiDefs.headerNotVerifiedCount || "POs with at least one not-verified header point."}
             onClick={
               headerKpis.notVerifiedCount
                 ? () =>
@@ -1197,7 +1148,7 @@ const ExecutiveDashboard = () => {
         </Grid>
       </Grid>
 
-      {/* ══════════════════ LINE-ITEM LEVEL ══════════════════ */}
+      {/* LINE-ITEM LEVEL */}
       <Typography
         variant="overline"
         sx={{
@@ -1211,6 +1162,21 @@ const ExecutiveDashboard = () => {
         Line-Item Level (10 points, one result per PO line item — points 10-19)
       </Typography>
       <Grid container spacing={3} sx={{ mb: 5 }}>
+        {/* LINE-ITEM COMPLIANCE (Moved to Front) */}
+        <Grid item xs={12} sm={6} md={4}>
+          <KpiCard
+            label="Line-Item Compliance"
+            value={
+              kpis.overallComplianceScore != null
+                ? `${kpis.overallComplianceScore}%`
+                : "—"
+            }
+            valueColor={VERIFIED_COLOR}
+            sublabel="Verified ÷ (Verified + Not Verified), per line item"
+            info={kpiDefs.overallComplianceScore || "Verified ÷ (Verified + Not Verified) line items"}
+            loading={loading}
+          />
+        </Grid>
         <Grid item xs={12} sm={6} md={4}>
           <KpiCard
             label="Verified Checks"
@@ -1218,7 +1184,7 @@ const ExecutiveDashboard = () => {
             valueColor="#059669"
             sublabel="Click to drill in"
             loading={loading}
-            info={kpiDefs.verifiedCount}
+            info={kpiDefs.verifiedCount || "Count of Verified line items"}
             onClick={
               kpis.verifiedCount
                 ? () =>
@@ -1239,7 +1205,7 @@ const ExecutiveDashboard = () => {
             valueColor="#dc2626"
             sublabel="Click to drill in"
             loading={loading}
-            info={kpiDefs.notVerifiedCount}
+            info={kpiDefs.notVerifiedCount || "Count of Not Verified line items"}
             onClick={
               kpis.notVerifiedCount
                 ? () =>
@@ -1259,7 +1225,7 @@ const ExecutiveDashboard = () => {
             valueColor="#dc2626"
             sublabel="Critical + High severity"
             loading={loading}
-            info={kpiDefs.highRiskExceptions}
+            info={kpiDefs.highRiskExceptions || "Count of Critical or High severity exceptions"}
             onClick={
               kpis.highRiskExceptions
                 ? () =>
@@ -1278,7 +1244,7 @@ const ExecutiveDashboard = () => {
             value={kpis.notApplicableCount ?? "—"}
             sublabel="Click to drill in"
             loading={loading}
-            info={kpiDefs.notApplicableCount}
+            info={kpiDefs.notApplicableCount || "Count of Not Applicable line items"}
             onClick={
               kpis.notApplicableCount
                 ? () =>
@@ -1298,7 +1264,7 @@ const ExecutiveDashboard = () => {
             value={kpis.manualReviewCount ?? "—"}
             sublabel="Click to drill in"
             loading={loading}
-            info={kpiDefs.manualReviewCount}
+            info={kpiDefs.manualReviewCount || "Count of items requiring human check"}
             onClick={
               kpis.manualReviewCount
                 ? () =>
@@ -1312,33 +1278,9 @@ const ExecutiveDashboard = () => {
             }
           />
         </Grid>
-        <Grid item xs={12} sm={6} md={4}>
-          <KpiCard
-            label="Line-Item Compliance"
-            value={
-              kpis.overallComplianceScore != null
-                ? `${kpis.overallComplianceScore}%`
-                : "—"
-            }
-            valueColor={VERIFIED_COLOR}
-            sublabel="Verified ÷ (Verified + Not Verified), per line item"
-            loading={loading}
-          />
-        </Grid>
       </Grid>
 
       <Grid container spacing={3}>
-        {/*
-          ══════════════════════════════════════════════════════════════
-          PO HEADER-LEVEL COMPLIANCE - moved to render FIRST in the charts
-          grid, ahead of the line-item charts, per request. Each bar is
-          ONE OF THE 9 HEADER POINTS; each data point behind the bar is
-          ONE PO (not one line item) - see charts.headerControlWiseCompliance
-          in dashboard-controller.js. Distinctly styled (indigo panel/bars)
-          and captioned so it's unmistakably a different denominator than
-          every other chart on this page. Clicking a bar opens
-          HeaderDrilldownDialog (PO numbers, not line items).
-        */}
         <Grid item xs={12}>
           <ChartPanel
             title="PO Header-Level Compliance"
@@ -1980,124 +1922,11 @@ const ExecutiveDashboard = () => {
           </ChartPanel>
         </Grid>
 
-        <Grid item xs={12}>
-          <ChartPanel
-            title="PO-Wise Compliance"
-            hint="Top 15 POs by not-verified count. Click a segment to drill in. (Line-item)"
-            info="Shows verified vs. not-verified LINE-ITEM checkpoint counts for the 15 individual POs contributing the most compliance exceptions."
-            height={horizontalChartHeight(
-              (charts.poNumberWiseCompliance || []).length,
-            )}
-          >
-            {loading ? (
-              <Skeleton
-                variant="rounded"
-                height="100%"
-                sx={{ borderRadius: 2 }}
-              />
-            ) : (
-              <ResponsiveContainer>
-                <BarChart
-                  data={charts.poNumberWiseCompliance || []}
-                  layout="vertical"
-                  margin={{ top: 10, bottom: 10, left: 10, right: 30 }}
-                  barCategoryGap="25%"
-                >
-                  <ChartGradients />
-                  <CartesianGrid
-                    strokeDasharray="3 3"
-                    horizontal={false}
-                    stroke={GRID_COLOR}
-                  />
-                  <XAxis
-                    type="number"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: "#64748b", fontSize: 12, fontWeight: 500 }}
-                  />
-                  <YAxis
-                    type="category"
-                    dataKey="poNumber"
-                    width={160}
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: "#334155", fontSize: 13, fontWeight: 600 }}
-                  />
-                  <Tooltip
-                    content={<ComplianceTooltip labelKey="poNumber" />}
-                    cursor={{ fill: alpha("#4f46e5", 0.05) }}
-                  />
-                  <Legend
-                    iconType="circle"
-                    wrapperStyle={{
-                      paddingTop: 10,
-                      fontSize: "14px",
-                      fontWeight: 600,
-                    }}
-                  />
-                  <Bar
-                    dataKey="verified"
-                    stackId="a"
-                    fill="url(#gradVerified)"
-                    name="Verified"
-                    cursor="pointer"
-                    radius={[6, 0, 0, 6]}
-                    barSize={20}
-                    onClick={(d) => {
-                      const p = payloadOf(d);
-                      openDrilldown(
-                        "poNumber",
-                        p.poNumber,
-                        `PO ${p.poNumber} - Verified lines`,
-                        { statusFilter: "verified" },
-                      );
-                    }}
-                  />
-                  <Bar
-                    dataKey="notVerified"
-                    stackId="a"
-                    fill="url(#gradNotVerified)"
-                    name="Not Verified"
-                    radius={[0, 6, 6, 0]}
-                    cursor="pointer"
-                    barSize={20}
-                    onClick={(d) => {
-                      const p = payloadOf(d);
-                      openDrilldown(
-                        "poNumber",
-                        p.poNumber,
-                        `PO ${p.poNumber} - Not-Verified lines`,
-                        { statusFilter: "notVerified" },
-                      );
-                    }}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </ChartPanel>
-        </Grid>
-
-        {/*
-          ══════════════════════════════════════════════════════════════
-          MONTHLY EXCEPTION TREND — UPDATED: now plots BOTH series on the
-          same chart instead of line-item exceptions only:
-            - "Line-Item Exceptions" (charts.monthlyExceptionTrend) - a PO
-              line counts once per month if it has >=1 not-verified
-              line-level point. Clicking a dot on THIS series still opens
-              the existing line-item month drilldown.
-            - "Header Exceptions" (charts.headerMonthlyExceptionTrend) - a
-              PO counts once per month (by its po_created_date) if it has
-              >=1 not-verified header-level point. Shown for comparison;
-              there's currently no month-scoped header drilldown endpoint,
-              so these dots are not clickable.
-          Both series are merged into one array (mergeMonthlyTrends, near
-          the top of this file) since Recharts needs a single data array
-          to draw multiple lines on a shared x-axis.
-        */}
+        {/* REFACTORED TO GROUPED BAR CHART TO FIX DOT OVERLAP & CLICK GLITCHES */}
         <Grid item xs={12}>
           <ChartPanel
             title="Monthly Exception Trend"
-            hint="Line-item series: click a point to drill in. Header series shown alongside for comparison."
+            hint="Click a bar on either series to drill in."
             info={
               (chartDefs.monthlyExceptionTrend || "") +
               " Line-item: a PO line counts once per month if any line-level point is not verified. Header: a PO counts once per month if any header-level point is not verified."
@@ -2112,11 +1941,10 @@ const ExecutiveDashboard = () => {
               />
             ) : (
               <ResponsiveContainer>
-                <LineChart
+                <BarChart
                   data={monthlyTrendData}
                   margin={{ top: 20, right: 20 }}
                 >
-                  <ChartGradients />
                   <CartesianGrid
                     strokeDasharray="3 3"
                     vertical={false}
@@ -2135,7 +1963,10 @@ const ExecutiveDashboard = () => {
                     tickLine={false}
                     tick={{ fill: "#64748b", fontSize: 12, fontWeight: 500 }}
                   />
-                  <Tooltip content={<MonthlyTrendTooltip />} />
+                  <Tooltip
+                    content={<MonthlyTrendTooltip />}
+                    cursor={{ fill: alpha("#4f46e5", 0.05) }}
+                  />
                   <Legend
                     iconType="circle"
                     wrapperStyle={{
@@ -2144,59 +1975,41 @@ const ExecutiveDashboard = () => {
                       fontWeight: 600,
                     }}
                   />
-                  <Line
-                    type="monotone"
+                  <Bar
                     dataKey="lineCount"
                     name="Line-Item Exceptions"
-                    stroke="url(#gradLine)"
-                    strokeWidth={4}
-                    dot={(props) => (
-                      <circle
-                        key={`line-${props.payload.month}`}
-                        cx={props.cx}
-                        cy={props.cy}
-                        r={6}
-                        fill={TREND_LINE_COLOR}
-                        stroke="#ffffff"
-                        strokeWidth={3}
-                        style={{
-                          cursor: "pointer",
-                          filter: "drop-shadow(0px 4px 6px rgba(0, 0, 0, 0.1))",
-                        }}
-                        onClick={() =>
-                          openDrilldown(
-                            "month",
-                            props.payload.month,
-                            `Exceptions in ${moment(props.payload.month, "YYYY-MM").format("MMMM YYYY")}`,
-                          )
-                        }
-                      />
-                    )}
-                    activeDot={{ r: 9, strokeWidth: 0, fill: "#7c3aed" }}
+                    fill={TREND_LINE_COLOR}
+                    radius={[4, 4, 0, 0]}
+                    barSize={20}
+                    cursor="pointer"
+                    onClick={(d) => {
+                      const p = payloadOf(d);
+                      if (!p.month) return;
+                      openDrilldown(
+                        "month",
+                        p.month,
+                        `Exceptions in ${moment(p.month, "YYYY-MM").format("MMMM YYYY")}`
+                      );
+                    }}
                   />
-                  <Line
-                    type="monotone"
+                  <Bar
                     dataKey="headerCount"
                     name="Header Exceptions"
-                    stroke="url(#gradHeaderLine)"
-                    strokeWidth={4}
-                    dot={(props) => (
-                      <circle
-                        key={`header-${props.payload.month}`}
-                        cx={props.cx}
-                        cy={props.cy}
-                        r={6}
-                        fill={TREND_HEADER_COLOR}
-                        stroke="#ffffff"
-                        strokeWidth={3}
-                        style={{
-                          filter: "drop-shadow(0px 4px 6px rgba(0, 0, 0, 0.1))",
-                        }}
-                      />
-                    )}
-                    activeDot={{ r: 9, strokeWidth: 0, fill: "#ea580c" }}
+                    fill={TREND_HEADER_COLOR}
+                    radius={[4, 4, 0, 0]}
+                    barSize={20}
+                    cursor="pointer"
+                    onClick={(d) => {
+                      const p = payloadOf(d);
+                      if (!p.month) return;
+                      openHeaderKpiDrilldown(
+                        "month",
+                        `Header Exceptions in ${moment(p.month, "YYYY-MM").format("MMMM YYYY")}`,
+                        p.month
+                      );
+                    }}
                   />
-                </LineChart>
+                </BarChart>
               </ResponsiveContainer>
             )}
           </ChartPanel>
@@ -2230,7 +2043,7 @@ const ExecutiveDashboard = () => {
         Risk Categorization Master page.
       </Typography>
 
-            <DrilldownDialog
+      <DrilldownDialog
         drilldown={drilldown}
         appliedFilters={buildSummaryBody(filters)}
         onClose={() => setDrilldown(null)}
@@ -2241,26 +2054,12 @@ const ExecutiveDashboard = () => {
         appliedFilters={buildSummaryBody(filters)}
         onClose={() => setHeaderDrilldown(null)}
       />
-      {/*
-        NEW — the general "list POs matching this header KPI" dialog.
-        Picking a row hands the PO number to setPoPreview({ poNumber })
-        below (no lineItem), which is EXACTLY what already drives the
-        header-only branch of PoDetailsPreviewDialog for line items that
-        have no lineItem set — same component, same behavior, reused.
-      */}
       <HeaderKpiDrilldownDialog
         drilldown={headerKpiDrilldown}
         appliedFilters={buildSummaryBody(filters)}
         onClose={() => setHeaderKpiDrilldown(null)}
         onViewHeader={(poNumber) => setPoPreview({ poNumber })}
       />
-      {/*
-        onHeaderChanged: closing/reopening a PO header from THIS dialog
-        (reached via any KPI card, chart drilldown, or PO-Wise Exceptions
-        row click) changes PO-wide compliance numbers - refetch the whole
-        executive summary so every KPI card and chart above reflects the
-        new state immediately, instead of only the dialog itself updating.
-      */}
       <PoDetailsPreviewDialog
         preview={poPreview}
         onClose={() => setPoPreview(null)}

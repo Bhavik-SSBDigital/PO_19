@@ -21,7 +21,7 @@ const Login = () => (
         mb: 3,
       }}
     >
-      AI Based P2P Compliance
+      AI Based P2P Compliance & Procurement Intelligence Platform
     </Typography>
     <Typography
       variant="h4"

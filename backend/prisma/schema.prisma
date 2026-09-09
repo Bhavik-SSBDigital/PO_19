@@ -167,6 +167,7 @@ model AuditResult {
   documentNumber          String?   @map("document_number")
   po_line_item            String?   @map("po_line_item")
   processDocuments        Json      @default("[]") @map("process_documents")
+  checkedPoints Int[] @default([]) @map("checked_points")
   vendorTitle             String?   @default("") @map("vendor_title")
   documentName            String?   @map("document_name")
   documentNames           String[]  @default([]) @map("document_names")
@@ -287,7 +288,7 @@ model PoHeaderResult {
   purchase_group String?
   po_type        String?
   results        Json     @default("[]") // header-level points: new 1-9
-
+  checkedPoints Int[] @default([]) @map("checked_points")
   remarksLocked   Boolean   @default(false) @map("remarks_locked")
   remarksLockedBy String?   @map("remarks_locked_by")
   remarksLockedAt DateTime? @map("remarks_locked_at")
@@ -317,7 +318,8 @@ model PoHeaderRemark {
   submittedBy   String   @map("submitted_by")
   submittedAt   DateTime @default(now()) @map("submitted_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
-
+  isSystemResultWrong Boolean @default(false) @map("is_system_result_wrong")
+  buyerResult         String? @map("buyer_result")
   poHeaderResult PoHeaderResult @relation(fields: [po_number], references: [po_number], onDelete: Cascade)
   submitter      User           @relation(fields: [submittedBy], references: [id])
 
@@ -395,7 +397,8 @@ model PoRemark {
   submittedBy   String   @map("submitted_by")
   submittedAt   DateTime @default(now()) @map("submitted_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
-
+  isSystemResultWrong Boolean @default(false) @map("is_system_result_wrong")
+  buyerResult         String? @map("buyer_result")
   auditResult   AuditResult @relation(fields: [auditResultId], references: [id], onDelete: Cascade)
   submitter     User        @relation(fields: [submittedBy], references: [id])
 

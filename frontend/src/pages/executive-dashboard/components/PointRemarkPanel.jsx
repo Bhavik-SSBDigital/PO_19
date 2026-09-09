@@ -13,19 +13,35 @@ import {
   DialogTitle,
   DialogContent,
   Tooltip,
+  Radio,
+  RadioGroup,
+  FormControlLabel,
+  FormControl,
+  FormLabel,
+  MenuItem,
+  Divider,
 } from "@mui/material";
 import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
 import SendRoundedIcon from "@mui/icons-material/SendRounded";
 import LockRoundedIcon from "@mui/icons-material/LockRounded";
 import AddCommentRoundedIcon from "@mui/icons-material/AddCommentRounded";
 import ChatBubbleRoundedIcon from "@mui/icons-material/ChatBubbleRounded";
+import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
+import CheckCircleOutlineRoundedIcon from "@mui/icons-material/CheckCircleOutlineRounded";
 import CloseIcon from "@mui/icons-material/Close";
 import { toast } from "react-toastify";
 import {
   getPoRemarks,
   submitPoRemark,
   deletePoRemark,
+  togglePointChecked,
 } from "../../../api/api-functions";
+
+const SYSTEM_RESULT_OPTIONS = [
+  "Verified",
+  "Not Verified",
+  "Not Applicable",
+];
 
 const PointRemarkPanel = ({
   auditResultId,
@@ -37,19 +53,12 @@ const PointRemarkPanel = ({
   isAdmin,
   isProcurementManager,
   locked: lockedProp = false,
-  // NEW: remarks already embedded on the search response (row.buyerRemarks
-  // for this point). Seeds state immediately so the trigger is correct on
-  // first paint instead of showing "No Remarks" until the dialog opens.
   initialRemarks = [],
-  // NEW: optional — lets a parent list re-sync its own copy (e.g. a
-  // summary count somewhere else on the page) whenever this point's
-  // remarks change. Safe to omit.
+  initialChecked = false,
+  systemResult = "",
   onRemarksChanged,
   compact = false,
 }) => {
-  // Only a Buyer can add/edit/delete. Admin and Procurement Manager are
-  // read-only — they can open the dialog and see every remark, but never
-  // get an input box or a delete button.
   const canSubmit = isBuyer;
 
   const [remarks, setRemarks] = useState(initialRemarks);
@@ -58,9 +67,18 @@ const PointRemarkPanel = ({
   const [draft, setDraft] = useState("");
   const [open, setOpen] = useState(false);
   const [locked, setLocked] = useState(lockedProp);
+  const [checked, setChecked] = useState(initialChecked);
+  const [checkBusy, setCheckBusy] = useState(false);
+  const [isSystemResultWrong, setIsSystemResultWrong] = useState("informative");
+  const [buyerResult, setBuyerResult] = useState(systemResult || "");
 
-  // Keep in sync whenever the parent re-fetches the search page and hands
-  // down fresh embedded remarks (e.g. after switching line items).
+  // Reset buyerResult to systemResult when switching to "informative"
+  useEffect(() => {
+    if (isSystemResultWrong === "informative") {
+      setBuyerResult(systemResult || "");
+    }
+  }, [isSystemResultWrong, systemResult]);
+
   useEffect(() => {
     setRemarks(initialRemarks);
   }, [initialRemarks]);
@@ -69,14 +87,32 @@ const PointRemarkPanel = ({
     setLocked(lockedProp);
   }, [lockedProp]);
 
+  useEffect(() => {
+    setChecked(initialChecked);
+  }, [initialChecked]);
+
   const ownRemark = remarks.find(
     (r) => currentUserId != null && String(r.submittedBy) === String(currentUserId)
   );
 
-  const applyRemarks = (next, nextLocked) => {
+  const notifyParent = (nextRemarks, nextLocked, nextChecked) => {
+    onRemarksChanged?.({
+      pointNo,
+      remarksCount: nextRemarks.length,
+      checked: nextChecked,
+      remarksLocked: nextLocked,
+    });
+  };
+
+  const applyRemarks = (next, nextLocked, nextChecked) => {
     setRemarks(next);
     if (nextLocked !== undefined) setLocked(nextLocked);
-    onRemarksChanged?.(next);
+    if (nextChecked !== undefined) setChecked(nextChecked);
+    notifyParent(
+      next,
+      nextLocked !== undefined ? nextLocked : locked,
+      nextChecked !== undefined ? nextChecked : checked,
+    );
   };
 
   const load = async () => {
@@ -86,7 +122,8 @@ const PointRemarkPanel = ({
         ? { auditResultId, pointNo }
         : { poNumber, poLineItem, pointNo };
       const res = await getPoRemarks(payload);
-      applyRemarks(res?.remarks || [], Boolean(res?.remarksLocked));
+      const stillChecked = (res?.checkedPoints || []).includes(Number(pointNo));
+      applyRemarks(res?.remarks || [], Boolean(res?.remarksLocked), stillChecked);
     } catch (error) {
       toast.error(error?.response?.data?.message || error?.message || "Failed to load remarks");
     } finally {
@@ -99,18 +136,19 @@ const PointRemarkPanel = ({
       load();
     } else {
       setDraft("");
+      setIsSystemResultWrong("informative");
+      setBuyerResult(systemResult || "");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, auditResultId, poNumber, poLineItem, pointNo]);
 
   useEffect(() => {
     if (!open) return;
-    // Only ever prefill the box for a NEW remark. There is no "edit in
-    // place" flow — once a buyer has their own remark on this point, the
-    // input is hidden entirely (see canSubmit && !locked && !ownRemark
-    // below); to change wording they delete their remark and add a new
-    // one. So the draft box never needs to carry an existing remark's text.
-    if (!ownRemark) setDraft("");
+    if (!ownRemark) {
+      setDraft("");
+      setIsSystemResultWrong("informative");
+      setBuyerResult(systemResult || "");
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, remarks]);
 
@@ -118,11 +156,16 @@ const PointRemarkPanel = ({
     if (!draft.trim() || ownRemark) return;
     setSubmitting(true);
     try {
-      const payload = auditResultId
-        ? { auditResultId, pointNo, remark: draft.trim() }
-        : { poNumber, poLineItem, pointNo, remark: draft.trim() };
-      await submitPoRemark(payload);
-      toast.success("Remark added");
+      const base = auditResultId
+        ? { auditResultId, pointNo }
+        : { poNumber, poLineItem, pointNo };
+      const res = await submitPoRemark({
+        ...base,
+        remark: draft.trim(),
+        isSystemResultWrong: isSystemResultWrong === "wrong",
+        buyerResult: buyerResult || systemResult,
+      });
+      toast.success(res?.tally?.autoClosed ? res.message : "Remark added");
       await load();
     } catch (error) {
       toast.error(error?.response?.data?.message || error?.message || "Failed to save remark");
@@ -141,16 +184,29 @@ const PointRemarkPanel = ({
     }
   };
 
-  const count = remarks.length;
-  const latest = remarks[0]; // already ordered newest-first by the API
+  const handleToggleChecked = async () => {
+    setCheckBusy(true);
+    try {
+      const base = auditResultId
+        ? { auditResultId, pointNo }
+        : { poNumber, poLineItem, pointNo };
+      const res = await togglePointChecked({ ...base, checked: !checked });
+      toast.success(res?.tally?.autoClosed ? res.message : (res?.message || "Updated"));
+      const stillChecked = (res?.checkedPoints || []).includes(Number(pointNo));
+      const nextLocked = res?.tally?.autoClosed ? true : locked;
+      setChecked(stillChecked);
+      if (res?.tally?.autoClosed) setLocked(true);
+      notifyParent(remarks, nextLocked, stillChecked);
+    } catch (error) {
+      toast.error(error?.response?.data?.message || error?.message || "Failed to update");
+    } finally {
+      setCheckBusy(false);
+    }
+  };
 
-  // ── Trigger chip: EXACTLY two labels once there's something to act on
-  // — "Add Remark" (nothing exists yet, you can submit one) or "View
-  // Remarks" (one or more exist — open the dialog to read them, never to
-  // "update" anything). "Locked"/"No Remarks" are the only other states,
-  // for when there's genuinely nothing to add or view. Colors are
-  // distinct per state so the button reads correctly at a glance: green
-  // = you can add one, blue = remarks exist to read, amber = locked.
+  const count = remarks.length;
+  const latest = remarks[0];
+
   let chipLabel;
   let chipColor = "default";
   let chipIcon = <ChatBubbleRoundedIcon fontSize="small" />;
@@ -176,16 +232,43 @@ const PointRemarkPanel = ({
   return (
     <>
       <Stack spacing={0.5} alignItems="flex-start">
-        <Chip
-          size="small"
-          clickable
-          onClick={() => setOpen(true)}
-          icon={chipIcon}
-          label={chipLabel}
-          color={chipColor}
-          variant={chipVariant}
-          sx={{ fontWeight: 700, borderRadius: "16px" }}
-        />
+        <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
+          <Chip
+            size="small"
+            clickable
+            onClick={() => setOpen(true)}
+            icon={chipIcon}
+            label={chipLabel}
+            color={chipColor}
+            variant={chipVariant}
+            sx={{ fontWeight: 700, borderRadius: "16px" }}
+          />
+
+          {canSubmit && count === 0 && !locked && (
+            <Tooltip title={checked ? "Marked as Checked — click to undo" : "Mark this point as reviewed (no remark needed)"}>
+              <span>
+                <IconButton
+                  size="small"
+                  onClick={handleToggleChecked}
+                  disabled={checkBusy}
+                  sx={{ color: checked ? "#16a34a" : "text.disabled" }}
+                >
+                  {checkBusy ? (
+                    <CircularProgress size={16} />
+                  ) : checked ? (
+                    <CheckCircleRoundedIcon fontSize="small" />
+                  ) : (
+                    <CheckCircleOutlineRoundedIcon fontSize="small" />
+                  )}
+                </IconButton>
+              </span>
+            </Tooltip>
+          )}
+          {checked && count === 0 && (
+            <Chip size="small" label="Checked" color="success" sx={{ fontWeight: 700, height: 22 }} />
+          )}
+        </Stack>
+
         {latest && (
           <Tooltip title={latest.remark}>
             <Typography
@@ -206,6 +289,12 @@ const PointRemarkPanel = ({
               <Box component="span" sx={{ fontWeight: 700, color: "text.primary" }}>
                 {latest.remark}
               </Box>
+              {latest.buyerResult && (
+                <Box component="span" sx={{ display: "block", color: "text.secondary" }}>
+                  Buyer's Result: {latest.buyerResult}
+                  {latest.isSystemResultWrong ? " (flagged as wrong)" : " (informative)"}
+                </Box>
+              )}
             </Typography>
           </Tooltip>
         )}
@@ -224,8 +313,7 @@ const PointRemarkPanel = ({
         <DialogContent sx={{ p: 3 }}>
           {canSubmit && !currentUserId && (
             <Alert severity="warning" sx={{ mb: 2 }}>
-              Could not identify the current user — try logging out and back
-              in.
+              Could not identify the current user — try logging out and back in.
             </Alert>
           )}
 
@@ -244,6 +332,13 @@ const PointRemarkPanel = ({
                   sx={{ fontWeight: 600 }}
                 />
               )}
+
+              {!locked && systemResult && (
+                <Alert severity="info" sx={{ py: 0.5 }}>
+                  System's current result for this point: <strong>{systemResult}</strong>
+                </Alert>
+              )}
+
               {remarks.length === 0 && (
                 <Typography variant="body2" color="text.secondary" textAlign="center" py={2}>
                   No remarks have been added yet.
@@ -265,10 +360,7 @@ const PointRemarkPanel = ({
                     }}
                   >
                     <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                      <Typography
-                        variant="body2"
-                        sx={{ wordBreak: "break-word", pr: 2, fontWeight: 700, color: "text.primary" }}
-                      >
+                      <Typography variant="body2" sx={{ wordBreak: "break-word", pr: 2, fontWeight: 700, color: "text.primary" }}>
                         {r.remark}
                       </Typography>
                       {isMine && canSubmit && !locked && (
@@ -289,6 +381,20 @@ const PointRemarkPanel = ({
                         sx={{ height: 24, fontSize: "0.75rem", fontWeight: 600, bgcolor: "white" }}
                       />
                       {isMine && <Chip size="small" label="Your remark" sx={{ height: 24, fontSize: "0.7rem" }} />}
+                      {r.buyerResult && (
+                        <Chip
+                          size="small"
+                          label={`Buyer's Result: ${r.buyerResult}`}
+                          sx={{ height: 24, fontSize: "0.7rem", bgcolor: "#eef2ff", color: "#3730a3", fontWeight: 600 }}
+                        />
+                      )}
+                      <Chip
+                        size="small"
+                        label={r.isSystemResultWrong ? "System result flagged wrong" : "Informative only"}
+                        color={r.isSystemResultWrong ? "error" : "default"}
+                        variant={r.isSystemResultWrong ? "filled" : "outlined"}
+                        sx={{ height: 24, fontSize: "0.7rem", fontWeight: 600 }}
+                      />
                       {r.submittedAt && (
                         <Chip
                           size="small"
@@ -305,7 +411,7 @@ const PointRemarkPanel = ({
           )}
 
           {canSubmit && !locked && !ownRemark && (
-            <Box sx={{ display: "flex", gap: 1, alignItems: "flex-start" }}>
+            <Stack spacing={2}>
               <TextField
                 size="medium"
                 fullWidth
@@ -314,24 +420,56 @@ const PointRemarkPanel = ({
                 placeholder="Type your remark here..."
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSubmit();
-                  }
-                }}
               />
+
+              <Divider />
+
+              <FormControl>
+                <FormLabel sx={{ fontWeight: 700, fontSize: "0.85rem", mb: 0.5 }}>
+                  Is the system's result wrong, or is this just informative?
+                </FormLabel>
+                <RadioGroup
+                  row
+                  value={isSystemResultWrong}
+                  onChange={(e) => setIsSystemResultWrong(e.target.value)}
+                >
+                  <FormControlLabel value="wrong" control={<Radio size="small" />} label="System's result is wrong" />
+                  <FormControlLabel value="informative" control={<Radio size="small" />} label="Just informative" />
+                </RadioGroup>
+              </FormControl>
+
+              <TextField
+                select
+                size="small"
+                fullWidth
+                label="Buyer's Result (what should it be?)"
+                value={buyerResult || systemResult || ""}
+                onChange={(e) => setBuyerResult(e.target.value)}
+                disabled={isSystemResultWrong === "informative"}
+                helperText={
+                  isSystemResultWrong === "informative"
+                    ? "Buyer's result is not needed for informative remarks. It will use the system's result."
+                    : "Defaults to the system's result — change it if you disagree."
+                }
+              >
+                {SYSTEM_RESULT_OPTIONS.map((opt) => (
+                  <MenuItem key={opt} value={opt}>
+                    {opt}
+                  </MenuItem>
+                ))}
+              </TextField>
+
               <Button
                 variant="contained"
                 color="success"
                 disabled={submitting || !draft.trim()}
                 onClick={handleSubmit}
-                sx={{ height: "40px", px: 3, boxShadow: "none" }}
+                sx={{ height: "40px", px: 3, boxShadow: "none", alignSelf: "flex-start" }}
                 startIcon={submitting ? <CircularProgress size={16} color="inherit" /> : <SendRoundedIcon />}
               >
                 Add Remark
               </Button>
-            </Box>
+            </Stack>
           )}
         </DialogContent>
       </Dialog>

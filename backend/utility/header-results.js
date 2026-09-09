@@ -16,6 +16,9 @@
 
 import { prisma } from "../lib/prisma.js";
 import { severityOf } from "./severity.js";
+// ADD near the top, alongside the other point-definitions import:
+import { computeTally } from "./point-tally.js";
+import { systemResultLabel } from "./system-result.js";
 // CHANGED: point content now comes from the DB via point-definitions.js,
 // not the file-based point-reference.js. ensurePointDefinitionsLoaded()
 // is called INSIDE this module's exported functions (not left to callers
@@ -116,16 +119,19 @@ function mapToObject(map) {
   return Object.fromEntries(map);
 }
 
-function enrichPoints(results) {
+function enrichPoints(results, checkedPoints = []) {
+  const checkedSet = new Set((checkedPoints || []).map(Number));
   return (results || []).map((p) => {
     const def = getPointDefinition(p.pointNo);
     return {
       ...p,
-      scope: "header", // lets the frontend tell header vs line points apart
+      scope: "header",
       severity: severityOf(p.pointNo),
       title: def.title,
       summary: def.summary,
       logic: def.logic,
+      checked: checkedSet.has(Number(p.pointNo)),
+      systemResultLabel: systemResultLabel(p),
     };
   });
 }
@@ -150,10 +156,17 @@ function shapeHeader(record, poNumber, remarksByPoint = new Map()) {
       locked: false,
       lockedBy: null,
       lockedAt: null,
+      checkedPoints: [],
+      tally: computeTally([], [], []),
       headerRemarksByPoint: mapToObject(remarksByPoint),
     };
   }
-  const points = enrichPoints(record.results);
+  const checkedPoints = record.checkedPoints || [];
+  const points = enrichPoints(record.results, checkedPoints);
+  const remarkedPointNos = [...remarksByPoint.keys()]
+    .filter((k) => (remarksByPoint.get(k) || []).length > 0)
+    .map(Number);
+
   return {
     poNumber: record.po_number,
     points,
@@ -165,6 +178,9 @@ function shapeHeader(record, poNumber, remarksByPoint = new Map()) {
     locked: !!record.remarksLocked,
     lockedBy: record.remarksLockedBy || null,
     lockedAt: record.remarksLockedAt || null,
+    checkedPoints,
+    // { totalPoints, checkedCount, remarkedCount, coveredCount, remainingCount, isComplete }
+    tally: computeTally(record.results, checkedPoints, remarkedPointNos),
     headerRemarksByPoint: mapToObject(remarksByPoint),
   };
 }

@@ -35,12 +35,11 @@ const SUBMITTER_SELECT = {
   lastName: true,
 };
 
-const SYSTEM_RESULT_OPTIONS = [
-  "Verified",
-  "Not Verified",
-  "Not Applicable",
-  "Manual Review Required",
-];
+import {
+  SYSTEM_RESULT_OPTIONS,
+  systemResultLabel,
+  findSystemPoint,
+} from "../utility/system-result.js";
 
 /**
  * Buyer-entered remarks report.
@@ -120,23 +119,10 @@ function buildScopedRemarkWhere(req, body = {}) {
   return and.length ? { AND: and } : {};
 }
 
-function systemResultLabel(point) {
-  if (!point) return "Point not found on system result";
-  if (point.not_applicable) return "Not Applicable";
-  if (point.manual_verification) return "Manual Review Required";
-  if (point.verified) return "Verified";
-  return "Not Verified";
-}
-
-function findSystemPoint(auditResult, pointNo) {
-  const results = auditResult?.results || [];
-  return results.find((p) => String(p.pointNo) === String(pointNo)) || null;
-}
-
 function buildReportRow(remark) {
   const ar = remark.auditResult || {};
   const vendor = getVendorInfo(ar.vendor_code);
-  const point = findSystemPoint(ar, remark.pointNo);
+  const point = findSystemPoint(ar.results, remark.pointNo);
   const pointDef = getPointDefinition(remark.pointNo);
 
   return {
@@ -146,6 +132,12 @@ function buildReportRow(remark) {
     pointTitle: pointDef?.title || "",
 
     buyerRemark: remark.remark,
+    // NEW — the two fields you asked to add to the report
+    buyerResult: remark.buyerResult || "",
+    resultAltered: remark.isSystemResultWrong
+      ? "Yes — system result flagged wrong"
+      : "No — informative only",
+
     submittedById: remark.submittedBy,
     submittedByName:
       [remark.submitter?.firstName, remark.submitter?.lastName]
@@ -176,6 +168,7 @@ function buildReportRow(remark) {
     netValue: ar.net_value || "",
     poStatus: ar.po_status || "",
     remarksLocked: !!ar.remarksLocked,
+    issueStatus: ar.remarksLocked ? "Closed" : "Open",
   };
 }
 
@@ -376,6 +369,8 @@ const REPORT_COLUMNS = [
   ["Point No", "pointNo"],
   ["Point Title", "pointTitle"],
   ["Buyer's Remark", "buyerRemark"],
+  ["Buyer's Result", "buyerResult"],
+  ["Result Altered?", "resultAltered"],
   ["Submitted By", "submittedByName"],
   ["Submitted At", "submittedAt"],
   ["System Result", "systemResult"],
@@ -397,6 +392,7 @@ const REPORT_COLUMNS = [
   ["Net Value", "netValue"],
   ["PO Status", "poStatus"],
   ["Remarks Locked", "remarksLocked"],
+  ["Issue Status", "issueStatus"],
 ];
 
 export const downloadPoRemarksReport = async (req, res) => {
@@ -439,5 +435,65 @@ export const downloadPoRemarksReport = async (req, res) => {
     return res
       .status(500)
       .json({ message: "Failed to generate remarks report" });
+  }
+};
+
+const ISSUE_TRACKER_COLUMNS = [
+  ["PO Number", "poNumber"],
+  ["Line Item", "lineItem"],
+  ["Point No", "pointNo"],
+  ["Point Title", "pointTitle"],
+  ["Issue Status", "issueStatus"],
+  ["Buyer's Remark", "buyerRemark"],
+  ["System Result", "systemResult"],
+  ["Buyer's Result", "buyerResult"],
+  ["Result Altered?", "resultAltered"],
+  ["Submitted By", "submittedByName"],
+  ["Submitted At", "submittedAt"],
+  ["Vendor Name", "vendorName"],
+  ["Purchase Group Name", "purchaseGroupName"],
+  ["PO Type Name", "poTypeName"],
+];
+
+export const downloadIssueTrackerReport = async (req, res) => {
+  try {
+    await ensurePointDefinitionsLoaded();
+    const { rows } = await fetchRemarksAndRows(req, { paginate: false });
+
+    const sheetData = [
+      ISSUE_TRACKER_COLUMNS.map(([header]) => header),
+      ...rows.map((row) =>
+        ISSUE_TRACKER_COLUMNS.map(([, key]) => {
+          const v = row[key];
+          if (v instanceof Date) return v.toISOString();
+          if (v === null || v === undefined) return "";
+          return v;
+        }),
+      ),
+    ];
+
+    const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
+    worksheet["!cols"] = ISSUE_TRACKER_COLUMNS.map(([header]) => ({
+      wch: Math.max(12, header.length + 2),
+    }));
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Issue Tracker");
+    const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+
+    const filename = `issue-tracker-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    return res.status(200).send(buffer);
+  } catch (error) {
+    if (error.status)
+      return res.status(error.status).json({ message: error.message });
+    console.error("Error in downloadIssueTrackerReport:", error);
+    return res
+      .status(500)
+      .json({ message: "Failed to generate issue tracker" });
   }
 };
