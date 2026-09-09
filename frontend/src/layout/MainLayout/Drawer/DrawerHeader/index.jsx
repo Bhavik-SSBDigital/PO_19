@@ -40,7 +40,7 @@ const DrawerHeader = ({ open }) => {
               whiteSpace: "nowrap",
             }}
           >
-            AI Based P2P
+            AI Based Procurement
           </Typography>
           <Typography
             sx={{
