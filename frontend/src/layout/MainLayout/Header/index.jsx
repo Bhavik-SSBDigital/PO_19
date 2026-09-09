@@ -56,15 +56,16 @@ const Header = ({
       </IconButton>
       
       {/* 2. Container takes up available space */}
-      <Box sx={{ flexGrow: 1, overflow: "hidden", px: 2 }}>
+      <Box sx={{ flexGrow: 1, px: 2 }}>
         <Typography
           variant="h4"
-          noWrap // 3. Prevents awkward multiline wrapping
           sx={{
             fontWeight: 700,
             color: "#2e3780",
-            // 4. Responsive font sizing instead of fixed width
-            fontSize: { xs: "1.1rem", sm: "1.3rem", md: "1.5rem" }, 
+            // Responsive font sizing
+            fontSize: { xs: "1.1rem", sm: "1.2rem", md: "1.4rem" }, 
+            // Tighter line height keeps wrapped text looking neat in a header
+            lineHeight: 1.2, 
           }}
         >
           {title}
