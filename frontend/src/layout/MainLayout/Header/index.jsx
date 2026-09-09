@@ -53,7 +53,7 @@ const Header = ({ open, handleDrawerToggle }) => {
         <Typography
   variant="h4"
   sx={{
-    width: "520px",
+    width: "540px",
     pl: 2,
     fontWeight: 700,
     color: "#2e3780",
