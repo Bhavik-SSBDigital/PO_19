@@ -22,8 +22,7 @@ import HeaderContent from "./HeaderContent";
 const Header = ({ 
   open, 
   handleDrawerToggle, 
-  // 1. Add title prop with a default fallback
-  title = "AIA PROCUREMENT AUDIT" 
+  title = "AI Based P2P Compliance & Procurement Intelligence Platform" 
 }) => {
   const theme = useTheme();
   const matchDownMD = useMediaQuery(theme.breakpoints.down("lg"));
@@ -55,22 +54,24 @@ const Header = ({
         )}
       </IconButton>
       
-      {/* 2. Container takes up available space */}
-      <Box sx={{ flexGrow: 1, px: 2 }}>
+      <Box sx={{ flexGrow: 1, px: 2, display: "flex", alignItems: "center" }}>
         <Typography
-          variant="h4"
+          variant="h6"
           sx={{
             fontWeight: 700,
             color: "#2e3780",
-            // Responsive font sizing
-            fontSize: { xs: "1.1rem", sm: "1.2rem", md: "1.4rem" }, 
-            // Tighter line height keeps wrapped text looking neat in a header
-            lineHeight: 1.2, 
+            fontSize: { xs: "0.95rem", sm: "1.1rem", md: "1.25rem" }, 
+            lineHeight: 1.3,
+            display: "-webkit-box",
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: "vertical",
+            overflow: "hidden",
           }}
         >
           {title}
         </Typography>
       </Box>
+      
       <HeaderContent />
     </Toolbar>
   );
@@ -102,7 +103,7 @@ const Header = ({
 Header.propTypes = {
   open: PropTypes.bool,
   handleDrawerToggle: PropTypes.func,
-  title: PropTypes.string, // Document the new prop
+  title: PropTypes.string,
 };
 
 export default Header;
