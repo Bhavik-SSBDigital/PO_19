@@ -33,6 +33,7 @@ import {
   PieChart,
   Pie,
   Cell,
+  LabelList,
 } from "recharts";
 import moment from "moment";
 import { toast } from "react-toastify";
@@ -1357,6 +1358,16 @@ const ExecutiveDashboard = () => {
                         }
                       />
                     ))}
+                    <LabelList
+                      dataKey="compliancePct"
+                      position="right"
+                      formatter={(v) => (v != null ? `${v}%` : "")}
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 700,
+                        fill: "#3730a3",
+                      }}
+                    />
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
