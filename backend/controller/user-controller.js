@@ -8,15 +8,15 @@ import { prisma } from "../lib/prisma.js";
  * pages/authentication/auth-forms/AuthLogin.jsx expects.
  */
 
-// Configure Nodemailer transporter (Update with your actual SMTP credentials)
+// Configure Nodemailer transporter — matches the working config used in
+// emailService.js against the same SMTP server (no auth block, generous
+// timeouts for corporate SMTP).
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || "smtp.gmail.com",
-  port: process.env.SMTP_PORT || 587,
+  host: process.env.SMTP_HOST,
+  port: parseInt(process.env.SMTP_PORT || "25"),
   secure: false, // true for 465, false for other ports
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
+  connectionTimeout: 10000, // 10 seconds
+  socketTimeout: 15000, // 15 seconds
 });
 
 export const editUser = async (req, res) => {
@@ -31,8 +31,6 @@ export const editUser = async (req, res) => {
       lastName,
       roleName,
       canViewDashboard,
-      allowedAuditors,
-      allowedModules,
     } = req.body;
 
     // Fallback to support both Prisma 'id' and legacy MongoDB '_id'
@@ -54,8 +52,6 @@ export const editUser = async (req, res) => {
       email: email?.trim(),
       firstName: firstName?.trim(),
       lastName: lastName?.trim(),
-      allowedAuditors: allowedAuditors || [],
-      allowedModules: allowedModules || [],
       roleId: role?.id || null,
     };
 
@@ -94,8 +90,6 @@ export const signup = async (req, res) => {
       lastName,
       roleName,
       canViewDashboard,
-      allowedAuditors,
-      allowedModules,
     } = req.body;
 
     const trimmedUsername = username?.trim();
@@ -133,8 +127,6 @@ export const signup = async (req, res) => {
         lastName: lastName?.trim(),
         roleId: role?.id,
         canViewDashboard: canViewDashboard ?? true, // DEFAULTED TO TRUE
-        allowedAuditors: allowedAuditors || [],
-        allowedModules: allowedModules || [],
       },
     });
 
@@ -188,8 +180,6 @@ export const get_users = async (req, res) => {
       email: user.email,
       username: user.username,
       canViewDashboard: user.canViewDashboard,
-      allowedAuditors: user.allowedAuditors,
-      allowedModules: user.allowedModules,
       roleId: user.roleId,
       roleName: user.role?.name || null,
       isAdmin: user.role?.isAdmin || false,
@@ -335,7 +325,6 @@ export const login = async (req, res) => {
       email: user.email,
       userName: user.username,
       canViewDashboard: user.canViewDashboard,
-      allowedModules: user.allowedModules,
       userId: user.id,
       roleId: user.roleId,
       firstName: user.firstName,

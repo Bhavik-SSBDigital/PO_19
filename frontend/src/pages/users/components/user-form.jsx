@@ -9,20 +9,11 @@ import {
   InputLabel,
   TextField,
   IconButton,
-  Table,
-  TableHead,
-  TableRow,
-  TableCell,
-  TableBody,
-  TableContainer,
-  Paper,
   Typography,
   DialogActions,
-  Checkbox,
   FormControlLabel,
-  Box,
-  Switch, 
-  FormGroup, 
+  Switch,
+  FormGroup,
 } from "@mui/material";
 
 import * as Yup from "yup";
@@ -33,9 +24,7 @@ import { yupResolver } from "@hookform/resolvers/yup";
 import {
   CloseRounded,
   PersonAddOutlined,
-  AddOutlined,
   BorderColorOutlined,
-  DeleteOutlineRounded,
 } from "@mui/icons-material";
 
 import { get, post } from "utils/axiosApi";
@@ -55,7 +44,7 @@ const validationSchema = Yup.object().shape({
     [Yup.ref("password"), null],
     "Passwords must match"
   ),
-  canViewDashboard: Yup.boolean().default(false), 
+  canViewDashboard: Yup.boolean().default(false),
 });
 
 // ================================|| REGISTER / BUTTONS ||================================ //
@@ -147,23 +136,15 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
   const [roles, setRoles] = useState([]);
   const [selectedRole, setSelectedRole] = useState(null);
 
-  const [allowedAuditors, setAllowedAuditors] = useState([]);
-  const [allowedAuditor, setAllowedAuditor] = useState({
-    firstName: "",
-    lastName: "",
-  });
-
   const {
     control,
     handleSubmit,
     reset,
     setError,
-    setValue,
-    watch,
-    formState: { errors, isSubmitting, isValid }, 
+    formState: { errors, isSubmitting, isValid },
   } = useForm({
     resolver: yupResolver(validationSchema),
-    mode: "onChange", 
+    mode: "onChange",
     defaultValues: {
       firstName: "",
       lastName: "",
@@ -171,20 +152,11 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
       roleName: "",
       password: "",
       confirmPassword: "", // Added confirm password field
-      allowedAuditors: [],
-      allowedModules: [],
       formUsername: data?.username || "",
       canViewDashboard: data?.canViewDashboard ?? false,
       ...data,
     },
   });
-
-  const [watchedRole, FirstName, LastName, allowedModules] = watch([
-    "roleName",
-    "firstName",
-    "lastName",
-    "allowedModules",
-  ]);
 
   useLayoutEffect(() => {
     const fetchRoles = async () => {
@@ -205,21 +177,6 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
     fetchRoles();
   }, []);
 
-  useEffect(() => {
-    const matchedRole = roles.find((role) => role.name === watchedRole);
-    setSelectedRole(matchedRole || null);
-  }, [watchedRole, roles]);
-  
-  useEffect(() => {
-    if (!data?.allowedAuditors?.length) return;
-    const allowedAuditorsCopy = [...(data?.allowedAuditors || [])];
-    allowedAuditorsCopy.shift();
-    setAllowedAuditors(allowedAuditorsCopy);
-  }, [data]);
-
-  // Derived boolean to check if user role should see/set extra configs
-  const requiresModuleConfig = selectedRole?.isBuyer || selectedRole?.isProcurementManager;
-
   const onSubmit = async (values) => {
     // Manually enforce password creation for new users
     if (type === "create" && !values.password) {
@@ -231,24 +188,19 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
       const payload = {
         ...values,
         username: values.formUsername,
-        allowedAuditors: [
-          `${values.firstName.trim()} ${values.lastName.trim()}`,
-          ...allowedAuditors,
-        ],
-        allowedModules: requiresModuleConfig ? allowedModules : null,
       };
 
       // Strip confirmPassword before sending to the backend
       delete payload.confirmPassword;
 
       if (type === "update") {
-        payload.id = data.id || data._id; 
+        payload.id = data.id || data._id;
         // If password field is empty during update, remove it so we don't overwrite with a blank password
         if (!payload.password) {
           delete payload.password;
         }
       }
-      
+
       if (values.formUsername) delete payload.formUsername;
 
       const path = type === "update" ? "/editUser" : "/signup";
@@ -267,17 +219,6 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
         err.response?.data?.message || err.message || "Something went wrong";
       toast.error(error);
       setError("root", { type: "manual", message: error });
-    }
-  };
-
-  const handleModuleChange = (module) => {
-    if (requiresModuleConfig) {
-      setValue(
-        "allowedModules",
-        (allowedModules || []).includes(module)
-          ? (allowedModules || []).filter((m) => m !== module)
-          : [...(allowedModules || []), module]
-      );
     }
   };
 
@@ -312,7 +253,7 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
                       value={roles.find((r) => r.name === field.value) || null}
                       onChange={(_, value) => field.onChange(value?.name || "")}
                       isOptionEqualToValue={(option, value) =>
-                        (option.id && option.id === value.id) || 
+                        (option.id && option.id === value.id) ||
                         (option._id && option._id === value._id)
                       }
                       renderInput={(params) => (
@@ -504,157 +445,6 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
                 </Typography>
               </FormGroup>
             </Grid>
-
-            {/* Extra Table for Allowed Auditors */}
-            {requiresModuleConfig && (
-              <>
-                <Grid item xs={12}>
-                  <Typography variant="h5">Allowed Auditors</Typography>
-
-                  <TableContainer
-                    sx={{
-                      maxHeight: 160,
-                      overflowY: "auto",
-                      border: "1px solid #ccc",
-                      borderRadius: 2,
-                    }}
-                    component={Paper}
-                    elevation={0}
-                  >
-                    <Table
-                      stickyHeader
-                      aria-label="allowed auditors table"
-                      size="small"
-                    >
-                      <TableHead>
-                        <TableRow>
-                          <TableCell>Auditor Name</TableCell>
-                          <TableCell sx={{ width: "60px" }}>Action</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {(FirstName || LastName) && (
-                          <TableRow>
-                            <TableCell>{FirstName + " " + LastName}</TableCell>
-                            <TableCell sx={{ width: "60px" }}></TableCell>
-                          </TableRow>
-                        )}
-                        {allowedAuditors?.map((auditor, index) => {
-                          return (
-                            <TableRow key={index}>
-                              <TableCell>{auditor}</TableCell>
-                              <TableCell sx={{ width: "60px" }}>
-                                <IconButton
-                                  onClick={() =>
-                                    setAllowedAuditors((prev) =>
-                                      prev.filter((_, i) => i !== index)
-                                    )
-                                  }
-                                >
-                                  <DeleteOutlineRounded
-                                    fontSize="small"
-                                    color="error"
-                                  />
-                                </IconButton>
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
-                </Grid>
-                <Grid item xs={6} sm={5}>
-                  <InputLabel>First Name</InputLabel>
-                  <TextField
-                    value={allowedAuditor.firstName}
-                    placeholder="First name"
-                    onChange={(e) =>
-                      setAllowedAuditor({
-                        ...allowedAuditor,
-                        firstName: e.target.value,
-                      })
-                    }
-                    fullWidth
-                  />
-                </Grid>
-                <Grid item xs={6} sm={5}>
-                  <InputLabel>Last Name</InputLabel>
-                  <TextField
-                    value={allowedAuditor.lastName}
-                    placeholder="Last name"
-                    onChange={(e) =>
-                      setAllowedAuditor({
-                        ...allowedAuditor,
-                        lastName: e.target.value,
-                      })
-                    }
-                    fullWidth
-                  />
-                </Grid>
-                <Grid item xs={12} sm={2}>
-                  <InputLabel> </InputLabel>
-                  <Button
-                    variant="contained"
-                    onClick={() => {
-                      setAllowedAuditors((prev) => [
-                        ...prev,
-                        `${allowedAuditor.firstName} ${allowedAuditor.lastName}`,
-                      ]);
-                      setAllowedAuditor({ firstName: "", lastName: "" });
-                    }}
-                    fullWidth
-                    sx={{ mt: { xs: "-10px", sm: "20px" }, height: "40px" }}
-                    endIcon={<AddOutlined style={{ fontSize: "18px" }} />}
-                  >
-                    ADD
-                  </Button>
-                </Grid>
-              </>
-            )}
-            {requiresModuleConfig && (
-              <Grid item xs={12}>
-                <Typography variant="h5">Allowed Modules</Typography>
-                <Box>
-                  <FormControlLabel
-                    control={
-                      <Checkbox
-                        checked={allowedModules.includes("PJV")}
-                        onChange={() => handleModuleChange("PJV")}
-                      />
-                    }
-                    label="PJV"
-                  />
-                  <FormControlLabel
-                    control={
-                      <Checkbox
-                        checked={allowedModules.includes("BPV")}
-                        onChange={() => handleModuleChange("BPV")}
-                      />
-                    }
-                    label="BPV"
-                  />
-                  <FormControlLabel
-                    control={
-                      <Checkbox
-                        checked={allowedModules.includes("PO")}
-                        onChange={() => handleModuleChange("PO")}
-                      />
-                    }
-                    label="PO"
-                  />
-                  <FormControlLabel
-                    control={
-                      <Checkbox
-                        checked={allowedModules.includes("NONPO")}
-                        onChange={() => handleModuleChange("NONPO")}
-                      />
-                    }
-                    label="Non-PO"
-                  />
-                </Box>
-              </Grid>
-            )}
           </Grid>
         </form>
       </DialogContent>
@@ -662,7 +452,7 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
         <Button
           disableElevation
           form="user-form"
-          disabled={isSubmitting || !isValid} 
+          disabled={isSubmitting || !isValid}
           fullWidth
           type="submit"
           sx={{ mx: 2 }}
