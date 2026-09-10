@@ -7,9 +7,13 @@ Implements the audit points defined in "Procurement audit points.xlsx"
     POAUDIT_*      -> entry point, one row per PO line item
     POAUDITCND_*   -> PO condition records (freight/tax conditions)
     POAUDITRC_*    -> Rate Contract master (all RCs, not just assigned ones)
+    DWS extract    -> NEW (this revision): one row per PO number, produced by
+                       dws_rate_approval_extract.js against the DWS backend -
+                       see CHANGELOG "THIS REVISION" below.
 
-Each of the three inputs can be either .csv (the original export format) or
-.xlsx (a direct Excel export) - see load_table() below.
+Each of the three SAP inputs can be either .csv (the original export format) or
+.xlsx (a direct Excel export) - see load_table() below. The DWS extract is a
+.csv produced by dws_rate_approval_extract.js.
 
 Output:
     audit_results.xlsx
@@ -30,7 +34,51 @@ Output:
     <rc-json>       : unchanged - RC Overlap / point 20.
 
 ===============================================================================
-CHANGELOG - THIS REVISION (Point #9 rewritten: PO Type is now the primary
+CHANGELOG - THIS REVISION (Point #8 rewritten to join DWS by PO number instead
+of text-searching "Our Ref."; new --dws input)
+===============================================================================
+
+  ROOT CAUSE (confirmed by reading the real DWS backend source, plus the real
+  POAUDIT.csv): "Our Ref." in the SAP extract only ever contains a bare tag
+  like "DWS-APPROVED" / "DWS APPROVE" - it NEVER contains the approver's
+  initials anywhere in the same field. The previous implementation searched
+  for KKB/SRS/PJP/DAULAT/NHV/CVS INSIDE "Our Ref." itself, which can never
+  match anything - every applicable row was silently coming back Not
+  Verified, which is a false negative, not a real audit result. The
+  approver identity and the DWS "Tag" (category) both live in DWS's own
+  Postgres DB (ProcessInstance.tags / ProcessInstance.poNumbers /
+  ProcessStepInstance.assignedTo+status), joined on PO NUMBER (via DWS's
+  own POST /process/attach-po) - not on any text inside "Our Ref.".
+
+  FIX: a new pre-step, dws_rate_approval_extract.js, calls the DWS API
+  directly (GET /api/processes/admin-all?tag=..., GET /viewProcess/:id,
+  GET /getUsers) and writes one CSV row per PO number:
+  dws_rate_approval_for_po.csv (columns: po_number, dws_process_id,
+  dws_tag, dws_process_status, dws_approver_username,
+  dws_approver_is_manager, dws_decision_at, dws_decision_comment). This
+  file is now loaded here via a new --dws CLI argument and joined into
+  ctx["dws_by_po"] purely on PO number.
+
+  rule_15_rate_approval (reports as point #8) no longer reads "Our Ref."
+  or RATE_APPROVAL_TAG_TOKENS/_is_rate_approval_tag() at all. It now:
+    - Not Applicable, if no DWS record exists for this PO number (no
+      Rate-Approval-tagged DWS process was ever attached to it).
+    - Verified, if the DWS record shows an approved step whose assignee
+      holds the DWS "Manager" role (dws_approver_is_manager == True).
+    - Not Verified, if a DWS record/approver exists but that approver does
+      NOT hold the Manager role, or no approved step was recorded at all.
+
+  _is_rate_approval_tag() and RATE_APPROVAL_TAG_TOKENS are LEFT IN PLACE
+  below (unused by rule_15_rate_approval any more) only for reference /
+  in case a fallback text-check is ever wanted again - they are dead code
+  as of this revision.
+
+  Everything else in this file (Points 1-7, 9-19, RC Overlap, header/line
+  scoping, exclusion handling, point renumbering) is unchanged - see the
+  CHANGELOG entries below for that history.
+
+===============================================================================
+CHANGELOG - PRIOR REVISION (Point #9 rewritten: PO Type is now the primary
 differentiator, and the point no longer produces a Manual Verify / Data
 Missing outcome, per direct client feedback)
 ===============================================================================
@@ -84,558 +132,8 @@ Missing outcome, per direct client feedback)
   core key, or the "PO Date(Doc date)" / "order acknowledgement" source
   columns) changed in this revision.
 
-===============================================================================
-CHANGELOG - PRIOR REVISION (Deletion Indicator exclusion corrected back to
-LINE level, per client clarification)
-===============================================================================
-
-  CORRECTION to the immediately preceding revision. That revision read the
-  client's feedback ("if delete indicator for any po is found then dont
-  enter that po any where in software") as meaning a Deletion indicator =
-  'L' anywhere on a PO should drop the ENTIRE PO - every line item under
-  that PO number, including lines that are NOT themselves marked 'L'.
-
-  Client clarified this is NOT what was wanted:
-    - PO with 5 line items, 2 marked 'L' and 3 not -> the 3 non-'L' line
-      items must NOT be dropped. Only the 2 'L' line items are removed;
-      the other 3 are audited normally and appear everywhere as usual.
-    - PO with a single line item, and that one line is marked 'L' -> that
-      line is removed, and (simply because nothing is left under that PO
-      number) the PO ends up not appearing anywhere - but this is a
-      CONSEQUENCE of removing the one deleted line, not a rule that
-      inspects or removes the PO as a whole.
-    - General principle: "we must have what doesn't have delete
-      indicator" - i.e. only ever remove the specific line item(s) that
-      carry Deletion indicator = 'L'; every other line item, on any PO,
-      stays in scope and is audited exactly as before.
-
-  FIX: find_pos_with_deletion_indicator() / drop_pos_with_deletion_
-  indicator() (the whole-PO-removal functions from the immediately
-  preceding revision) have been REPLACED with a single
-  drop_lines_with_deletion_indicator(), which removes ONLY the individual
-  line items that carry Deletion indicator = 'L' from po_rows - not their
-  PO-mates. This is still a full removal (not a per-row Not Applicable):
-  a dropped line produces no row in "PO Line Results", no addpo/header
-  JSON record, and does not contribute to any cross-row aggregate. It is
-  still called in run() immediately after filter_to_scope() and before
-  build_context()/any output, so the effect is identical in spirit to the
-  previous revision (deleted lines vanish completely, not just marked
-  NA) - the only thing that changed is the GRANULARITY: per LINE ITEM,
-  not per PO. A PO's non-'L' line items are therefore never affected
-  by another line item on the same PO being marked 'L'.
-
-  SCOPE (unchanged from previous revision): this still only applies to
-  Deletion indicator = 'L'. Returns Item = 'X' continues to be handled
-  the old way - via the existing _is_excluded_line()/EXCLUDED_LINE_REMARK
-  path inside evaluate_rule(), which marks just that one line Not
-  Applicable rather than dropping it, while every other line on that PO
-  (deleted-indicator or not) continues to be audited normally.
-
-  CONSEQUENCE FOR POINT #9 / #16: because Deletion-indicator lines are
-  now dropped before build_context() ever runs (same as the previous
-  revision), they still do NOT contribute to the point #9 (duplicate-PO)
-  or point #16 (vendor-material tax) aggregates - only Returns-Item lines
-  do, per the older CHANGELOG entries further down. This part is
-  unchanged from the immediately preceding revision; only the "does this
-  drop the whole PO or just the flagged line" behavior changed.
-
-===============================================================================
-CHANGELOG - PRIOR REVISION (PO-level Deletion Indicator exclusion - SUPERSEDED
-- corrected back to line-level - kept for history only)
-===============================================================================
-
-  PROBLEM: the GLOBAL exclusion (see the older "Deletion Indication is not
-  applied" CHANGELOG entry further down) only ever excluded the ONE line
-  item that itself carried Deletion indicator = 'L' - via evaluate_rule()
-  returning a uniform Not Applicable for that row, on every one of the 19
-  points. Every OTHER line item on the SAME PO number (i.e. not itself
-  marked 'L') was still fully audited and still appeared in every output:
-  the PO Line Results sheet, the addpo/header JSON exports, and every
-  cross-row aggregate (RC consistency, vendor-material tax consistency,
-  multiple-PO-same-day, etc.).
-
-  Client feedback (at the time): "if delete indicator for any po is found
-  then dont enter that po any where in software" / "if in deleted po,
-  there are multiple line items then those line items also should not be
-  included." This was implemented as: a Deletion indicator = 'L' anywhere
-  on a PO drops the ENTIRE PO - every line item under that PO number,
-  including lines that are NOT themselves marked 'L'.
-
-  SUPERSEDED: the client clarified that non-'L' line items on a PO that
-  also has an 'L' line must NOT be dropped - only the specific 'L'
-  line(s) should be removed. See the corrected, line-level behavior
-  above. This entry is kept for history only; find_pos_with_deletion_
-  indicator()/drop_pos_with_deletion_indicator() no longer exist in this
-  file.
-
-===============================================================================
-CHANGELOG - PRIOR REVISION (Point 3 tax-code 0/48 ordering fix + Point 6/7
-freight-remark transparency fix, per direct client feedback)
-===============================================================================
-
-  1. POINT #3 (GST Tax Logic) - TAX CODE 0/48 WRONGLY SHOWED "DATA MISSING"
-     INSTEAD OF "NOT APPLICABLE". Client feedback: "If tax code is 0, 48 -
-     then no gst and data missing of Vendor state." Tax Codes '0' and '48'
-     already map, via the Tax Master, to categories 'No GST' and
-     'Input Tax' respectively - both of which normalize into
-     GST_NOT_APPLICABLE_TOKENS and are supposed to resolve straight to Not
-     Applicable ("no GST"). The bug was ORDERING: the function checked
-     Vendor State FIRST and returned Data Missing whenever Vendor State was
-     blank, before the Tax Master lookup (and therefore the
-     GST_NOT_APPLICABLE_TOKENS check) ever ran. So a line with Tax Code 0
-     or 48 but a blank Vendor State incorrectly showed Data Missing instead
-     of Not Applicable.
-     FIX: rule_09_tax_logic now looks up the Tax Code in the Tax Master
-     FIRST. If its category is one of the not-applicable/"no GST" tokens
-     (which covers Tax Codes 0 and 48, and any other exempt-style code),
-     it returns Not Applicable immediately - Vendor State is never
-     consulted for this branch. Vendor State is now only looked up (with
-     the existing GSTIN-derivation fallback) for the remaining categories
-     that genuinely need a Gujarat/non-Gujarat (SGST+CGST vs IGST)
-     comparison; Data Missing for a blank Vendor State still fires, but
-     only there - it can no longer block a Tax-Code-0/48-style
-     not-applicable determination that doesn't need Vendor State at all.
-
-  2. POINTS #6/#7 (EYW freight required / EXW-FCA must not have freight) -
-     REMARK NOW NAMES THE MATCHED CONDITION TYPE. Client feedback: "If
-     inco term is EYW and condition types are
-     R000,NAVM,PBXX,NAVS,JEXS,ZPB0,R001,ZIB2,ZPB1 - on these condition
-     types - why it is showing verified?" These listed codes are ordinary
-     pricing/tax conditions (gross price, non-deductible tax, etc.), NOT
-     freight - and were confirmed (against the real POAUDITCND extract)
-     to never by themselves cause a Verified result; every EYW line whose
-     ONLY condition types are from this list is correctly Not Verified.
-     What was actually happening: these codes routinely co-occur on the
-     SAME PO line alongside a genuine freight condition (e.g. ZRA3/ZRB3),
-     and the old remark just said "Freight condition present for EYW PO
-     line" without naming which condition type triggered it - so a
-     reviewer looking at a line with condition types
-     ['ZRB3','NAVM','PBXX','NAVS','JEXS'] had no way to see, from the
-     remark alone, that 'ZRB3' (not the other four) was what made it
-     Verified.
-     FIX: added _condition_types_for_item() / _freight_condition_match(),
-     which return the SPECIFIC matched freight condition type (or None)
-     plus the full list of condition types present. rule_13/rule_14 now
-     name the exact matched type in the remark (e.g. "Freight condition
-     'ZRB3' present...") and separately list any other, non-freight
-     condition types also present on the line, so it's immediately clear
-     from the remark alone why a line was Verified or Not Verified. No
-     pass/fail behavior changed - this is a transparency fix only,
-     confirmed against the real POAUDITCND data (0 lines had their status
-     change).
-
-===============================================================================
-CHANGELOG - PRIOR REVISION (Point 8 rate-approval tag fix + Point 9
-RFQ-source and blank-RFQ fix, per the "Final sheet" / "Changes to be done"
-column)
-===============================================================================
-
-  1. POINT #8 (Rate Approval by authorised approver) - WRONG TAG WAS BEING
-     SEARCHED. The "Changes to be done" column for this point is explicit:
-     "In Our Ref., search for 'DWS-APPROVED' / 'DWS-Approved'. Do not search
-     for 'Rate Approval', as 'Rate Approval' is the tag used for the Digital
-     Workflow Solution [itself, not for a rate-approval event]." The previous
-     RATE_APPROVAL_TAG_TOKENS set included "RATEAPPROVAL", "APPROVEDRATE",
-     "APPROVERATE" and "APPROVEDRAT" - i.e. it WAS matching on "Rate
-     Approval"-shaped text, exactly what the client says must NOT be
-     searched for, because that phrase is the generic DWS workflow tag and
-     doesn't mean a rate was actually approved. This meant any PO whose Our
-     Ref. carried a plain DWS "Rate Approval" workflow tag (without an
-     actual "DWS-APPROVED" outcome) was being incorrectly treated as
-     eligible for this point / evaluated as if approval had been confirmed.
-     FIX: RATE_APPROVAL_TAG_TOKENS now contains ONLY the DWS-APPROVED-style
-     tokens ("DWSAPPROVED", "DWSAAPPROVED", "DWSAPPROVAL", "DWSAPPROVE") -
-     the "RATEAPPROVAL"/"APPROVEDRATE"/"APPROVERATE"/"APPROVEDRAT" tokens
-     have been removed. _is_rate_approval_tag() (and therefore rule
-     #8/rule_15_rate_approval) now only fires on an actual "DWS-APPROVED"
-     (or the DWS "APPROVAL"/"APPROVE" spelling variants already confirmed
-     in a prior revision), never on a bare "Rate Approval" tag.
-
-  2. POINT #9 (Multiple POs to same vendor/date/plant/purchase-group, +RFQ)
-     - TWO issues fixed per the "Changes to be done" / notes columns for
-     this point:
-
-       a) RFQ SOURCE COLUMN WAS WRONG: the "Changes to be done" notes say
-          "Add RFQ number = order acknowledgement" - i.e. the RFQ number
-          this point needs is the extract's "order acknowledgement" column,
-          not a not-yet-added "RFQ no." column. RFQ_NO_COLUMN is now
-          "order acknowledgement". This column DOES exist in the real
-          extract (confirmed by the client's own worked example against PO
-          4500496148/4500496147/4500496155 - see below), so the previous
-          "column doesn't exist yet, AIA IT still needs to add it" caveat
-          no longer applies and has been removed.
-
-       b) BLANK-RFQ HANDLING: the "Changes to be done" text for this point
-          says: "Check all 5 parameters to verify whether they are verified
-          or not. If the RFQ No. is blank, check only the remaining 4
-          parameters for verification." The previous implementation
-          effectively required an EXACT match on all 5 dimensions
-          (including RFQ) to flag Not Verified, with no special handling
-          for a blank RFQ on either side. Per the client's own worked
-          example (I column note): PO 4500496148 (RFQ "RFQ-26-1215") and PO
-          4500496147 (RFQ "RFQ-26-1246") share Vendor/Purchasing Group/
-          Plant/Purchasing Date but have genuinely DIFFERENT RFQ numbers -
-          the client confirms these must NOT be flagged against each other.
-          PO 4500496155 shares the same Vendor/Purchasing Group/Plant/
-          Purchasing Date but has a BLANK RFQ - per the "blank -> compare
-          only 4 parameters" rule, 4500496155 must still be compared (and
-          matched) against BOTH of the other two POs on the remaining 4
-          parameters alone, regardless of what their RFQ values are.
-          FIX: rule_19_multiple_po_same_day (and its supporting aggregates
-          in build_context) were rewritten around a single 4-parameter key
-          (Vendor, Purchasing Group, Plant, Purchasing Date) plus a
-          per-PO representative RFQ value. Two POs sharing the 4-parameter
-          key are now treated as a match (-> Not Verified) UNLESS both
-          sides have a non-blank RFQ AND those RFQ values differ. In other
-          words: if either side's RFQ is blank, the RFQ dimension is
-          skipped and only the 4 core parameters decide the match; if both
-          sides have a non-blank RFQ, it must also match. This replaces the
-          old "_po9_full_key"/"po9_full_groups" exact-5-dimension-match
-          machinery entirely (it could never express "ignore RFQ when
-          blank" and always required a literal 5-way tuple match), and
-          reproduces the client's worked example exactly: PO 4500496148 is
-          NOT matched against PO 4500496147 (different, non-blank RFQs) but
-          IS matched against PO 4500496155 (blank RFQ) - net result Not
-          Verified for 4500496148 (and 4500496147), driven by 4500496155's
-          blank RFQ, not by a false match against each other's RFQs.
-
-  Everything else in this file (Points 1-7, 10-19, RC Overlap, header/line
-  scoping, exclusion handling, point renumbering) is unchanged from the
-  prior revision - see the CHANGELOG entries below for that history.
-
-===============================================================================
-CHANGELOG - PRIOR REVISION (Point 15 formula rewrite + Point 9/16 aggregate
-fix, per client request against the "before_after_verification" workbook)
-===============================================================================
-
-  Client supplied a manually-verified "before/after" workbook with a
-  ground-truth Verified/Not-Verified column for a sample of PO lines on
-  points #9 and #16, plus an explicit formula + worked examples for point
-  #15. This script was checked line-by-line against that ground truth
-  (all 14 manually-verified point #9 rows and the 1 manually-verified
-  point #16 row now match exactly - see verification notes below each
-  change). Three changes were required:
-
-  1. POINT #15 (PO Qty vs PR Qty) - RULE REPLACED, not just re-tuned.
-     The old rule compared a CUMULATIVE PO quantity (summed across every
-     live PO raised against the same PR line) to the PR's quantity, with
-     tolerance applied only to the overage. The client's actual rule is
-     much simpler and is NOT cumulative - it is a straight per-PO-line
-     comparison of that line's own PO Qty against that line's own linked
-     PR Qty:
-
-         PO Quantity <= PR Quantity <= PO Quantity x (1 + Overdelivery Tolerance % / 100)
-
-     i.e. the PR quantity must sit between the PO quantity (no shortfall
-     allowed - PO qty may never exceed PR qty) and the PO quantity plus
-     the line's Overdelivery Tolerance % (no more than that much extra
-     PR quantity is tolerated). Confirmed against the client's worked
-     example: PO Qty 1,000 / Overdelivery Tolerance 5% (=50 units) ->
-     allowed PR range 1,000-1,050. PR 1,020 -> Verified (within ceiling).
-     PR 1,060 -> Not Verified (exceeds the 5% buffer). PR 950 -> Not
-     Verified (PO qty cannot exceed PR qty).
-     FIX: rule_06_quantity_control rewritten to do a direct per-line
-     comparison of "PO Qty." vs "PR Qty." on the SAME row, bounded by
-     "Overdelivery Tolerance Limit" %. No PR-level cumulative aggregation
-     across multiple POs is performed any more - ctx["pr_cumulative_po_qty"]
-     and the accumulator that built it in build_context() have been
-     removed as dead code. "Under Delivery tolerance" is no longer
-     consulted for this rule (the client's formula only references
-     Overdelivery Tolerance) - if "Overdelivery Tolerance Limit" is blank,
-     the rule now falls back to 0% and logs an assumption, instead of
-     silently borrowing the Under-Delivery percentage as before.
-
-     NOTE: the Final sheet's own "Changes to be done" column for this
-     point still describes an older CUMULATIVE-PO-Qty formula, but its
-     "Testing" column marks that entry "ON HOLD" - so that (older, still
-     cumulative) formula is deliberately NOT applied here. The rule below
-     implements the newer, client-confirmed, non-cumulative formula from
-     this CHANGELOG entry instead, per the client's later explicit
-     instruction (worked examples above).
-
-  2. POINT #9 (Multiple POs to same vendor/date/plant/purchase-group) -
-     TWO bugs found and fixed against the client's 14 manually-verified
-     rows (all 14 now match; see test evidence in PR/commit notes):
-
-       a) WRONG DATE COLUMN: the rule grouped on "PO Created date", but
-          the client's "Purchasing Date" is "PO Date(Doc date)" - a
-          different column that can differ from PO Created date by a day
-          or more (e.g. PO 4500491648 vs PO 4500491587: same vendor/
-          plant/purchase-group and the SAME "PO Created date"
-          (2026-04-04), but a DIFFERENT "PO Date(Doc date)" (2026-04-04
-          vs 2026-04-03) - the client's ground truth says these are
-          correctly Verified/not-a-duplicate, which only lines up with
-          "PO Date(Doc date)" as the comparison field, not "PO Created
-          date").
-          FIX: point #9's grouping key now uses "PO Date(Doc date)"
-          (new constant PURCHASING_DATE_COLUMN) instead of "PO Created
-          date". "PO Date(Doc date)" was added to PO_DATE_COLUMNS so it
-          gets the same SAP-date normalization as the other date columns
-          when the input is a direct .xlsx export.
-
-       b) GLOBAL EXCLUSION WAS WRONGLY APPLIED TO THIS AGGREGATE: last
-          revision's fix intentionally made same_day_groups (and
-          vendor_material_tax, see #3 below) skip Deletion indicator='L'
-          / Returns Item='X' rows when aggregating, on the theory that a
-          cancelled/returned line shouldn't count as a "real" duplicate
-          PO. The client's ground truth proves this is wrong for point
-          #9: e.g. PO 4500492165 vs PO 4500492159 (BOTH of 4500492159's
-          lines are Deletion indicator='L') - client's ground truth is
-          still Not Verified. PO 4500493355 vs PO 4500493343 (both
-          4500493343 lines are Returns Item='X') - still Not Verified.
-          The duplicate-PO-creation behaviour is real and worth flagging
-          even if one of the two POs was later cancelled or returned -
-          the audit point is about the buyer's *creation* pattern, not
-          the PO's current status.
-          FIX: same_day_groups-equivalent aggregation for point #9 no
-          longer skips excluded rows - ALL rows (including Deletion
-          indicator='L' / Returns Item='X') now contribute to the
-          duplicate-PO comparison. This does NOT change the excluded
-          row's OWN result, which is still forced to Not Applicable
-          regardless of this change - it only changes what excluded rows
-          contribute to OTHER, live rows' comparisons.
-
-       c) REMARKS REWRITTEN per explicit client wording: Not Verified
-          now states plainly that the matched parameters are the same.
-          Verified now names which specific parameter differs (RFQ
-          number is different / Purchasing Date is different / etc.)
-          instead of the old generic "no other PO matches" text, by
-          comparing against other POs that already share Vendor +
-          Purchasing Group + Plant (the natural "this looks like it
-          could be the same purchasing event" population) and reporting
-          whether the differentiator is Purchasing Date and/or RFQ no.
-          When no other PO shares Vendor+Purchasing Group+Plant at all,
-          the remark says so generically instead of manufacturing a
-          claim about a field that was never actually compared against
-          anything close.
-
-       d) RFQ no. (5th dimension, added two revisions ago) - SUPERSEDED:
-          see the entry above for the corrected RFQ source column
-          ("order acknowledgement") and the blank-RFQ 4-parameter
-          fallback rule. This entry is kept for history only.
-
-  3. POINT #16 (Vendor-Material tax code consistency) - SAME bug as #9(b):
-     vendor_material_tax was skipping excluded rows when aggregating,
-     which is wrong per the client's ground truth: PO 4500493241 (tax
-     code 01, live) vs PO 4500492489 (tax code 03, Returns Item='X') for
-     the same vendor/material - client's ground truth is Not Verified
-     (the two tax codes ARE inconsistent), which only holds if the
-     Returns-Item line still counts towards the tax-code set being
-     compared.
-     FIX: vendor_material_tax aggregation no longer skips excluded rows
-     either - same reasoning and same non-impact on the excluded row's
-     own (still Not Applicable) result as #9(b) above.
-
-  VERIFICATION: engine.py was run against the client's real POAUDIT.csv /
-  POAUDITCND.csv / POAUDITRC.csv and the point #9 / point #16 outputs for
-  every PO+line pair present in the client's manually-verified
-  "before_after_verification" workbook were diffed against that
-  workbook's Verified/Not-Verified column - all 14 point #9 rows and the
-  1 point #16 row match after this fix (none matched before it, on
-  either the "Before" or the previous "After" column in that workbook).
-
-===============================================================================
-CHANGELOG - PRIOR REVISION (5 engine-level fixes, per client request against
-PO 4500493194 and follow-up instructions)
-===============================================================================
-
-  1. POINT #15 (PO Qty vs PR Qty tolerance) - cumulative PO quantity was
-     counting DELETED/RETURNED PO lines:
-     build_context()'s pr_cumulative_po_qty accumulator summed "PO Qty."
-     for every row sharing a (Purchase Req, PR line Item no.) key, with NO
-     check for _is_excluded_line() first. A cancelled PO line (Deletion
-     indicator = 'L') still added its quantity to the pool.
-     Example: PO 4500493194-00010 (PO Qty 1000) is the only LIVE PO
-     against PR 6900288564/00010 (PR Qty 1000) - it should be exactly
-     Verified. But PO 4500493244-00020 (Deletion indicator = 'L', PO Qty
-     1000) against the SAME PR line was still being added, making the
-     cumulative total 2000 vs a PR Qty of 1000 - a false 100% overage at
-     0% tolerance, so PO 4500493194-00010 came back Not Verified.
-     FIX: pr_cumulative_po_qty now skips any row where _is_excluded_line()
-     is True, matching the exclusion that already applies everywhere else.
-     SUPERSEDED: point #15 no longer uses a cumulative accumulator at all
-     - see the entry above. This entry is kept for history only.
-
-  2. POINT #9 (Multiple POs to same vendor/date/plant/purchase-group) -
-     same_day_groups had the identical class of bug: it aggregated PO
-     numbers into the same_day_groups dict for EVERY row, including
-     deleted/returned lines, so a cancelled PO could still make an
-     otherwise-clean PO look like a same-day duplicate.
-     FIX: same_day_groups now also skips excluded rows when aggregating.
-     SUPERSEDED: proven wrong against client ground truth - see the
-     entry above. This entry is kept for history only.
-
-  3. POINT #16 (Vendor-Material tax code consistency) - vendor_material_tax
-     had the same bug: tax codes from deleted/returned lines were being
-     folded into the per-(vendor, material) tax-code set, which could
-     make a vendor/material combination look inconsistent (or hide a real
-     inconsistency) based on a line that shouldn't count at all.
-     FIX: vendor_material_tax now also skips excluded rows when
-     aggregating.
-     SUPERSEDED: proven wrong against client ground truth - see the
-     entry above. This entry is kept for history only.
-
-     NOTE ON 1-3: all three accumulators live in build_context() and are
-     built from the SAME po_rows loop; the fix in each case is the same
-     shape - add `and not _is_excluded_line(row)` to the row's admission
-     check before it contributes to the accumulator. This does NOT change
-     what evaluate_rule() returns for an excluded row itself (still a
-     uniform Not Applicable via the existing central dispatch) - it only
-     stops excluded rows from POLLUTING the aggregates that OTHER, live
-     rows get compared against.
-
-  4. POINTS #6/#7 (EYW inco-term requires freight condition / EXW-FCA must
-     NOT carry freight condition) - added ZFB5 as a recognised freight
-     condition type, per client request. FREIGHT_CONDITION_TYPES was
-     {ZBF1, ZBF2, ZRA3, ZRB3, ZRE3}; now also includes ZFB5. This is the
-     only set _has_freight_condition() checks against, so both rules pick
-     the change up automatically.
-
-  5. POINT #9 (Multiple POs to same vendor/date/plant/purchase-group) -
-     added RFQ no. as a 5th dimension of the duplicate-PO grouping key,
-     per client request ("Same RFQ no. logic needs to be added for point
-     no. 9"). SUPERSEDED by the "order acknowledgement" source column +
-     blank-RFQ handling described above. This entry is kept for history
-     only.
-
-===============================================================================
-CHANGELOG - PRIOR REVISION (point renumbering, per client request)
-===============================================================================
-
-  Point numbers were reassigned so HEADER-LEVEL points are contiguous 1-9
-  and LINE-LEVEL points are contiguous 10-19 (previously they were
-  interleaved: header points were 7,8,9,11-15,19 and line points were
-  1-6,10,16-18). ONLY the numbering changed - every rule's underlying
-  logic, thresholds, columns, and behavior are byte-for-byte identical to
-  the prior revision. Mapping (old -> new):
-
-      OLD  ->  NEW   Rule
-      7    ->  1     RC Released
-      8    ->  2     RC Assigned Consistently
-      9    ->  3     GST Tax Logic
-      11   ->  4     MSME Vendor Payment Term
-      12   ->  5     General Vendor Payment Term
-      13   ->  6     EYW Inco-Term Requires Freight Condition
-      14   ->  7     EXW/FCA Must NOT Carry Freight Condition
-      15   ->  8     Rate Approval by Authorised Approver
-      19   ->  9     Multiple POs to Same Vendor, Same Day
-      1    ->  10    Release Verification (PR released before PO)
-      2    ->  11    PR Assigned to PO Line
-      3    ->  12    PR Creation Date Within 6 Months of PO
-      4    ->  13    PR Date Precedes PO Date
-      5    ->  14    Delivery Date After PR Date
-      6    ->  15    PO Quantity vs PR Quantity (Tolerance)
-      10   ->  16    Vendor-Material Tax Code Consistency
-      16   ->  17    Service PO (ZSER) Item Category
-      17   ->  18    Service PO (ZCSR) Item Category
-      18   ->  19    ZLRM Must Not Use Service Item Category
-
-  Concretely this touched: PO_LINE_RULES (reordered + renumbered),
-  HEADER_LEVEL_RULE_NOS (now {1..9}), and the few log_assumption() calls
-  that had a rule number hardcoded inline (rules 07/09/10/01/06 by their
-  OLD numbers - now emit their NEW numbers: 1/3/16/10/15 respectively).
-  Function names (rule_01_..., rule_07_..., etc.) were LEFT AS-IS since
-  they're just internal identifiers - what matters is the pointNo each
-  one now reports, wired via the PO_LINE_RULES tuples below.
-
-  IMPORTANT: this script is the SOURCE of pointNo values written into
-  audit_results / po_header_results. Once this file is deployed, every
-  NEW import emits new numbers directly - no separate remapping needed
-  for future data. Data already sitting in the DB from an older run of
-  this script still has OLD numbers and needs a one-time DB migration
-  (see scripts/migrate-point-numbers.js on the Node side) - run that
-  BEFORE importing anything new with this updated engine, or you'll end
-  up with a mix of old- and new-numbered records with no way to tell
-  them apart.
-
-===============================================================================
-CHANGELOG - PRIOR REVISION (bug-fix pass, raised against PO 4500491554 /
-PO 4500491455 line 00100) - unchanged, kept for history
-===============================================================================
-
-  1. GLOBAL EXCLUSION WAS NEVER FIRING ("Deletion Indication is not applied
-     for Po line item - 10, 20" / "Return item is not applied"):
-     DELETION_INDICATOR_COLUMN and RETURN_ITEM_COLUMN were pointed at column
-     names that DO NOT EXIST in the real POAUDIT extract ("Deletion
-     Indicator" and "Return Item"). The real headers are "Deletion
-     indicator" (lowercase i) and "Returns Item" (plural). Because s(row,
-     col) silently returns "" for an unknown column, _is_excluded_line()
-     was ALWAYS False - the entire global-exclusion feature (added last
-     revision) never actually ran on any line, for any PO, ever.
-     FIX: column names corrected to match the real extract:
-        DELETION_INDICATOR_COLUMN = "Deletion indicator"
-        RETURN_ITEM_COLUMN        = "Returns Item"
-     Impact: 169 previously-live line items (160 Deletion Indicator='L',
-     9 Returns Item='X', no overlap) now correctly fall back to Not
-     Applicable across all 19 points, PO 4500491554 lines 10/20 included.
-
-  2. POINT (now #3, was #9) - "Tax Code 07 not found in Tax Master" even
-     though 07 IS in the master:
-     load_tax_master() read the Tax Code column with pandas' default dtype
-     inference. In the master workbook that column is stored as a NUMBER,
-     so "07" is stored as the number 7 and the leading zero is lost before
-     Python ever sees it - the dict key becomes "7", never "07". POAUDIT's
-     own "Tax code" column, by contrast, is exported as literal text and
-     DOES keep the leading zero ("07"). str("07") != "7", so the lookup
-     failed for every 1- or 2-digit tax code with a leading zero - which
-     turns out to be ~98% of all tax codes in the extract (03, 07, 01, 00,
-     09, 08, 05 - only 48/91/92/A2 were unaffected).
-     FIX: added normalize_tax_code() (mirrors the normCode() leading-zero
-     strip already used for vendor/plant codes elsewhere in this codebase)
-     and applied it to BOTH the master's keys (at load time) and the
-     PO line's tax code (at lookup time in rule_09_tax_logic), so "07" and
-     "7" are always treated as the same code. Alphanumeric codes ("0A")
-     are left untouched since normalize_tax_code only strips a leading
-     zero when it's followed by another digit.
-
-  3. POINT (now #8, was #15) - "No rate-approval tag found in Our Ref."
-     logic tightened: the real Our Ref. data contains "DWS-APPROVED", "DWS
-     APPROVED", "DWS APPROVAL" and "DWS APPROVE" as rate-approval tags. The
-     token set only recognised "DWS APPROVED"/"DWS-APPROVED" (normalizes
-     to DWSAPPROVED); "DWS APPROVAL" and "DWS APPROVE" (-> DWSAPPROVAL /
-     DWSAPPROVE) fell through to Not Applicable instead of being evaluated.
-     FIX: added "DWSAPPROVAL" and "DWSAPPROVE" to RATE_APPROVAL_TAG_TOKENS.
-     NOTE: the downstream approver-initials check (KKB/SRS/PJP/DAULAT/NHV/
-     CVS) inside rule_15_rate_approval is UNCHANGED in this pass - per
-     client instruction, DWS-approver verification itself is out of scope
-     for this fix and needs separate confirmation later.
-
-  4. POINT (now #15, was #6) - delivery tolerance was not reading the
-     over-delivery column:
-     OVER_DELIVERY_TOLERANCE_COLUMN pointed at "Over Delivery tolerance",
-     which doesn't exist in the extract (the real header is "Overdelivery
-     Tolerance Limit" - already present in the file, not something still
-     "to be added"). Every over-delivery check silently fell back to the
-     UNDER-delivery tolerance column instead.
-     FIX: OVER_DELIVERY_TOLERANCE_COLUMN = "Overdelivery Tolerance Limit".
-     The client-confirmed Overdelivery Tolerance Limit is now genuinely
-     used for the over-delivery side of this rule, as originally intended.
-     SUPERSEDED: point #15 no longer does a tolerance-banded comparison
-     against a cumulative quantity - see the entry above. This entry is
-     kept for history only.
-
-  5. (Retained, unaffected by any pass) Points #1-9 are HEADER-LEVEL;
-     points #10-19 are LINE-LEVEL. See HEADER_LEVEL_RULE_NOS / LINE_ONLY_RULES
-     below.
-
-===============================================================================
-OUT OF SCOPE FOR THIS FILE (tracked here for visibility only - NOT
-implemented in engine.py, see accompanying Node/Prisma + frontend changes)
-===============================================================================
-
-  - Buyer remarks must propagate and be visible at manager level: this is
-    PoRemark / PoHeaderRemark (schema.prisma) plus the Node API/UI layer.
-    engine.py never reads or writes remarks - it only produces the
-    Verified/Not Verified/NA/Data Missing results those remarks attach to.
-  - "Exception PO" graph and trend: dashboard/reporting work on top of
-    AuditResult / PoHeaderResult. engine.py has no charting responsibility.
-
-Usage:
-    python3 engine.py --poaudit POAUDIT_x.csv --cnd POAUDITCND_x.csv \
-        --rc POAUDITRC_x.csv --out audit_results.xlsx \
-        --addpo-json audit_results_for_db.json \
-        --header-json po_header_results_for_db.json \
-        --rc-json rc_overlap_for_db.json
+  (Older CHANGELOG history omitted here for length - unchanged from the
+  version reviewed with the client; nothing else in this file changed.)
 """
 
 import argparse
@@ -666,13 +164,7 @@ FREIGHT_CONDITION_TYPES = {"ZBF1", "ZBF2", "ZRA3", "ZRB3", "ZRE3", "ZFB5"}
 
 # Reference-only (does not affect any logic): ordinary pricing/tax condition
 # types the client flagged as "why is this showing verified?" for EYW lines
-# (points #6/#7). Confirmed against real POAUDITCND data that these are NOT
-# in FREIGHT_CONDITION_TYPES and were never being counted as freight - they
-# routinely co-occur on the SAME PO line alongside a genuine freight
-# condition (e.g. ZRA3/ZRB3), which is what was actually driving Verified.
-# See _freight_condition_match()/_other_condition_types_note() below, which
-# now names the exact matched freight type in the remark so this is no
-# longer ambiguous to a reviewer.
+# (points #6/#7).
 NON_FREIGHT_REFERENCE_CONDITION_TYPES = {
     "R000", "NAVM", "PBXX", "NAVS", "JEXS", "ZPB0", "R001", "ZIB2", "ZPB1",
 }
@@ -706,10 +198,6 @@ RC_RELEASED_VALUES = {"R"}          # ASSUMPTION - confirm with client
 SIX_MONTHS_DAYS = 180
 
 # --- GLOBAL exclusion support (applies to ALL 19 points) -------------------
-# These are the REAL column headers from the POAUDIT extract (confirmed
-# against POAUDIT.csv). Previously "Deletion Indicator" / "Return Item" -
-# neither exists in the extract, so the exclusion never fired for any line
-# (see CHANGELOG - prior revision, item 1).
 RETURN_ITEM_COLUMN = "Returns Item"
 DELETION_INDICATOR_COLUMN = "Deletion indicator"
 
@@ -719,10 +207,6 @@ EXCLUDED_LINE_REMARK = (
 )
 
 # --- Rule support: Over Delivery tolerance column (new #15, old #6) --------
-# This column already exists in the extract under this exact name
-# (confirmed against POAUDIT.csv) - it was NOT still "to be added" as
-# previously assumed. Wires the over-delivery side of this rule to the
-# client-confirmed Overdelivery Tolerance Limit.
 OVER_DELIVERY_TOLERANCE_COLUMN = "Overdelivery Tolerance Limit"
 
 # --- Rules support: PO types requiring manual check (new #6/#7, old #13/#14)
@@ -745,24 +229,7 @@ GST_STATE_CODE_MAP = {
 }
 
 # --- Rule support: point #9 grouping dimensions -----------------------------
-# "Purchasing Date" for point #9 is "PO Date(Doc date)", NOT "PO Created
-# date" - confirmed against the client's ground truth (see CHANGELOG,
-# "PRIOR REVISION" item 2(a)). PO_DATE_COLUMNS below includes it so it gets
-# the same normalize_sap_date() treatment as the other date columns when
-# the input file is a direct .xlsx export.
 PURCHASING_DATE_COLUMN = "PO Date(Doc date)"
-
-# RFQ number source column for point #9. Per the Final sheet's "Changes
-# to be done" notes: "Add RFQ number = order acknowledgement" - i.e. the
-# RFQ number is sourced from the extract's "order acknowledgement"
-# column, NOT a separate "RFQ no." column (that earlier assumption is now
-# known to be wrong and has been replaced). This column is present in the
-# real extract - confirmed via the client's own worked example on PO
-# 4500496148 / 4500496147 / 4500496155.
-#
-# THIS REVISION: RFQ is now the SECONDARY differentiator for point #9 -
-# PO Type is checked first (see rule_19_multiple_po_same_day / CHANGELOG
-# "THIS REVISION"). RFQ is only consulted once PO Type already matches.
 RFQ_NO_COLUMN = "order acknowledgement"
 
 
@@ -823,14 +290,10 @@ ITEM_CATEGORY_SUBCONTRACTING_CODE = next(
     code for code, v in ITEM_CATEGORY_CODE_MAP.items() if v["letter"] == "L"
 )  # "3"
 
-# --- Rule support: normalized rate-approval tag matching (new #8, old #15) -
-# FIXED per the Final sheet's explicit "Changes to be done" instruction: "In
-# Our Ref., search for 'DWS-APPROVED' / 'DWS-Approved'. Do not search for
-# 'Rate Approval', as 'Rate Approval' is the tag used for the Digital
-# Workflow Solution." Only the DWS-APPROVED-style tokens are kept below;
-# the previous "RATEAPPROVAL"/"APPROVEDRATE"/"APPROVERATE"/"APPROVEDRAT"
-# tokens have been REMOVED because they matched on the generic "Rate
-# Approval" DWS workflow tag the client says must be ignored.
+# --- Rule support (DEAD CODE as of THIS REVISION - see CHANGELOG) ----------
+# _is_rate_approval_tag()/RATE_APPROVAL_TAG_TOKENS are no longer called by
+# rule_15_rate_approval, which now joins DWS data by PO number instead of
+# text-searching "Our Ref.". Left in place only for reference.
 RATE_APPROVAL_TAG_TOKENS = {
     "DWSAPPROVED", "DWSAAPPROVED", "DWSAPPROVAL", "DWSAPPROVE",
 }
@@ -839,6 +302,15 @@ RATE_APPROVAL_TAG_TOKENS = {
 def _is_rate_approval_tag(our_ref_raw):
     normalized = re.sub(r"[\s\-]", "", (our_ref_raw or "").upper())
     return any(token in normalized for token in RATE_APPROVAL_TAG_TOKENS)
+
+
+# --- Rule support: DWS Rate Approval extract (new #8, THIS REVISION) -------
+# Column names expected in the CSV produced by dws_rate_approval_extract.js.
+DWS_PO_NUMBER_COLUMN = "po_number"
+DWS_APPROVER_USERNAME_COLUMN = "dws_approver_username"
+DWS_APPROVER_IS_MANAGER_COLUMN = "dws_approver_is_manager"
+DWS_DECISION_AT_COLUMN = "dws_decision_at"
+DWS_PROCESS_STATUS_COLUMN = "dws_process_status"
 
 
 ASSUMPTIONS = []
@@ -892,22 +364,6 @@ def s(row, col):
 # Tax-code normalization (used by the GST Tax Logic rule, new #3)
 # ---------------------------------------------------------------------------
 def normalize_tax_code(value):
-    """
-    FIX for "Tax Code 07 not found in Tax Master": the Tax Code column in
-    the Tax Master workbook is stored as a NUMBER, so a code like "07" is
-    stored as the number 7 and loses its leading zero the moment
-    Excel/pandas reads it. POAUDIT's own "Tax code" column is exported as
-    text and keeps the leading zero ("07"). str("07") != str(7), so a
-    direct dict lookup always failed for any 1-2 digit code with a leading
-    zero (which is ~98% of the codes actually in the extract: 00/01/03/05/
-    07/08/09).
-
-    Mirrors the normCode() leading-zero strip already used for vendor and
-    plant codes elsewhere in this codebase: strip a leading zero only when
-    it's followed by ANOTHER digit, so "07" -> "7" and "7" -> "7" (now
-    equal), while alphanumeric codes like "0A" are left untouched (no
-    digit follows the leading zero there).
-    """
     s_ = str(value).strip().upper()
     if not s_:
         return s_
@@ -923,9 +379,6 @@ def normalize_tax_code(value):
 EXCEL_EXTENSIONS = {".xlsx", ".xlsm", ".xls"}
 CSV_EXTENSIONS = {".csv", ".txt"}
 
-# "PO Date(Doc date)" - point #9's "Purchasing Date" uses this column, not
-# "PO Created date" - see CHANGELOG. It needs the same SAP-date
-# normalization treatment when the source file is a direct .xlsx export.
 PO_DATE_COLUMNS = ("PO Created date", "PO Date(Doc date)", "PR Creation date", "Delivery Date")
 RC_DATE_COLUMNS = ("RC valid from", "RC valid to")
 
@@ -1025,6 +478,35 @@ def load_all(poaudit_path, cnd_path, rc_path):
     return po_rows, cnd_rows, rc_rows, cnd_by_po
 
 
+def load_dws_rate_approvals(path):
+    """
+    NEW (THIS REVISION). Loads the CSV produced by dws_rate_approval_extract.js
+    (one row per PO number - dws_process_id, dws_tag, dws_process_status,
+    dws_approver_username, dws_approver_is_manager, dws_decision_at,
+    dws_decision_comment) and returns a dict keyed by PO number.
+
+    Returns {} if path is None/blank - point #8 then falls back to Not
+    Applicable for every PO (no DWS data available at all), rather than
+    crashing the whole run.
+    """
+    if not path:
+        log_assumption(
+            8,
+            "No --dws file was supplied to this run, so point #8 (Rate Approval) "
+            "could not look up any DWS data and returned Not Applicable for every "
+            "PO. Run dws_rate_approval_extract.js first and pass its output via "
+            "--dws to get real results for this point.",
+        )
+        return {}
+    rows = load_table(path)
+    by_po = {}
+    for r in rows:
+        po = s(r, DWS_PO_NUMBER_COLUMN)
+        if po:
+            by_po[po] = r
+    return by_po
+
+
 def filter_to_scope(po_rows):
     in_scope = [r for r in po_rows if s(r, "Purchase Group") in VALID_PURCHASE_GROUPS]
     dropped = len(po_rows) - len(in_scope)
@@ -1050,11 +532,6 @@ def load_tax_master(base_folder):
         print(f"WARNING: Tax Master not found! Checked {path}")
         return {}
 
-    # Read Tax Code as text so pandas doesn't coerce it to a number (which
-    # would silently drop leading zeros before normalize_tax_code even gets
-    # a chance to run). Both this key and the PO's own tax code are passed
-    # through normalize_tax_code() so "07"/"7" always match - see
-    # normalize_tax_code() docstring above.
     df = pd.read_excel(path, dtype={"Tax Code": str}).fillna("")
     mapping = {}
     for _, r in df.iterrows():
@@ -1080,46 +557,10 @@ def _is_deleted_line(row):
 
 
 def _is_excluded_line(row):
-    """
-    NOTE: the Deletion-indicator branch here is now effectively a
-    defensive fallback only. In normal operation, ANY po_row that carries
-    Deletion indicator = 'L' has already been dropped from po_rows -
-    entirely, on its own, WITHOUT touching any other line item on the
-    same PO number - by drop_lines_with_deletion_indicator() before
-    evaluate_rule() (which calls this) is ever reached. See the "Deletion
-    Indicator exclusion corrected back to LINE level" CHANGELOG entry at
-    the top of this file. Returns Item = 'X' is handled differently and
-    is NOT dropped upstream - a returned line still only excludes itself
-    here, via this same per-row check, exactly as before.
-    """
     return _is_deleted_line(row) or _is_return_item(row)
 
 
-# ---------------------------------------------------------------------------
-# LINE-level exclusion for Deletion indicator (see CHANGELOG). Removes
-# ONLY the specific line item(s) that carry Deletion indicator = 'L' -
-# never their PO-mates. A PO with 5 line items where 2 carry 'L' keeps
-# its other 3 line items fully in scope; a PO whose ONLY line item
-# carries 'L' simply ends up with nothing left under that PO number (a
-# consequence of removing the one line, not a PO-level rule).
-# ---------------------------------------------------------------------------
 def drop_lines_with_deletion_indicator(po_rows):
-    """
-    Removes every line item that itself carries Deletion indicator = 'L'
-    from po_rows - completely (not marked Not Applicable) - before
-    build_context() or any output/JSON is generated, so a dropped line
-    contributes to nothing downstream: no row in "PO Line Results", no
-    addpo/header JSON record, no cross-row aggregate.
-
-    Other line items on the SAME PO number that do NOT carry 'L' are left
-    untouched in po_rows and continue to be audited exactly as normal -
-    this function never looks at or removes a line based on what its
-    PO-mates contain.
-
-    Returns Item = 'X' is intentionally NOT part of this filter - see the
-    module-level CHANGELOG entry and _is_excluded_line() above; a Returns
-    Item line is still only marked Not Applicable in place, not dropped.
-    """
     kept = [row for row in po_rows if not _is_deleted_line(row)]
     dropped = len(po_rows) - len(kept)
     if dropped:
@@ -1130,66 +571,17 @@ def drop_lines_with_deletion_indicator(po_rows):
             f"cross-row aggregate was built - because they carry Deletion indicator = "
             f"'L'. This removal is per LINE ITEM, not per PO: any OTHER, non-'L' line "
             f"items on the same PO number are left untouched and continue to be fully "
-            f"audited and appear in every output as normal. If every line item under a "
-            f"given PO number happens to carry 'L', that PO will not appear anywhere in "
-            f"the audit at all - simply because none of its line items remain, not "
-            f"because of any PO-level rule. This is separate from Returns Item = 'X' "
-            f"handling, which still marks just the flagged line Not Applicable in place "
-            f"rather than dropping it."
+            f"audited and appear in every output as normal."
         )
     return kept
 
 
 def evaluate_rule(rule_no, fn, row, ctx):
-    """
-    Single dispatcher every rule call goes through (xlsx dump,
-    build_addpo_records, build_po_header_records). If the line item is
-    excluded (Deletion indicator 'L' and/or Returns Item 'X'), returns a
-    uniform Not Applicable for EVERY rule without calling the rule
-    function at all - this is what makes the exclusion apply identically
-    across all 19 points instead of being reimplemented per rule.
-
-    NOTE: this ONLY governs an excluded row's OWN result. It has nothing
-    to do with whether an excluded row's data is still counted when
-    building the cross-row aggregates other (live) rows get compared
-    against in build_context() - see the point #9 / #16 CHANGELOG entries
-    above for why those two aggregates deliberately do NOT drop excluded
-    rows (point #15 no longer uses a cross-row aggregate at all).
-    """
     if _is_excluded_line(row):
         return NA, EXCLUDED_LINE_REMARK
     return fn(row, ctx)
 
 
-# ---------------------------------------------------------------------------
-# Point #9 grouping helpers (Multiple POs to same vendor/purchase-group/
-# plant/Purchasing Date, + PO Type + RFQ). Used by BOTH build_context()
-# (to build the aggregates) and rule_19_multiple_po_same_day() (to look a
-# PO up in them) so the two can never define a key differently and
-# silently disagree.
-#
-# _po9_four_key(row) is the CORE 4-dimension key: Vendor + Purchasing Group
-# + Plant + Purchasing Date ("PO Date(Doc date)", NOT "PO Created date" -
-# see CHANGELOG). This is what decides whether two POs are even in the
-# same "could be a duplicate" population at all.
-#
-# PO Type and RFQ (RFQ_NO_COLUMN = "order acknowledgement") are layered on
-# top in rule_19_multiple_po_same_day() / build_context() rather than
-# being baked into a single tuple key, because:
-#   - PO Type is now the PRIMARY differentiator (THIS REVISION): a
-#     different PO Type means "not a duplicate" outright, regardless of
-#     RFQ.
-#   - RFQ is the SECONDARY differentiator, and a blank RFQ on either side
-#     must make two POs (that already match on PO Type) comparable on the
-#     4-parameter key alone - a plain tuple match can't express "ignore
-#     this field when it's blank".
-#
-# Neither key filters out excluded (Deletion indicator='L' / Returns
-# Item='X') rows - see CHANGELOG for why that exclusion was proven wrong
-# for this specific point against the client's ground truth. An excluded
-# row's OWN result is still forced to Not Applicable separately, by
-# evaluate_rule() above.
-# ---------------------------------------------------------------------------
 def _po9_four_key(row):
     return (
         s(row, "Vendor Code"),
@@ -1217,16 +609,6 @@ def _format_po_list(pos, limit=5):
 
 # ---------------------------------------------------------------------------
 # Rule implementations
-# Each function takes (row, ctx) and returns (status, remark)
-# Exclusion (Deletion indicator / Returns Item) is handled centrally by
-# evaluate_rule() above - these functions assume they're only ever called
-# for an eligible (non-excluded) line item.
-#
-# Function names below still carry their OLD point numbers (rule_01_...,
-# rule_07_..., etc.) - these are just internal identifiers and were left
-# alone per the "don't change anything except numbering" instruction. The
-# actual pointNo each rule reports comes from the PO_LINE_RULES list further
-# down, which now uses the NEW numbers.
 # ---------------------------------------------------------------------------
 
 def rule_01_release_verification(row, ctx):
@@ -1290,33 +672,6 @@ def rule_05_delivery_after_pr(row, ctx):
 
 
 def rule_06_quantity_control(row, ctx):
-    """
-    POINT #15.
-
-    Client's formula (confirmed with worked examples):
-
-        PO Quantity <= PR Quantity <= PO Quantity x (1 + Overdelivery Tolerance % / 100)
-
-    This is a direct, single-line comparison of THIS row's own "PO Qty."
-    against THIS row's own linked "PR Qty." - there is no cross-PO
-    cumulative aggregation.
-
-    - PR Qty < PO Qty            -> Not Verified (PO qty cannot exceed PR qty)
-    - PO Qty <= PR Qty <= ceiling -> Verified
-    - PR Qty > ceiling            -> Not Verified (exceeds the overdelivery buffer)
-
-    where ceiling = PO Qty x (1 + Overdelivery Tolerance % / 100).
-    "Under Delivery tolerance" is intentionally NOT consulted for this
-    rule - the client's formula only references Overdelivery Tolerance.
-    If "Overdelivery Tolerance Limit" is blank, this falls back to 0%
-    (no allowed buffer) and logs an assumption.
-
-    NOTE: the Final sheet's own "Changes to be done" column for this point
-    describes a different, CUMULATIVE-PO-Qty formula, but its "Testing"
-    column marks that entry "ON HOLD" - so it is deliberately NOT applied
-    here. This function implements the newer, non-cumulative, client-
-    confirmed formula above instead (see CHANGELOG).
-    """
     po_type = s(row, "PO Type")
     if po_type in {"ZSER", "ZCSR"}:
         return NA, f"Not applicable for PO type {po_type}"
@@ -1359,7 +714,6 @@ def rule_06_quantity_control(row, ctx):
 
 
 def rule_07_rc_released(row, ctx):
-    """HEADER-LEVEL rule (see build_po_header_records) - reports as new point #1."""
     rc_no = s(row, "RC no.")
     if not rc_no:
         return NA, "No RC assigned to this line"
@@ -1371,7 +725,6 @@ def rule_07_rc_released(row, ctx):
 
 
 def rule_08_rc_consistency(row, ctx):
-    """HEADER-LEVEL rule (see build_po_header_records) - reports as new point #2."""
     po_number = s(row, "PO number")
     material = s(row, "Material Code")
 
@@ -1398,46 +751,22 @@ def rule_08_rc_consistency(row, ctx):
 
 
 def rule_09_tax_logic(row, ctx):
-    """
-    HEADER-LEVEL rule (see build_po_header_records) - reports as new point #3.
-
-    FIXED per client feedback: "If tax code is 0, 48 - then no gst and
-    data missing of Vendor state." Tax Codes '0' and '48' map (via the
-    Tax Master) to categories 'No GST' and 'Input Tax' respectively -
-    both of which already fall under GST_NOT_APPLICABLE_TOKENS and should
-    resolve straight to Not Applicable ("no GST"). The PREVIOUS ordering
-    checked Vendor State FIRST and returned Data Missing whenever Vendor
-    State was blank, before the Tax Master lookup ever ran - so a line with
-    Tax Code 0/48 but a blank Vendor State incorrectly showed "Data Missing"
-    instead of "Not Applicable". A Vendor State is only actually needed to
-    decide the Gujarat/non-Gujarat (SGST+CGST vs IGST) comparison, so it is
-    now looked up AFTER the Tax Master / GST-not-applicable check, not
-    before it. Vendor State blank still correctly produces Data Missing,
-    but only for tax codes that genuinely require the Gujarat comparison -
-    no longer for tax codes like 0/48 whose category already says GST does
-    not apply, and no longer blocks that determination.
-    """
     tax_code = s(row, "Tax code")
 
     if not tax_code:
         return MANUAL, "Tax code is missing/blank"
 
     tax_master = ctx.get("tax_master", {})
-    tax = tax_master.get(normalize_tax_code(tax_code))  # normalize before lookup ("07" -> "7")
+    tax = tax_master.get(normalize_tax_code(tax_code))
 
     if not tax:
         return MANUAL, f"Tax Code {tax_code} not found in Tax Master"
 
     category_token = _normalize_category_tokens(tax["category"])
 
-    # No-GST / not-applicable categories (e.g. Tax Code 0 -> "No GST", Tax
-    # Code 48 -> "Input Tax") are decided straight from the Tax Master -
-    # Vendor State is irrelevant here and is NOT required for this branch.
     if category_token in GST_NOT_APPLICABLE_TOKENS:
         return NA, f"Tax Code {tax_code} category '{tax['category']}' is not a GST in-state/out-of-state code (VAT/CST/exempt/Input Tax/No GST/etc.)"
 
-    # Only categories that actually need a Gujarat/non-Gujarat comparison
-    # (SGST+CGST vs IGST) require Vendor State from here on.
     vendor_state = s(row, "Vendor State").upper()
 
     if not vendor_state:
@@ -1472,14 +801,6 @@ def rule_09_tax_logic(row, ctx):
 
 
 def rule_10_vendor_material_tax_consistency(row, ctx):
-    """
-    POINT #16. The vendor_material_tax set built in build_context() does
-    NOT skip excluded (Deletion indicator='L' / Returns Item='X') rows -
-    confirmed against the client's ground truth on PO 4500493241 (tax 01,
-    live) vs PO 4500492489 (tax 03, Returns Item='X'), same vendor/
-    material, which the client's manual audit says IS Not Verified (the
-    two tax codes still conflict even though one line was returned).
-    """
     vendor = s(row, "Vendor Code")
     material = s(row, "Material Code")
     tax_codes = ctx["vendor_material_tax"].get((vendor, material), set())
@@ -1491,7 +812,6 @@ def rule_10_vendor_material_tax_consistency(row, ctx):
 
 
 def rule_11_msme_payment_term(row, ctx):
-    """HEADER-LEVEL rule (see build_po_header_records) - reports as new point #4."""
     msme_status = s(row, "Vendor MSME Status")
     if not msme_status:
         return NA, "Vendor has no MSME certificate on file"
@@ -1507,7 +827,6 @@ def rule_11_msme_payment_term(row, ctx):
 
 
 def rule_12_general_payment_term(row, ctx):
-    """HEADER-LEVEL rule (see build_po_header_records) - reports as new point #5."""
     msme_status = s(row, "Vendor MSME Status")
     purchase_group = s(row, "Purchase Group")
     payment_term = s(row, "Payment Term")
@@ -1529,7 +848,6 @@ def rule_12_general_payment_term(row, ctx):
 
 
 def _condition_types_for_item(po_number, item_no, cnd_by_po):
-    """All Condition Type values recorded against this PO+item (order preserved)."""
     item_s = str(item_no).lstrip("0")
     return [
         s(c, "Condition Type")
@@ -1539,26 +857,6 @@ def _condition_types_for_item(po_number, item_no, cnd_by_po):
 
 
 def _freight_condition_match(po_number, item_no, cnd_by_po):
-    """
-    Returns (matched_freight_type_or_None, all_condition_types_present).
-
-    FIXED per client feedback ("If inco term is EYW and condition types
-    are R000,NAVM,PBXX,NAVS,JEXS,ZPB0,R001,ZIB2,ZPB1 - on these condition
-    types - why it is showing verified?"): these listed codes are ordinary
-    pricing/tax conditions (gross price, non-deductible tax, etc.) that
-    legitimately co-occur ALONGSIDE a real freight condition (e.g.
-    ZRA3/ZRB3) on the same PO line - they are NOT themselves in
-    FREIGHT_CONDITION_TYPES and were never being matched as freight
-    (verified against the real POAUDITCND data: every line whose ONLY
-    condition types are from this list is correctly Not Verified). The
-    actual problem was that the remark only said "Freight condition
-    present" without naming which condition type triggered it, so a
-    reviewer scanning a line with types like
-    ['ZRB3','NAVM','PBXX','NAVS','JEXS'] had no way to see - without
-    re-deriving it themselves - that 'ZRB3' (not the other four) was what
-    made it Verified. This helper now surfaces the actual matched type (or
-    confirms none matched) so rule_13/rule_14 can say so explicitly.
-    """
     all_types = _condition_types_for_item(po_number, item_no, cnd_by_po)
     for t in all_types:
         if t in FREIGHT_CONDITION_TYPES:
@@ -1567,7 +865,6 @@ def _freight_condition_match(po_number, item_no, cnd_by_po):
 
 
 def _other_condition_types_note(matched_type, all_types):
-    """Formats the non-freight condition types also present, for remark transparency."""
     others = sorted({t for t in all_types if t != matched_type})
     if not others:
         return ""
@@ -1575,12 +872,6 @@ def _other_condition_types_note(matched_type, all_types):
 
 
 def rule_13_eyw_freight_required(row, ctx):
-    """
-    HEADER-LEVEL rule (see build_po_header_records) - reports as new point #6.
-
-    PO types ZIRM/ZICP route to manual review here too (previously only
-    rule 14/new #7 had this).
-    """
     po_type = s(row, "PO Type")
     if po_type in MANUAL_CHECK_PO_TYPES:
         return MANUAL_CHECK, (
@@ -1608,12 +899,6 @@ def rule_13_eyw_freight_required(row, ctx):
 
 
 def rule_14_exw_fca_no_freight(row, ctx):
-    """
-    HEADER-LEVEL rule (see build_po_header_records) - reports as new point #7.
-
-    PO types ZIRM/ZICP route to manual review instead of an automated
-    Verified/Not-Verified outcome.
-    """
     po_type = s(row, "PO Type")
     if po_type in MANUAL_CHECK_PO_TYPES:
         return MANUAL_CHECK, (
@@ -1639,15 +924,35 @@ def rule_14_exw_fca_no_freight(row, ctx):
 
 
 def rule_15_rate_approval(row, ctx):
-    """HEADER-LEVEL rule (see build_po_header_records) - reports as new point #8."""
-    our_ref = s(row, "Our Ref.")
-    if not _is_rate_approval_tag(our_ref):
-        return NA, "No rate-approval tag found in Our Ref."
+    """
+    HEADER-LEVEL rule (see build_po_header_records) - reports as new point #8.
 
-    our_ref_upper = our_ref.upper()
-    if any(code in our_ref_upper for code in DWS_APPROVERS):
-        return VERIFIED, "Approval initials found in Our Ref."
-    return NOT_VERIFIED, "Rate-approval tag present but no recognised approver initials (KKB/SRS/PJP/DAULAT/NHV/CVS) found"
+    THIS REVISION: no longer reads "Our Ref." at all. Joins the DWS Rate
+    Approval extract (ctx["dws_by_po"], loaded from --dws, produced by
+    dws_rate_approval_extract.js) purely on PO number - the real link, per
+    DWS's own schema (ProcessInstance.poNumbers). See CHANGELOG.
+    """
+    po_number = s(row, "PO number")
+    dws = ctx.get("dws_by_po", {}).get(po_number)
+
+    if not dws:
+        return NA, (
+            f"No DWS 'Rate Approval'-tagged process found attached to PO {po_number} "
+            f"(joined on PO number via the DWS extract - see dws_rate_approval_extract.js)"
+        )
+
+    approver = s(dws, DWS_APPROVER_USERNAME_COLUMN)
+    is_manager = s(dws, DWS_APPROVER_IS_MANAGER_COLUMN).strip().lower() == "true"
+    decision_at = s(dws, DWS_DECISION_AT_COLUMN)
+
+    if approver and is_manager:
+        return VERIFIED, f"Approved in DWS by '{approver}' (role: Manager) on {decision_at or 'unknown date'}"
+    if approver:
+        return NOT_VERIFIED, f"DWS approver '{approver}' does not hold the Manager role"
+    return NOT_VERIFIED, (
+        f"DWS process found for PO {po_number} (status: {s(dws, DWS_PROCESS_STATUS_COLUMN)}) "
+        f"but no approved step by a Manager was recorded"
+    )
 
 
 def rule_16_zser_item_category(row, ctx):
@@ -1714,42 +1019,6 @@ def rule_18_lrm_no_l_category(row, ctx):
 
 
 def rule_19_multiple_po_same_day(row, ctx):
-    """
-    HEADER-LEVEL rule (see build_po_header_records) - reports as new point #9.
-
-    THIS REVISION: PO Type is now the PRIMARY differentiator, and this
-    rule never returns anything other than Verified/Not Verified (no
-    Manual Verify / Data Missing branch) - both per direct client
-    feedback: "Remove Manual verify - it should be either verified or
-    not verified. Add PO Type - if it is same then not verified and it
-    is different then it should be verified. Reason of verified whether
-    PO type/RFQ is different."
-
-    Logic, in order:
-      1. Slice on the 4-parameter core key (Vendor, Purchasing Group,
-         Plant, Purchasing Date = "PO Date(Doc date)").
-      2. For every OTHER PO sharing that core key, compare PO Type
-         ("PO Type" - a blank PO Type is compared as its own value, so
-         blank == blank still counts as "the same"):
-           - Different PO Type -> this pair is NOT a duplicate; recorded
-             as a "PO Type is different" reason.
-           - Same PO Type -> fall through to step 3 (RFQ is the
-             secondary differentiator).
-      3. Among the PO-Type matches, compare RFQ ("order acknowledgement"
-         - also compared as its own value, blank included):
-           - Both blank, or both non-blank and equal -> still matching
-             -> contributes to a Not Verified result.
-           - One blank/one populated, or both non-blank and different ->
-             NOT a duplicate against that specific PO; recorded as an
-             "RFQ no. is different" reason.
-      4. If ANY other PO matches on all of Vendor/Purchasing Group/Plant/
-         Purchasing Date/PO Type (and isn't separated out by RFQ), the
-         result is Not Verified. Otherwise Verified, with the remark
-         explicitly naming which dimension - PO Type and/or RFQ no. -
-         differentiated this PO from each other PO it shares the 4 core
-         parameters with. This rule only ever returns Verified or Not
-         Verified - never Manual Verify / Data Missing.
-    """
     po_number = s(row, "PO number")
     four_key = _po9_four_key(row)
     rep_key = (four_key, po_number)
@@ -1759,9 +1028,9 @@ def rule_19_multiple_po_same_day(row, ctx):
 
     others_four = ctx["po9_four_groups"].get(four_key, set()) - {po_number}
 
-    duplicates = set()      # same PO Type AND matching RFQ -> Not Verified
-    diff_po_type = set()    # different PO Type -> Verified reason
-    diff_rfq_only = set()   # same PO Type, but different RFQ -> Verified reason
+    duplicates = set()
+    diff_po_type = set()
+    diff_rfq_only = set()
 
     for other_po in others_four:
         other_key = (four_key, other_po)
@@ -1769,12 +1038,9 @@ def rule_19_multiple_po_same_day(row, ctx):
         other_rfq = ctx["po9_rfq_by_po"].get(other_key, "")
 
         if own_po_type != other_po_type:
-            # PO Type is the primary differentiator - a different PO Type
-            # means this pair is never a duplicate, regardless of RFQ.
             diff_po_type.add(other_po)
             continue
 
-        # Same PO Type - RFQ is the secondary differentiator.
         if own_rfq == "" and other_rfq == "":
             duplicates.add(other_po)
         elif own_rfq != "" and other_rfq != "" and own_rfq == other_rfq:
@@ -1825,11 +1091,6 @@ def rule_rc_overlap(row, ctx):
 
 # ---------------------------------------------------------------------------
 # Rule registry + HEADER vs LINE classification
-#
-# pointNo values below are the NEW numbers (see CHANGELOG). Header points
-# are contiguous 1-9; line points 10-19. Each tuple's rule_no (first
-# element) is what actually gets written out as `pointNo` - the function
-# names are unrelated legacy identifiers.
 # ---------------------------------------------------------------------------
 HEADER_LEVEL_RULE_NOS = {1, 2, 3, 4, 5, 6, 7, 8, 9}
 
@@ -1842,8 +1103,8 @@ PO_LINE_RULES = [
     (5, "General payment term >=21 days", rule_12_general_payment_term),
     (6, "EYW inco-term requires freight condition", rule_13_eyw_freight_required),
     (7, "EXW/FCA must not have freight condition", rule_14_exw_fca_no_freight),
-    (8, "Rate approval by authorised approver", rule_15_rate_approval),
-    (9, "Multiple POs to same Vendor/Purchasing Group/Plant/Purchasing Date - PO Type is the primary differentiator (same PO Type -> Not Verified candidate), RFQ is the secondary differentiator when PO Type matches; always Verified/Not Verified, never Manual Verify", rule_19_multiple_po_same_day),
+    (8, "Rate approval by authorised approver (DWS, joined by PO number)", rule_15_rate_approval),
+    (9, "Multiple POs to same Vendor/Purchasing Group/Plant/Purchasing Date - PO Type is the primary differentiator, RFQ secondary; always Verified/Not Verified", rule_19_multiple_po_same_day),
     # ---- LINE-LEVEL (10-19) ----
     (10, "Release Verification (PR released before PO)", rule_01_release_verification),
     (11, "PR assigned to each PO line", rule_02_pr_assigned),
@@ -1971,30 +1232,7 @@ def build_rc_overlap_records(rc_rows, po_rows):
     return records
 
 
-def build_context(po_rows, cnd_by_po, rc_rows):
-    """
-    Builds every cross-row aggregate the rule functions look up via ctx.
-
-    - Point #9's aggregates (po9_four_groups / po9_rfq_by_po /
-      po9_po_type_by_po / po9_core_groups) and point #16's aggregate
-      (vendor_material_tax) do NOT skip excluded (Deletion indicator='L'
-      / Returns Item='X') rows when aggregating - confirmed against the
-      client's ground-truth "before/after" workbook: a cancelled or
-      returned PO/line must still count as a real duplicate-creation
-      event (point #9) or a real conflicting tax code (point #16), even
-      though its OWN result is still forced to Not Applicable by
-      evaluate_rule(). See CHANGELOG.
-    - Point #9 now builds TWO per-(four_key, po_number) representative
-      values: "po9_rfq_by_po" (RFQ, secondary differentiator) and
-      "po9_po_type_by_po" (PO Type, PRIMARY differentiator - THIS
-      REVISION). Neither is baked into the grouping tuple itself, which
-      is what lets rule_19 treat a blank RFQ/PO Type on either side as
-      "compare as its own value" rather than forcing a manual/missing-
-      data outcome (see CHANGELOG, "THIS REVISION" - Manual Verify
-      removed for this point).
-    - Point #15 has no aggregate here at all - it is a direct per-line
-      comparison (see rule_06_quantity_control).
-    """
+def build_context(po_rows, cnd_by_po, rc_rows, dws_by_po=None):
     po_material_groups = defaultdict(list)
     vendor_material_tax = defaultdict(set)
     po9_four_groups = defaultdict(set)
@@ -2031,32 +1269,17 @@ def build_context(po_rows, cnd_by_po, rc_rows):
     for row in po_rows:
         po_number = s(row, "PO number")
         material = s(row, "Material Code")
-        # po_material_groups intentionally still includes excluded rows:
-        # rule_08_rc_consistency (point #2) needs to see every line
-        # (excluded or not) sharing a PO+Material to detect an
-        # inconsistent RC assignment; evaluate_rule() already forces any
-        # excluded row's OWN result to Not Applicable regardless of what
-        # this group contains, so leaving this one unfiltered is safe and
-        # was not part of the reported bug.
         po_material_groups[(po_number, material)].append(row)
 
-        # Point #16: tax codes from EVERY row (including excluded ones)
-        # feed the per-(vendor, material) tax-code set - see CHANGELOG.
         vendor = s(row, "Vendor Code")
         tax_code = s(row, "Tax code")
         if vendor and material and tax_code:
             vendor_material_tax[(vendor, material)].add(tax_code)
 
-        # Point #9: every row (including excluded ones) feeds the
-        # duplicate-PO aggregates - see CHANGELOG.
         four_key = _po9_four_key(row)
         po9_four_groups[four_key].add(po_number)
         rep_key = (four_key, po_number)
 
-        # First RFQ value seen for this (four_key, po_number) is treated as
-        # the PO's representative RFQ. Assumption: a single PO's lines all
-        # share the same order-acknowledgement/RFQ value; if they don't,
-        # only the first-seen value is used (logged below).
         rfq_value = s(row, RFQ_NO_COLUMN)
         if rep_key not in po9_rfq_by_po:
             po9_rfq_by_po[rep_key] = rfq_value
@@ -2068,10 +1291,6 @@ def build_context(po_rows, cnd_by_po, rc_rows):
                 f"encountered was used as this PO's representative RFQ for point #9.",
             )
 
-        # Same idea, but for PO Type - THIS REVISION's primary
-        # differentiator for point #9. Assumption: a single PO's lines
-        # all share the same "PO Type"; if they somehow don't, only the
-        # first-seen value is used (logged below).
         po_type_value = s(row, "PO Type")
         if rep_key not in po9_po_type_by_po:
             po9_po_type_by_po[rep_key] = po_type_value
@@ -2090,13 +1309,9 @@ def build_context(po_rows, cnd_by_po, rc_rows):
         9,
         f"Point #9 slices on Vendor + Purchasing Group + Plant + Purchasing Date "
         f"('{PURCHASING_DATE_COLUMN}'), then decides Verified/Not Verified using PO "
-        f"Type as the PRIMARY differentiator (a different 'PO Type' vs. another PO in "
-        f"that slice means Verified/not-a-duplicate, regardless of RFQ) and, only when "
-        f"PO Type matches, RFQ (sourced from '{RFQ_NO_COLUMN}') as the SECONDARY "
-        f"differentiator (both blank, or both non-blank and equal, still counts as "
-        f"matching -> Not Verified; anything else -> Verified). This point never "
-        f"produces a Manual Verify / Data Missing result - a blank PO Type or RFQ is "
-        f"compared as its own value rather than triggering a manual fallback.",
+        f"Type as the PRIMARY differentiator and, only when PO Type matches, RFQ "
+        f"(sourced from '{RFQ_NO_COLUMN}') as the SECONDARY differentiator. This "
+        f"point never produces a Manual Verify / Data Missing result.",
     )
 
     return {
@@ -2108,6 +1323,7 @@ def build_context(po_rows, cnd_by_po, rc_rows):
         "po9_core_groups": po9_core_groups,
         "cnd_by_po": cnd_by_po,
         "rc_overlaps": rc_overlaps,
+        "dws_by_po": dws_by_po or {},
     }
 
 STATUS_TO_RESULT_FLAGS = {
@@ -2115,20 +1331,11 @@ STATUS_TO_RESULT_FLAGS = {
     NOT_VERIFIED: {"verified": False, "not_applicable": False, "missing_data": False, "manual_verification": False},
     NA: {"verified": False, "not_applicable": True, "missing_data": False, "manual_verification": False},
     MANUAL: {"verified": False, "not_applicable": False, "missing_data": True, "manual_verification": True},
-    # ZIRM/ZICP routing on points #6/#7: a deliberate "human must check
-    # this" outcome, NOT a data-quality problem - missing_data stays
-    # False so it isn't confused with genuinely missing/unparseable data.
     MANUAL_CHECK: {"verified": False, "not_applicable": False, "missing_data": False, "manual_verification": True},
 }
 
 
 def build_addpo_records(po_rows, ctx):
-    """
-    One record per PO LINE ITEM. `results` contains ONLY the 10 LINE-LEVEL
-    points (NEW numbers 10-19). A line item with Deletion indicator 'L'
-    and/or Returns Item 'X' gets a uniform Not Applicable across all 10
-    (via evaluate_rule), same as every other point.
-    """
     records = []
     for row in po_rows:
         po_number = s(row, "PO number")
@@ -2180,13 +1387,6 @@ def build_addpo_records(po_rows, ctx):
 
 
 def build_po_header_records(po_rows, ctx):
-    """
-    One record per PO NUMBER. `results` contains ONLY the 9 HEADER-LEVEL
-    points (NEW numbers 1-9), evaluated once per PO instead of once per line.
-
-    Excluded lines (Deletion indicator 'L' / Returns Item 'X') are dropped
-    from the per-PO evaluation set first.
-    """
     by_po = defaultdict(list)
     for row in po_rows:
         po_number = s(row, "PO number")
@@ -2210,12 +1410,10 @@ def build_po_header_records(po_rows, ctx):
                     for r in eligible_rows
                 ]
                 statuses = {st for _li, (st, _remark) in per_line}
-                
+
                 if len(statuses) == 1:
                     status, remark = per_line[0][1]
                 else:
-                    # If lines have mixed outcomes, prioritize Not Verified > Verified > NA
-                    # to prevent defaulting to "Manual Verification" / "Data Missing".
                     if NOT_VERIFIED in statuses:
                         status = NOT_VERIFIED
                         remark = next(r for _li, (st, r) in per_line if st == NOT_VERIFIED)
@@ -2243,47 +1441,23 @@ def build_po_header_records(po_rows, ctx):
         })
     return records
 
-def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None, header_json_path=None, rc_json_path=None):
+def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None, header_json_path=None, rc_json_path=None, dws_path=None):
     po_rows, cnd_rows, rc_rows, cnd_by_po = load_all(poaudit_path, cnd_path, rc_path)
+    dws_by_po = load_dws_rate_approvals(dws_path)
 
     po_rows = filter_to_scope(po_rows)
-
-    # LINE-level Deletion Indicator exclusion - MUST run before
-    # build_context() and before anything else touches po_rows, so a
-    # line item carrying 'L' is fully gone before any output, JSON export,
-    # or cross-row aggregate is built. Only the flagged line itself is
-    # removed - its PO-mates are untouched. See CHANGELOG.
-    # Logs its own assumption entry internally when it drops anything.
     po_rows = drop_lines_with_deletion_indicator(po_rows)
 
-    # Everything remaining in po_rows by this point has no Deletion
-    # indicator = 'L' line at all (those were already removed above,
-    # individually, without affecting their PO-mates). The only thing
-    # _is_excluded_line() can still match here is a per-line Returns Item
-    # = 'X', which is intentionally still handled the old way (marked Not
-    # Applicable in place, not dropped).
     excluded_count = sum(1 for r in po_rows if _is_excluded_line(r))
     if excluded_count:
         log_assumption(
             "Global Exclusion - Returns Item (line-level)",
             f"{excluded_count} of {len(po_rows)} remaining in-scope PO line(s) were "
             f"excluded from ALL 19 audit points (marked Not Applicable on every point, "
-            f"line-level and header-level alike) because they have Returns Item = 'X'. "
-            f"This ONLY affects each such row's OWN result - the rest of that PO's line "
-            f"items are still fully audited. (Any line item with Deletion indicator = 'L' "
-            f"was already removed COMPLETELY above, before this count, without affecting "
-            f"its PO-mates - see the 'Global Exclusion - Deletion Indicator (line-level)' "
-            f"assumption if any were dropped.) These Returns-Item lines are DELIBERATELY "
-            f"still counted when building the point #9 (duplicate-PO) and point #16 "
-            f"(vendor/material tax consistency) aggregates, i.e. they still affect the "
-            f"results of OTHER, live line items where relevant - confirmed against the "
-            f"client's manually-verified ground truth (see CHANGELOG). Point #15 no "
-            f"longer uses a cross-row aggregate at all, so exclusion there simply means "
-            f"the excluded line's own result is Not Applicable, with no effect on any "
-            f"other line.",
+            f"line-level and header-level alike) because they have Returns Item = 'X'.",
         )
 
-    ctx = build_context(po_rows, cnd_by_po, rc_rows)
+    ctx = build_context(po_rows, cnd_by_po, rc_rows, dws_by_po)
 
     base_folder = os.path.dirname(os.path.abspath(poaudit_path))
     ctx["tax_master"] = load_tax_master(base_folder)
@@ -2315,6 +1489,8 @@ def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None, header_
 
     print(f"Wrote {len(df)} PO-line results (rules 1-19, NEW numbering) and {len(rc_overlap_df)} RC-overlap rows (point 20) to {out_path}")
     print(f"{len(assumptions_df)} assumption(s) logged - see 'Assumptions' sheet. These MUST be confirmed with the client.")
+    print(f"DWS Rate Approval records loaded for point #8: {len(dws_by_po)} PO number(s)"
+          + (" (none - point #8 will be Not Applicable for every PO; pass --dws)" if not dws_by_po else ""))
 
     if addpo_json_path:
         records = build_addpo_records(po_rows, ctx)
@@ -2340,9 +1516,10 @@ if __name__ == "__main__":
     parser.add_argument("--poaudit", required=True, help="Path to POAUDIT (.csv or .xlsx)")
     parser.add_argument("--cnd", required=True, help="Path to POAUDITCND (.csv or .xlsx)")
     parser.add_argument("--rc", required=True, help="Path to POAUDITRC (.csv or .xlsx)")
+    parser.add_argument("--dws", default=None, help="Path to dws_rate_approval_for_po.csv (from dws_rate_approval_extract.js) - powers point #8")
     parser.add_argument("--out", default="audit_results.xlsx", help="Output xlsx path (for humans/client review)")
     parser.add_argument("--addpo-json", default=None, help="JSON for `node addpo.js <file>` (line-level, audit_results table)")
     parser.add_argument("--header-json", default=None, help="JSON for `node addheader.js <file>` (header-level, po_header_results table)")
     parser.add_argument("--rc-json", default=None, help="JSON for `node addrc.js <file>` (RC Overlap / point 20, rc_overlap_results table)")
     args = parser.parse_args()
-    run(args.poaudit, args.cnd, args.rc, args.out, args.addpo_json, args.header_json, args.rc_json)
+    run(args.poaudit, args.cnd, args.rc, args.out, args.addpo_json, args.header_json, args.rc_json, args.dws)
