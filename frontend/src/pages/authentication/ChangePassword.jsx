@@ -7,15 +7,12 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-
 import { toast } from "react-toastify";
 import { useNavigate } from "react-router-dom";
-
 import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import VisibilityOffOutlinedIcon from "@mui/icons-material/VisibilityOffOutlined";
 
 import MainCard from "components/MainCard";
-
 import { post } from "utils/axiosApi";
 import { logout } from "../../api/api-functions";
 
@@ -27,52 +24,69 @@ const ChangePassword = () => {
     newPassword: "",
     confirmPassword: "",
   });
+  const [showPassword, setShowPassword] = useState("");
 
   const username = localStorage.getItem("username");
 
-  const [showPassword, setShowPassword] = useState("");
-
   const handleChange = (e) => {
+    const { name, value } = e.target;
     setInputs((prevState) => ({
       ...prevState,
-      [e.target.name]: e.target.value,
+      [name]: value,
     }));
+  };
+
+  const togglePasswordVisibility = (field) => {
+    setShowPassword((prev) => (prev === field ? "" : field));
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    const currentPassword = inputs.currentPassword.trim();
+    const newPassword = inputs.newPassword.trim();
+    const confirmPassword = inputs.confirmPassword.trim();
 
-    if (
-      !inputs.currentPassword.trim() ||
-      !inputs.newPassword.trim() ||
-      !inputs.confirmPassword.trim()
-    ) {
+    if (!username) {
+      toast.error("Username not found. Please log in again.");
+      return;
+    }
+
+    if (!currentPassword || !newPassword || !confirmPassword) {
       toast.error(
         "Current Password, New Password and Confirm Password are required"
       );
       return;
     }
 
-    if (inputs.newPassword !== inputs.confirmPassword) {
-      toast.error("New Password and Confirm Password does not match");
+    if (newPassword !== confirmPassword) {
+      toast.error("New Password and Confirm Password do not match");
       return;
     }
 
-    if (inputs.newPassword === inputs.currentPassword) {
-      toast.error("New Password and Current Password cannot be same");
+    if (newPassword === currentPassword) {
+      toast.error("New Password and Current Password cannot be the same");
       return;
     }
 
     setLoading(true);
+    
     try {
-      const response = await post("/changePassword", { ...inputs, username });
-      toast.success(response.message || "Password changed successfully");
+      const response = await post("/changePassword", {
+        username,
+        currentPassword,
+        newPassword,
+        confirmPassword,
+      });
+      
+      toast.success(response?.message || "Password changed successfully");
+      
+      // Password has changed, so log the user out.
       await logout(navigate);
     } catch (error) {
       toast.error(
         error?.response?.data?.message ||
-          error?.message ||
-          "Something went wrong"
+        error?.message ||
+        "Unable to change password"
       );
     } finally {
       setLoading(false);
@@ -91,10 +105,10 @@ const ChangePassword = () => {
       <MainCard>
         <Typography variant="h4">Change Password</Typography>
         <Typography sx={{ mb: "20px" }}>
-          Please enter your current password and new password.
+          Enter your current password and choose a new password.
         </Typography>
 
-        <form>
+        <form onSubmit={handleSubmit}>
           <InputLabel>Current Password :</InputLabel>
           <TextField
             type={showPassword === "currentPassword" ? "text" : "password"}
@@ -102,15 +116,15 @@ const ChangePassword = () => {
             fullWidth
             value={inputs.currentPassword}
             onChange={handleChange}
+            disabled={loading}
+            autoComplete="current-password"
             sx={{ mb: "10px" }}
             InputProps={{
               endAdornment: (
                 <IconButton
-                  onClick={() =>
-                    setShowPassword((pre) =>
-                      pre === "currentPassword" ? "" : "currentPassword"
-                    )
-                  }
+                  type="button"
+                  onClick={() => togglePasswordVisibility("currentPassword")}
+                  disabled={loading}
                 >
                   {showPassword === "currentPassword" ? (
                     <VisibilityOffOutlinedIcon />
@@ -121,6 +135,7 @@ const ChangePassword = () => {
               ),
             }}
           />
+
           <InputLabel>New Password :</InputLabel>
           <TextField
             type={showPassword === "newPassword" ? "text" : "password"}
@@ -128,15 +143,15 @@ const ChangePassword = () => {
             fullWidth
             value={inputs.newPassword}
             onChange={handleChange}
+            disabled={loading}
+            autoComplete="new-password"
             sx={{ mb: "10px" }}
             InputProps={{
               endAdornment: (
                 <IconButton
-                  onClick={() =>
-                    setShowPassword((prev) =>
-                      prev === "newPassword" ? "" : "newPassword"
-                    )
-                  }
+                  type="button"
+                  onClick={() => togglePasswordVisibility("newPassword")}
+                  disabled={loading}
                 >
                   {showPassword === "newPassword" ? (
                     <VisibilityOffOutlinedIcon />
@@ -147,6 +162,7 @@ const ChangePassword = () => {
               ),
             }}
           />
+
           <InputLabel>Confirm New Password :</InputLabel>
           <TextField
             type={showPassword === "confirmPassword" ? "text" : "password"}
@@ -154,15 +170,15 @@ const ChangePassword = () => {
             fullWidth
             value={inputs.confirmPassword}
             onChange={handleChange}
+            disabled={loading}
+            autoComplete="new-password"
             sx={{ mb: "10px" }}
             InputProps={{
               endAdornment: (
                 <IconButton
-                  onClick={() =>
-                    setShowPassword((prev) =>
-                      prev === "confirmPassword" ? "" : "confirmPassword"
-                    )
-                  }
+                  type="button"
+                  onClick={() => togglePasswordVisibility("confirmPassword")}
+                  disabled={loading}
                 >
                   {showPassword === "confirmPassword" ? (
                     <VisibilityOffOutlinedIcon />
@@ -173,15 +189,16 @@ const ChangePassword = () => {
               ),
             }}
           />
+
           <Button
             variant="contained"
             color="primary"
             fullWidth
             sx={{ mt: "10px" }}
             disabled={loading}
-            onClick={handleSubmit}
+            type="submit"
           >
-            {loading ? "Loading..." : "Change Password"}
+            {loading ? "Changing Password..." : "Change Password"}
           </Button>
         </form>
       </MainCard>

@@ -4,21 +4,35 @@ import nodemailer from "nodemailer";
 import { prisma } from "../lib/prisma.js";
 
 /**
- * Minimal auth controller, built to satisfy the exact response contract
- * pages/authentication/auth-forms/AuthLogin.jsx expects.
+ * ============================================================
+ * SMTP CONFIGURATION
+ * ============================================================
+ *
+ * Uses the same SMTP server configuration as the current
+ * project. No SMTP authentication block is required.
  */
-
-// Configure Nodemailer transporter — matches the working config used in
-// emailService.js against the same SMTP server (no auth block, generous
-// timeouts for corporate SMTP).
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
   port: parseInt(process.env.SMTP_PORT || "25"),
-  secure: false, // true for 465, false for other ports
-  connectionTimeout: 10000, // 10 seconds
-  socketTimeout: 15000, // 15 seconds
+  secure: false,
+  connectionTimeout: 10000,
+  socketTimeout: 15000,
 });
 
+/**
+ * ============================================================
+ * EDIT USER
+ * ============================================================
+ *
+ * IMPORTANT:
+ * Password is intentionally NOT handled here.
+ *
+ * User password can only be changed through:
+ *   - changePassword
+ *   - forgotPassword
+ *
+ * Even if frontend sends a "password" field, it is ignored.
+ */
 export const editUser = async (req, res) => {
   try {
     const {
@@ -26,141 +40,375 @@ export const editUser = async (req, res) => {
       _id,
       username,
       email,
-      password,
       firstName,
       lastName,
       roleName,
       canViewDashboard,
+      allowedAuditors,
+      allowedModules,
     } = req.body;
 
-    // Fallback to support both Prisma 'id' and legacy MongoDB '_id'
-    const userId = id || _id;
+    // Support both:
+    //   req.params.id
+    // and
+    //   req.body.id / req.body._id
+    const userId = req.params?.id || id || _id;
 
     if (!userId) {
-      return res.status(400).json({ message: "User ID is required" });
+      return res.status(400).json({
+        message: "User ID is required",
+      });
     }
 
-    // Resolve the role ID from the provided role name
-    let role = null;
-    if (roleName) {
-      role = await prisma.role.findFirst({ where: { name: roleName } });
+    // --------------------------------------------------------
+    // Check user exists
+    // --------------------------------------------------------
+
+    const existingUser = await prisma.user.findUnique({
+      where: {
+        id: userId,
+      },
+    });
+
+    if (!existingUser) {
+      return res.status(404).json({
+        message: "User not found",
+      });
     }
 
-    // Build the update payload
-    const updateData = {
-      username: username?.trim(),
-      email: email?.trim(),
-      firstName: firstName?.trim(),
-      lastName: lastName?.trim(),
-      roleId: role?.id || null,
-    };
+    const updateData = {};
 
-    // Only set canViewDashboard if it was explicitly passed, otherwise let it remain unchanged
+    // --------------------------------------------------------
+    // Username
+    // --------------------------------------------------------
+
+    if (username !== undefined) {
+      const trimmedUsername =
+        typeof username === "string" ? username.trim() : "";
+
+      if (!trimmedUsername) {
+        return res.status(400).json({
+          message: "Username cannot be empty",
+        });
+      }
+
+      const usernameExists = await prisma.user.findFirst({
+        where: {
+          username: trimmedUsername,
+          NOT: {
+            id: userId,
+          },
+        },
+      });
+
+      if (usernameExists) {
+        return res.status(400).json({
+          message: "Username already exists",
+        });
+      }
+
+      updateData.username = trimmedUsername;
+    }
+
+    // --------------------------------------------------------
+    // Email
+    // --------------------------------------------------------
+
+    if (email !== undefined) {
+      const trimmedEmail = typeof email === "string" ? email.trim() : "";
+
+      if (!trimmedEmail) {
+        return res.status(400).json({
+          message: "Email cannot be empty",
+        });
+      }
+
+      updateData.email = trimmedEmail;
+    }
+
+    // --------------------------------------------------------
+    // First name
+    // --------------------------------------------------------
+
+    if (firstName !== undefined) {
+      updateData.firstName =
+        typeof firstName === "string" ? firstName.trim() : "";
+    }
+
+    // --------------------------------------------------------
+    // Last name
+    // --------------------------------------------------------
+
+    if (lastName !== undefined) {
+      updateData.lastName = typeof lastName === "string" ? lastName.trim() : "";
+    }
+
+    // --------------------------------------------------------
+    // Role
+    // --------------------------------------------------------
+
+    if (roleName !== undefined) {
+      if (roleName === null || roleName === "") {
+        updateData.roleId = null;
+      } else {
+        const role = await prisma.role.findUnique({
+          where: {
+            name: roleName,
+          },
+        });
+
+        if (!role) {
+          return res.status(400).json({
+            message: `Role '${roleName}' not found`,
+          });
+        }
+
+        updateData.roleId = role.id;
+      }
+    }
+
+    // --------------------------------------------------------
+    // Dashboard access
+    // --------------------------------------------------------
+
     if (canViewDashboard !== undefined) {
       updateData.canViewDashboard = canViewDashboard;
     }
 
-    // Only update and hash the password if the user actually typed a new one
-    if (password && password.trim() !== "") {
-      updateData.password = await bcrypt.hash(password.trim(), 10);
+    // --------------------------------------------------------
+    // Allowed auditors
+    // --------------------------------------------------------
+
+    if (allowedAuditors !== undefined) {
+      updateData.allowedAuditors = Array.isArray(allowedAuditors)
+        ? allowedAuditors
+        : [];
     }
 
+    // --------------------------------------------------------
+    // Allowed modules
+    // --------------------------------------------------------
+
+    if (allowedModules !== undefined) {
+      updateData.allowedModules = Array.isArray(allowedModules)
+        ? allowedModules
+        : [];
+    }
+
+    // --------------------------------------------------------
+    // IMPORTANT:
+    //
+    // DO NOT UPDATE PASSWORD HERE.
+    //
+    // There is intentionally NO:
+    //
+    // updateData.password = ...
+    //
+    // Password is handled only by:
+    //   changePassword()
+    //   forgotPassword()
+    // --------------------------------------------------------
+
     const updatedUser = await prisma.user.update({
-      where: { id: userId },
+      where: {
+        id: userId,
+      },
       data: updateData,
+      include: {
+        role: true,
+      },
     });
 
     return res.status(200).json({
       message: "User updated successfully",
-      userId: updatedUser.id,
+      user: {
+        id: updatedUser.id,
+        username: updatedUser.username,
+        email: updatedUser.email,
+        firstName: updatedUser.firstName,
+        lastName: updatedUser.lastName,
+        roleId: updatedUser.roleId,
+        roleName: updatedUser.role?.name || null,
+        canViewDashboard: updatedUser.canViewDashboard,
+        allowedAuditors: updatedUser.allowedAuditors,
+        allowedModules: updatedUser.allowedModules,
+      },
     });
   } catch (error) {
     console.error("Error in editUser:", error);
-    return res.status(500).json({ message: "Failed to update user" });
+
+    if (error?.code === "P2002") {
+      return res.status(400).json({
+        message: "Username already exists",
+      });
+    }
+
+    return res.status(500).json({
+      message: "Failed to update user",
+    });
   }
 };
 
+/**
+ * ============================================================
+ * SIGNUP / CREATE USER
+ * ============================================================
+ *
+ * IMPORTANT:
+ * Admin NEVER provides a password.
+ *
+ * Backend:
+ *   1. Generates random password
+ *   2. Hashes password
+ *   3. Stores hash
+ *   4. Emails plaintext password to user
+ */
 export const signup = async (req, res) => {
   try {
-    const {
-      username,
-      email,
-      password,
-      firstName,
-      lastName,
-      roleName,
-      canViewDashboard,
-    } = req.body;
+    const { username, email, firstName, lastName, roleName, canViewDashboard } =
+      req.body;
 
-    const trimmedUsername = username?.trim();
-    const existing = await prisma.user.findFirst({
-      where: { username: trimmedUsername },
-    });
-    if (existing) {
-      return res.status(400).json({ message: "Username already exists" });
+    const trimmedUsername = typeof username === "string" ? username.trim() : "";
+
+    const trimmedEmail = typeof email === "string" ? email.trim() : "";
+
+    if (!trimmedUsername || !trimmedEmail) {
+      return res.status(400).json({
+        message: "Username and email are required",
+      });
     }
+
+    // --------------------------------------------------------
+    // Check duplicate username
+    // --------------------------------------------------------
+
+    const existingUser = await prisma.user.findFirst({
+      where: {
+        username: trimmedUsername,
+      },
+    });
+
+    if (existingUser) {
+      return res.status(400).json({
+        message: "Username already exists",
+      });
+    }
+
+    // --------------------------------------------------------
+    // Find role
+    // --------------------------------------------------------
 
     let role = null;
+
     if (roleName) {
-      role = await prisma.role.findFirst({ where: { name: roleName } });
+      role = await prisma.role.findFirst({
+        where: {
+          name: roleName,
+        },
+      });
+
+      if (!role) {
+        return res.status(400).json({
+          message: `Role '${roleName}' not found`,
+        });
+      }
     }
 
-    let plainPassword = password?.trim();
-    let isAutoGenerated = false;
+    // ========================================================
+    // ALWAYS GENERATE PASSWORD
+    // ========================================================
 
-    // If no password is provided in the payload, fallback to generating one
-    if (!plainPassword) {
-      plainPassword = Math.floor(
-        10000000 + Math.random() * 90000000,
-      ).toString();
-      isAutoGenerated = true;
-    }
+    const generatedPassword = crypto.randomBytes(9).toString("base64url");
 
-    const hashedPassword = await bcrypt.hash(plainPassword, 10);
+    const hashedPassword = await bcrypt.hash(generatedPassword, 10);
+
+    // --------------------------------------------------------
+    // Create user
+    // --------------------------------------------------------
 
     const user = await prisma.user.create({
       data: {
         username: trimmedUsername,
-        email: email?.trim(),
+        email: trimmedEmail,
         password: hashedPassword,
-        firstName: firstName?.trim(),
-        lastName: lastName?.trim(),
-        roleId: role?.id,
-        canViewDashboard: canViewDashboard ?? true, // DEFAULTED TO TRUE
+
+        firstName: typeof firstName === "string" ? firstName.trim() : "",
+
+        lastName: typeof lastName === "string" ? lastName.trim() : "",
+
+        roleId: role?.id || null,
+
+        canViewDashboard: canViewDashboard ?? true,
       },
     });
 
-    // Only send email if the password was auto-generated
-    if (isAutoGenerated) {
-      const mailOptions = {
-        from: process.env.SMTP_FROM || '"AIA Audit System" <no-reply@aia.com>',
-        to: email,
-        subject: "Your Account Credentials",
-        text: `Hello ${firstName},\n\nYour account has been created successfully.\n\nHere are your login credentials:\nUsername: ${trimmedUsername}\nPassword: ${plainPassword}\n\nPlease log in and change your password as soon as possible.`,
-      };
+    // ========================================================
+    // SEND GENERATED CREDENTIALS
+    // ========================================================
 
-      try {
-        await transporter.sendMail(mailOptions);
-      } catch (mailError) {
-        console.error("Failed to send welcome email:", mailError);
-      }
+    const mailOptions = {
+      from: process.env.SMTP_FROM || '"AIA Audit System" <no-reply@aia.com>',
+
+      to: user.email,
+
+      subject: "Your AIA Audit account credentials",
+
+      text: `Hello ${user.firstName},
+
+Your AIA Audit account has been created successfully.
+
+Your login credentials are:
+
+Username: ${user.username}
+Password: ${generatedPassword}
+
+Please log in using these credentials and change your password after logging in.
+
+Regards,
+AIA Audit System`,
+    };
+
+    try {
+      await transporter.sendMail(mailOptions);
+
+      console.log(`User credentials email sent successfully to ${user.email}`);
+    } catch (mailError) {
+      console.error("Failed to send user credentials email:", mailError);
+
+      // User remains created.
+      // Never return the generated password in API response.
 
       return res.status(201).json({
-        message: "User created and password emailed",
+        message:
+          "User created successfully, but credentials email could not be sent",
         userId: user.id,
       });
     }
 
-    // If password was passed in payload, return standard success message
-    return res
-      .status(201)
-      .json({ message: "User created successfully", userId: user.id });
+    return res.status(201).json({
+      message: "User created successfully and credentials emailed",
+      userId: user.id,
+    });
   } catch (error) {
     console.error("Error in signup:", error);
-    return res.status(500).json({ message: "Failed to create user" });
+
+    if (error?.code === "P2002") {
+      return res.status(400).json({
+        message: "Username already exists",
+      });
+    }
+
+    return res.status(500).json({
+      message: "Failed to create user",
+    });
   }
 };
 
+/**
+ * ============================================================
+ * GET USERS
+ * ============================================================
+ */
 export const get_users = async (req, res) => {
   try {
     const users = await prisma.user.findMany({
@@ -175,25 +423,44 @@ export const get_users = async (req, res) => {
     const formattedUsers = users.map((user) => ({
       id: user.id,
       _id: user.id,
+
       firstName: user.firstName,
       lastName: user.lastName,
+
       email: user.email,
       username: user.username,
+
       canViewDashboard: user.canViewDashboard,
+
       roleId: user.roleId,
       roleName: user.role?.name || null,
+
       isAdmin: user.role?.isAdmin || false,
+
       isBuyer: user.role?.isBuyer || false,
+
       isProcurementManager: user.role?.isProcurementManager || false,
     }));
 
-    return res.status(200).json({ data: formattedUsers });
+    return res.status(200).json({
+      data: formattedUsers,
+    });
   } catch (error) {
     console.error("Error fetching users:", error);
-    return res.status(500).json({ message: "Failed to fetch users" });
+
+    return res.status(500).json({
+      message: "Failed to fetch users",
+    });
   }
 };
 
+/**
+ * ============================================================
+ * CHANGE PASSWORD
+ * ============================================================
+ *
+ * This is the ONLY normal password-change endpoint.
+ */
 export const changePassword = async (req, res) => {
   try {
     const { username, currentPassword, newPassword, confirmPassword } =
@@ -247,12 +514,141 @@ export const changePassword = async (req, res) => {
     });
   } catch (error) {
     console.error("Error changing password:", error);
+
     return res.status(500).json({
       message: "Failed to change password",
     });
   }
 };
 
+/**
+ * ============================================================
+ * FORGOT PASSWORD
+ * ============================================================
+ *
+ * Flow:
+ *
+ *   username + email
+ *          ↓
+ *   verify same user
+ *          ↓
+ *   generate new password
+ *          ↓
+ *   bcrypt hash
+ *          ↓
+ *   update DB
+ *          ↓
+ *   email new password
+ */
+export const forgotPassword = async (req, res) => {
+  try {
+    const { username, email } = req.body;
+
+    const trimmedUsername = typeof username === "string" ? username.trim() : "";
+
+    const trimmedEmail = typeof email === "string" ? email.trim() : "";
+
+    if (!trimmedUsername || !trimmedEmail) {
+      return res.status(400).json({
+        message: "Username and email are required",
+      });
+    }
+
+    // --------------------------------------------------------
+    // Verify username + email belong to same user
+    // --------------------------------------------------------
+
+    const user = await prisma.user.findFirst({
+      where: {
+        username: trimmedUsername,
+        email: trimmedEmail,
+      },
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        message: "Username and email do not match",
+      });
+    }
+
+    // ========================================================
+    // ALWAYS GENERATE NEW PASSWORD
+    // ========================================================
+
+    const newPlainPassword = crypto.randomBytes(9).toString("base64url");
+
+    const hashedPassword = await bcrypt.hash(newPlainPassword, 10);
+
+    // --------------------------------------------------------
+    // Update password
+    // --------------------------------------------------------
+
+    await prisma.user.update({
+      where: {
+        id: user.id,
+      },
+      data: {
+        password: hashedPassword,
+      },
+    });
+
+    // ========================================================
+    // SEND NEW CREDENTIALS
+    // ========================================================
+
+    const mailOptions = {
+      from: process.env.SMTP_FROM || '"AIA Audit System" <no-reply@aia.com>',
+
+      to: user.email,
+
+      subject: "Your AIA Audit password has been reset",
+
+      text: `Hello ${user.firstName},
+
+Your AIA Audit password has been reset successfully.
+
+Your new login credentials are:
+
+Username: ${user.username}
+Password: ${newPlainPassword}
+
+Please log in using these credentials and change your password after logging in.
+
+Regards,
+AIA Audit System`,
+    };
+
+    try {
+      await transporter.sendMail(mailOptions);
+
+      console.log(`Password reset email sent successfully to ${user.email}`);
+    } catch (mailError) {
+      console.error("Failed to send password reset email:", mailError);
+
+      return res.status(500).json({
+        message:
+          "Password was reset, but the credentials email could not be sent. Please contact the administrator.",
+      });
+    }
+
+    return res.status(200).json({
+      message:
+        "Password reset successfully. New credentials have been sent to your email.",
+    });
+  } catch (error) {
+    console.error("Error in forgotPassword:", error);
+
+    return res.status(500).json({
+      message: "Failed to reset password",
+    });
+  }
+};
+
+/**
+ * ============================================================
+ * GET ROLES
+ * ============================================================
+ */
 export const getRoles = async (req, res) => {
   try {
     const roles = await prisma.role.findMany({
@@ -264,33 +660,46 @@ export const getRoles = async (req, res) => {
     return res.status(200).json(roles);
   } catch (error) {
     console.error("Error fetching roles:", error);
-    return res.status(500).json({ message: "Failed to fetch roles" });
+
+    return res.status(500).json({
+      message: "Failed to fetch roles",
+    });
   }
 };
 
+/**
+ * ============================================================
+ * LOGIN
+ * ============================================================
+ */
 export const login = async (req, res) => {
   try {
-    // Extract and cleanly trim the inputs to prevent whitespace-related login failures
     const rawUsername = req.body.username;
     const rawPassword = req.body.password;
 
     const username =
       typeof rawUsername === "string" ? rawUsername.trim() : rawUsername;
+
     const password =
       typeof rawPassword === "string" ? rawPassword.trim() : rawPassword;
 
     if (!username || !password) {
-      return res
-        .status(400)
-        .json({ message: "Username and password are required" });
+      return res.status(400).json({
+        message: "Username and password are required",
+      });
     }
 
     const user = await prisma.user.findFirst({
-      where: { username },
-      include: { role: true },
+      where: {
+        username,
+      },
+      include: {
+        role: true,
+      },
     });
 
     console.log("LOGIN USERNAME:", JSON.stringify(username));
+
     console.log("USER FOUND:", !!user);
 
     if (!user) {
@@ -302,7 +711,9 @@ export const login = async (req, res) => {
     const passwordMatches = await bcrypt.compare(password, user.password);
 
     console.log("USER ID:", user.id);
+
     console.log("DB USERNAME:", JSON.stringify(user.username));
+
     console.log("PASSWORD MATCH:", passwordMatches);
 
     if (!passwordMatches) {
@@ -311,12 +722,25 @@ export const login = async (req, res) => {
       });
     }
 
+    // --------------------------------------------------------
+    // Create access token
+    // --------------------------------------------------------
+
     const accessToken = crypto.randomBytes(32).toString("hex");
+
     await prisma.token.create({
-      data: { token: accessToken, userId: user.id },
+      data: {
+        token: accessToken,
+        userId: user.id,
+      },
     });
 
+    // --------------------------------------------------------
+    // Create login log
+    // --------------------------------------------------------
+
     const loginTime = new Date();
+
     const log = await prisma.log.create({
       data: {
         userId: user.id,
@@ -329,65 +753,122 @@ export const login = async (req, res) => {
 
     return res.status(200).json({
       message: "Login Successful",
+
       accessToken,
+
       isAdmin: !!user.role?.isAdmin,
+
       isBuyer: !!user.role?.isBuyer,
+
       isProcurementManager: !!user.role?.isProcurementManager,
+
       name: `${user.firstName} ${user.lastName}`,
+
       email: user.email,
+
       userName: user.username,
+
       canViewDashboard: user.canViewDashboard,
+
       userId: user.id,
+
       roleId: user.roleId,
+
       firstName: user.firstName,
+
       lastName: user.lastName,
+
       loginTime,
+
       logId: log.id,
     });
   } catch (error) {
     console.error("Error in login:", error);
-    return res.status(500).json({ message: "Failed to log in" });
+
+    return res.status(500).json({
+      message: "Failed to log in",
+    });
   }
 };
 
+/**
+ * ============================================================
+ * LOGOUT
+ * ============================================================
+ */
 export const logout = async (req, res) => {
   try {
     const accessToken = req.headers["authorization"]?.substring(7);
+
     if (accessToken) {
-      await prisma.token.deleteMany({ where: { token: accessToken } });
+      await prisma.token.deleteMany({
+        where: {
+          token: accessToken,
+        },
+      });
     }
-    return res.status(200).json({ message: "Logged out" });
+
+    return res.status(200).json({
+      message: "Logged out",
+    });
   } catch (error) {
     console.error("Error in logout:", error);
-    return res.status(500).json({ message: "Failed to log out" });
+
+    return res.status(500).json({
+      message: "Failed to log out",
+    });
   }
 };
 
+/**
+ * ============================================================
+ * DELETE USER
+ * ============================================================
+ */
 export const deleteUser = async (req, res) => {
   try {
     const { id } = req.params;
 
     if (!id) {
-      return res.status(400).json({ message: "User ID is required" });
+      return res.status(400).json({
+        message: "User ID is required",
+      });
     }
 
-    // Check if user exists before deleting
+    // --------------------------------------------------------
+    // Check user exists
+    // --------------------------------------------------------
+
     const existingUser = await prisma.user.findUnique({
-      where: { id },
+      where: {
+        id,
+      },
     });
 
     if (!existingUser) {
-      return res.status(404).json({ message: "User not found" });
+      return res.status(404).json({
+        message: "User not found",
+      });
     }
 
-    // Delete the user
+    // --------------------------------------------------------
+    // Delete user
+    // --------------------------------------------------------
+
     await prisma.user.delete({
-      where: { id },
+      where: {
+        id,
+      },
     });
 
-    return res.status(200).json({ message: "User deleted successfully" });
+    return res.status(200).json({
+      message: "User deleted successfully",
+    });
   } catch (error) {
     console.error("Error in deleteUser:", error);
-    return res.status(500).json({ message: "Failed to delete user" });
+
+    return res.status(500).json({
+      message: "Failed to delete user",
+    });
   }
 };

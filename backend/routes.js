@@ -12,6 +12,8 @@ import {
   get_users,
   deleteUser,
   changePassword,
+  editUser,
+  forgotPassword,
 } from "./controller/user-controller.js";
 
 import { requireAnyOf, requireAuth } from "./middleware/requireAuth.js";
@@ -73,8 +75,14 @@ const router = express.Router();
 router.post("/signup", signup);
 router.post("/signin", login);
 router.post("/logout", logout);
-
 router.post("/changePassword", changePassword);
+
+router.put("/users/:id", requireAuth, requireAnyOf("isAdmin"), editUser);
+
+// Forgot password.
+// User must provide username + email.
+// A new temporary password is generated and emailed.
+router.post("/forgotPassword", forgotPassword);
 
 // --- PO Audit ---
 router.post("/getPOAuditResults", requireAuth, get_po_audit_results);

@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useLayoutEffect, useState } from "react";
+
 import {
   Autocomplete,
   Dialog,
@@ -27,30 +28,52 @@ import {
   BorderColorOutlined,
 } from "@mui/icons-material";
 
-import { get, post } from "utils/axiosApi";
+import { get, post, put } from "utils/axiosApi";
 
-// Validation schema updated for confirm password logic
+// ============================================================
+// VALIDATION SCHEMA
+// ============================================================
+//
+// IMPORTANT:
+// Password is NOT part of user creation/update anymore.
+// Backend always generates the password automatically.
+//
+// allowedAuditors / allowedModules are also not user inputs.
+// ============================================================
+
 const validationSchema = Yup.object().shape({
-  firstName: Yup.string().max(255).required("First Name is required"),
-  lastName: Yup.string().max(255).required("Last Name is required"),
+  firstName: Yup.string()
+    .max(255)
+    .required("First Name is required"),
+
+  lastName: Yup.string()
+    .max(255)
+    .required("Last Name is required"),
+
   email: Yup.string()
     .email("Must be a valid email")
     .max(255)
     .required("Email is required"),
-  roleName: Yup.string().required("Role is required"),
-  formUsername: Yup.string().required("Username is required"),
-  password: Yup.string().min(6, "Password must be at least 6 characters"),
-  confirmPassword: Yup.string().oneOf(
-    [Yup.ref("password"), null],
-    "Passwords must match"
-  ),
+
+  roleName: Yup.string()
+    .required("Role is required"),
+
+  formUsername: Yup.string()
+    .required("Username is required"),
+
   canViewDashboard: Yup.boolean().default(false),
 });
 
-// ================================|| REGISTER / BUTTONS ||================================ //
+// ============================================================
+// CREATE USER BUTTON
+// ============================================================
 
 export const CreateButton = ({ fetchUsers }) => {
   const [modelOpen, setModelOpen] = useState(false);
+
+  const handleClose = () => {
+    setModelOpen(false);
+  };
 
   return (
     <>
@@ -61,78 +84,141 @@ export const CreateButton = ({ fetchUsers }) => {
       >
         Create User
       </Button>
+
       <Dialog
         open={!!modelOpen}
         fullWidth
         maxWidth="sm"
-        onClose={() => setModelOpen(false)}
-        sx={{ "& .MuiDialog-paper": { borderRadius: "12px" } }}
+        onClose={handleClose}
+        sx={{
+          "& .MuiDialog-paper": {
+            borderRadius: "12px",
+          },
+        }}
       >
         <DialogTitle>
-          <Typography variant="h4" sx={{ fontWeight: 700 }}>
+          <Typography
+            variant="h4"
+            sx={{ fontWeight: 700 }}
+          >
             Create User
           </Typography>
+
           <Typography>
             Fill in the details below to create a new user account.
+            A password will be generated automatically and sent to
+            the user's email address.
           </Typography>
+
           <IconButton
-            onClick={() => setModelOpen(false)}
-            sx={{ position: "absolute", top: 8, right: 8 }}
+            onClick={handleClose}
+            sx={{
+              position: "absolute",
+              top: 8,
+              right: 8,
+            }}
           >
             <CloseRounded />
           </IconButton>
         </DialogTitle>
 
-        <UserForm fetchUsers={fetchUsers} />
+        <UserForm
+          fetchUsers={fetchUsers}
+          onSuccess={handleClose}
+        />
       </Dialog>
     </>
   );
 };
 
-export const UpdateButton = ({ fetchUsers, data }) => {
+// ============================================================
+// UPDATE USER BUTTON
+// ============================================================
+
+export const UpdateButton = ({
+  fetchUsers,
+  data,
+}) => {
   const [modelOpen, setModelOpen] = useState(false);
+
+  const handleClose = () => {
+    setModelOpen(false);
+  };
 
   return (
     <>
       <Button
         onClick={() => setModelOpen(true)}
-        sx={{ fontWeight: 700, width: "100px" }}
-        startIcon={<BorderColorOutlined style={{ fontSize: "16px" }} />}
+        sx={{
+          fontWeight: 700,
+          width: "100px",
+        }}
+        startIcon={
+          <BorderColorOutlined
+            style={{ fontSize: "16px" }}
+          />
+        }
       >
         Update
       </Button>
+
       <Dialog
         open={!!modelOpen}
         fullWidth
         maxWidth="sm"
-        onClose={() => setModelOpen(false)}
-        sx={{ "& .MuiDialog-paper": { borderRadius: "12px" } }}
+        onClose={handleClose}
+        sx={{
+          "& .MuiDialog-paper": {
+            borderRadius: "12px",
+          },
+        }}
       >
         <DialogTitle>
-          <Typography variant="h4" sx={{ fontWeight: 700 }}>
+          <Typography
+            variant="h4"
+            sx={{ fontWeight: 700 }}
+          >
             Update User Details
           </Typography>
+
           <Typography>
-            Modify the user details below. Ensure all fields are correctly
-            filled.
+            Modify the user details below. Password cannot be
+            changed from this screen.
           </Typography>
+
           <IconButton
-            onClick={() => setModelOpen(false)}
-            sx={{ position: "absolute", top: 8, right: 8 }}
+            onClick={handleClose}
+            sx={{
+              position: "absolute",
+              top: 8,
+              right: 8,
+            }}
           >
             <CloseRounded />
           </IconButton>
         </DialogTitle>
 
-        <UserForm fetchUsers={fetchUsers} type="update" data={data} />
+        <UserForm
+          fetchUsers={fetchUsers}
+          type="update"
+          data={data}
+          onSuccess={handleClose}
+        />
       </Dialog>
     </>
   );
 };
 
-// ================================|| USER FORM ||================================ //
+// ============================================================
+// USER FORM
+// ============================================================
 
-export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
+export const UserForm = ({
+  type = "create",
+  data = {},
+  fetchUsers,
+  onSuccess,
+}) => {
   const [roles, setRoles] = useState([]);
   const [selectedRole, setSelectedRole] = useState(null);
 
@@ -141,86 +227,213 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
     handleSubmit,
     reset,
     setError,
-    formState: { errors, isSubmitting, isValid },
+    formState: {
+      errors,
+      isSubmitting,
+      isValid,
+    },
   } = useForm({
     resolver: yupResolver(validationSchema),
+
     mode: "onChange",
+
     defaultValues: {
       firstName: "",
       lastName: "",
       email: "",
       roleName: "",
-      password: "",
-      confirmPassword: "", // Added confirm password field
-      formUsername: data?.username || "",
-      canViewDashboard: data?.canViewDashboard ?? false,
-      ...data,
+      formUsername: "",
+      canViewDashboard: false,
     },
   });
+
+  // ==========================================================
+  // LOAD EXISTING USER DATA WHEN UPDATING
+  // ==========================================================
 
   useLayoutEffect(() => {
     const fetchRoles = async () => {
       try {
         const response = await get("/getRoles");
-        const roleList = response?.data || response || [];
+
+        const roleList =
+          response?.data ||
+          response ||
+          [];
 
         setRoles(roleList);
 
         if (data?.roleName) {
-          const matchedRole = roleList.find((r) => r.name === data.roleName);
-          setSelectedRole(matchedRole || null);
+          const matchedRole = roleList.find(
+            (r) => r.name === data.roleName
+          );
+
+          setSelectedRole(
+            matchedRole || null
+          );
         }
       } catch (error) {
-        console.error("Error fetching roles:", error);
+        console.error(
+          "Error fetching roles:",
+          error
+        );
       }
     };
+
     fetchRoles();
-  }, []);
+  }, [data?.roleName]);
+
+  // ==========================================================
+  // RESET FORM WHEN UPDATE DATA CHANGES
+  // ==========================================================
+
+  useLayoutEffect(() => {
+    if (type === "update" && data) {
+      reset({
+        firstName: data.firstName || "",
+        lastName: data.lastName || "",
+        email: data.email || "",
+        roleName: data.roleName || "",
+        formUsername: data.username || "",
+        canViewDashboard:
+          data.canViewDashboard ?? false,
+      });
+    } else if (type === "create") {
+      reset({
+        firstName: "",
+        lastName: "",
+        email: "",
+        roleName: "",
+        formUsername: "",
+        canViewDashboard: false,
+      });
+    }
+  }, [type, data, reset]);
+
+  // ==========================================================
+  // SUBMIT
+  // ==========================================================
 
   const onSubmit = async (values) => {
-    // Manually enforce password creation for new users
-    if (type === "create" && !values.password) {
-      setError("password", { type: "manual", message: "Password is required" });
-      return;
-    }
-
     try {
-      const payload = {
-        ...values,
-        username: values.formUsername,
-      };
+      // ------------------------------------------------------
+      // CREATE USER
+      // ------------------------------------------------------
+      //
+      // IMPORTANT:
+      // No password is sent.
+      //
+      // Backend generates it automatically.
+      // ------------------------------------------------------
 
-      // Strip confirmPassword before sending to the backend
-      delete payload.confirmPassword;
+      if (type === "create") {
+        const payload = {
+          username: values.formUsername.trim(),
+          email: values.email.trim(),
+          firstName: values.firstName.trim(),
+          lastName: values.lastName.trim(),
+          roleName: values.roleName,
+          canViewDashboard:
+            values.canViewDashboard ?? false,
+        };
 
-      if (type === "update") {
-        payload.id = data.id || data._id;
-        // If password field is empty during update, remove it so we don't overwrite with a blank password
-        if (!payload.password) {
-          delete payload.password;
+        const response = await post(
+          "/signup",
+          payload
+        );
+
+        toast.success(
+          response?.message ||
+            "User created successfully. Credentials have been emailed."
+        );
+
+        if (fetchUsers) {
+          await fetchUsers();
         }
+
+        reset();
+
+        if (onSuccess) {
+          onSuccess();
+        }
+
+        return;
       }
 
-      if (values.formUsername) delete payload.formUsername;
+      // ------------------------------------------------------
+      // UPDATE USER
+      // ------------------------------------------------------
+      //
+      // IMPORTANT:
+      // Password is deliberately NOT included.
+      //
+      // Backend will never change the password from this
+      // endpoint.
+      // ------------------------------------------------------
 
-      const path = type === "update" ? "/editUser" : "/signup";
+      const userId =
+        data?.id || data?._id;
 
-      const response = await post(path, payload);
+      if (!userId) {
+        toast.error(
+          "User ID is missing"
+        );
 
-      toast.success(
-        response.message ||
-          `User ${type === "update" ? "updated" : "created"} successfully!`
+        return;
+      }
+
+      const payload = {
+        username: values.formUsername.trim(),
+        email: values.email.trim(),
+        firstName: values.firstName.trim(),
+        lastName: values.lastName.trim(),
+        roleName: values.roleName,
+        canViewDashboard:
+          values.canViewDashboard ?? false,
+      };
+
+      const response = await put(
+        `/users/${userId}`,
+        payload
       );
 
-      fetchUsers();
+      toast.success(
+        response?.message ||
+          "User updated successfully!"
+      );
+
+      if (fetchUsers) {
+        await fetchUsers();
+      }
+
       reset();
+
+      if (onSuccess) {
+        onSuccess();
+      }
     } catch (err) {
+      console.error(
+        "Error submitting user form:",
+        err
+      );
+
       const error =
-        err.response?.data?.message || err.message || "Something went wrong";
+        err?.response?.data?.message ||
+        err?.message ||
+        "Something went wrong";
+
       toast.error(error);
-      setError("root", { type: "manual", message: error });
+
+      setError("root", {
+        type: "manual",
+        message: error,
+      });
     }
   };
+
+  // ==========================================================
+  // UI
+  // ==========================================================
 
   return (
     <>
@@ -236,11 +449,21 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
           id="user-form"
           onSubmit={handleSubmit(onSubmit)}
           autoComplete="off"
-          style={{ margin: "10px -10px 5px 2px" }}
+          style={{
+            margin: "10px -10px 5px 2px",
+          }}
         >
           <Grid container spacing={2}>
+
+            {/* =================================================
+                ROLE
+            ================================================= */}
+
             <Grid item xs={12}>
-              <InputLabel htmlFor="roleName">Role *</InputLabel>
+              <InputLabel htmlFor="roleName">
+                Role *
+              </InputLabel>
+
               <Controller
                 name="roleName"
                 control={control}
@@ -249,38 +472,78 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
                     <Autocomplete
                       disablePortal
                       options={roles}
-                      getOptionLabel={(option) => option.name || ""}
-                      value={roles.find((r) => r.name === field.value) || null}
-                      onChange={(_, value) => field.onChange(value?.name || "")}
-                      isOptionEqualToValue={(option, value) =>
-                        (option.id && option.id === value.id) ||
-                        (option._id && option._id === value._id)
+                      getOptionLabel={(option) =>
+                        option?.name || ""
+                      }
+                      value={
+                        roles.find(
+                          (r) =>
+                            r.name === field.value
+                        ) || null
+                      }
+                      onChange={(_, value) => {
+                        field.onChange(
+                          value?.name || ""
+                        );
+
+                        setSelectedRole(
+                          value || null
+                        );
+                      }}
+                      isOptionEqualToValue={(
+                        option,
+                        value
+                      ) =>
+                        (option.id &&
+                          option.id === value.id) ||
+                        (option._id &&
+                          option._id === value._id)
                       }
                       renderInput={(params) => (
                         <TextField
                           {...params}
                           placeholder="Select role"
                           size="small"
-                          error={!!errors.roleName}
-                          helperText={errors.roleName?.message}
+                          error={
+                            !!errors.roleName
+                          }
+                          helperText={
+                            errors.roleName
+                              ?.message
+                          }
                           autoComplete="off"
                         />
                       )}
                     />
                   ) : (
                     <TextField
-                      value={field.value || ""}
+                      value={
+                        field.value || ""
+                      }
                       fullWidth
                       disabled
-                      helperText={errors.roleName?.message}
+                      error={
+                        !!errors.roleName
+                      }
+                      helperText={
+                        errors.roleName
+                          ?.message
+                      }
                     />
                   )
                 }
               />
             </Grid>
 
+            {/* =================================================
+                FIRST NAME
+            ================================================= */}
+
             <Grid item xs={12} sm={6}>
-              <InputLabel htmlFor="firstName">First Name *</InputLabel>
+              <InputLabel htmlFor="firstName">
+                First Name *
+              </InputLabel>
+
               <Controller
                 name="firstName"
                 control={control}
@@ -289,20 +552,34 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
                     {...field}
                     placeholder="Enter first name"
                     fullWidth
-                    error={!!errors.firstName}
+                    error={
+                      !!errors.firstName
+                    }
                     autoComplete="off"
                     inputProps={{
                       autoComplete: "off",
-                      form: { autoComplete: "off" },
+                      form: {
+                        autoComplete: "off",
+                      },
                     }}
-                    helperText={errors.firstName?.message}
+                    helperText={
+                      errors.firstName
+                        ?.message
+                    }
                   />
                 )}
               />
             </Grid>
 
+            {/* =================================================
+                LAST NAME
+            ================================================= */}
+
             <Grid item xs={12} sm={6}>
-              <InputLabel htmlFor="lastName">Last Name *</InputLabel>
+              <InputLabel htmlFor="lastName">
+                Last Name *
+              </InputLabel>
+
               <Controller
                 name="lastName"
                 control={control}
@@ -311,43 +588,70 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
                     {...field}
                     placeholder="Enter last name"
                     fullWidth
-                    error={!!errors.lastName}
+                    error={
+                      !!errors.lastName
+                    }
                     autoComplete="off"
                     inputProps={{
                       autoComplete: "off",
-                      form: { autoComplete: "off" },
+                      form: {
+                        autoComplete: "off",
+                      },
                     }}
-                    helperText={errors.lastName?.message}
+                    helperText={
+                      errors.lastName
+                        ?.message
+                    }
                   />
                 )}
               />
             </Grid>
 
+            {/* =================================================
+                EMAIL
+            ================================================= */}
+
             <Grid item xs={12} sm={6}>
-              <InputLabel htmlFor="email">Email Address *</InputLabel>
+              <InputLabel htmlFor="email">
+                Email Address *
+              </InputLabel>
+
               <Controller
                 name="email"
                 control={control}
                 render={({ field }) => (
                   <TextField
                     {...field}
-                    placeholder="Enter your email"
+                    placeholder="Enter email address"
                     fullWidth
                     type="email"
-                    error={!!errors.email}
+                    error={
+                      !!errors.email
+                    }
                     autoComplete="off"
                     inputProps={{
                       autoComplete: "off",
-                      form: { autoComplete: "off" },
+                      form: {
+                        autoComplete: "off",
+                      },
                     }}
-                    helperText={errors.email?.message}
+                    helperText={
+                      errors.email?.message
+                    }
                   />
                 )}
               />
             </Grid>
 
+            {/* =================================================
+                USERNAME
+            ================================================= */}
+
             <Grid item xs={12} sm={6}>
-              <InputLabel htmlFor="formUsername">Username *</InputLabel>
+              <InputLabel htmlFor="formUsername">
+                Username *
+              </InputLabel>
+
               <Controller
                 name="formUsername"
                 control={control}
@@ -356,70 +660,77 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
                     {...field}
                     placeholder="Enter username"
                     fullWidth
-                    error={!!errors.formUsername}
+                    error={
+                      !!errors.formUsername
+                    }
                     autoComplete="off"
                     inputProps={{
                       autoComplete: "off",
-                      form: { autoComplete: "off" },
+                      form: {
+                        autoComplete: "off",
+                      },
                     }}
-                    helperText={errors.formUsername?.message}
+                    helperText={
+                      errors.formUsername
+                        ?.message
+                    }
                   />
                 )}
               />
             </Grid>
 
-            {/* PASSWORD FIELDS */}
-            <Grid item xs={12} sm={6}>
-              <InputLabel htmlFor="password">
-                {type === "update" ? "New Password" : "Password *"}
-              </InputLabel>
-              <Controller
-                name="password"
-                control={control}
-                render={({ field }) => (
-                  <TextField
-                    {...field}
-                    placeholder={type === "update" ? "Leave blank to keep current" : "Enter password"}
-                    fullWidth
-                    type="password"
-                    error={!!errors.password}
-                    autoComplete="new-password"
-                    inputProps={{
-                      autoComplete: "new-password",
-                      form: { autoComplete: "off" },
-                    }}
-                    helperText={errors.password?.message}
-                  />
-                )}
-              />
-            </Grid>
+            {/* =================================================
+                PASSWORD NOTICE
+            ================================================= */}
 
-            <Grid item xs={12} sm={6}>
-              <InputLabel htmlFor="confirmPassword">Confirm Password</InputLabel>
-              <Controller
-                name="confirmPassword"
-                control={control}
-                render={({ field }) => (
-                  <TextField
-                    {...field}
-                    placeholder="Confirm password"
-                    fullWidth
-                    type="password"
-                    error={!!errors.confirmPassword}
-                    autoComplete="new-password"
-                    inputProps={{
-                      autoComplete: "new-password",
-                      form: { autoComplete: "off" },
-                    }}
-                    helperText={errors.confirmPassword?.message}
-                  />
-                )}
-              />
-            </Grid>
+            {type === "create" && (
+              <Grid item xs={12}>
+                <Typography
+                  variant="body2"
+                  color="text.secondary"
+                  sx={{
+                    mt: 0.5,
+                    px: 1,
+                  }}
+                >
+                  A secure password will be generated
+                  automatically and sent to the user's
+                  email address after the account is created.
+                </Typography>
+              </Grid>
+            )}
 
-            {/* DASHBOARD PERMISSION TOGGLE */}
+            {type === "update" && (
+              <Grid item xs={12}>
+                <Typography
+                  variant="body2"
+                  color="text.secondary"
+                  sx={{
+                    mt: 0.5,
+                    px: 1,
+                  }}
+                >
+                  Password cannot be changed while updating
+                  user details. Use the password change or
+                  forgot-password process to change it.
+                </Typography>
+              </Grid>
+            )}
+
+            {/* =================================================
+                DASHBOARD PERMISSION
+            ================================================= */}
+
             <Grid item xs={12}>
-              <FormGroup sx={{ mt: 1, p: 2, border: "1px solid #e0e0e0", borderRadius: 1 }}>
+              <FormGroup
+                sx={{
+                  mt: 1,
+                  p: 2,
+                  border:
+                    "1px solid #e0e0e0",
+                  borderRadius: 1,
+                }}
+              >
                 <Controller
                   name="canViewDashboard"
                   control={control}
@@ -428,7 +739,9 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
                       control={
                         <Switch
                           {...field}
-                          checked={field.value}
+                          checked={
+                            !!field.value
+                          }
                           color="primary"
                         />
                       }
@@ -440,25 +753,44 @@ export const UserForm = ({ type = "create", data = {}, fetchUsers }) => {
                     />
                   )}
                 />
-                <Typography variant="caption" color="text.secondary" sx={{ ml: 4 }}>
-                  If disabled, this user will not see the dashboard in their navigation menu.
+
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ ml: 4 }}
+                >
+                  If disabled, this user will not
+                  see the dashboard in their navigation
+                  menu.
                 </Typography>
               </FormGroup>
             </Grid>
+
           </Grid>
         </form>
       </DialogContent>
+
+      {/* ========================================================
+          SUBMIT BUTTON
+      ======================================================== */}
+
       <DialogActions>
         <Button
           disableElevation
           form="user-form"
-          disabled={isSubmitting || !isValid}
+          disabled={
+            isSubmitting || !isValid
+          }
           fullWidth
           type="submit"
-          sx={{ mx: 2 }}
+          sx={{
+            mx: 2,
+          }}
           variant="contained"
         >
-          {type === "update" ? "Update" : "Register"}
+          {type === "update"
+            ? "Update"
+            : "Register"}
         </Button>
       </DialogActions>
     </>
