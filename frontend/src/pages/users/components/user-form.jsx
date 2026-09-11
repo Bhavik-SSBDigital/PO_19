@@ -1,4 +1,4 @@
-import { useLayoutEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   Autocomplete,
@@ -220,7 +220,27 @@ export const UserForm = ({
   onSuccess,
 }) => {
   const [roles, setRoles] = useState([]);
-  const [selectedRole, setSelectedRole] = useState(null);
+
+  // Setup form values based on type, using the `values` prop 
+  // to avoid infinite re-renders caused by useEffect/reset loops.
+  const formValues =
+    type === "update"
+      ? {
+          firstName: data?.firstName || "",
+          lastName: data?.lastName || "",
+          email: data?.email || "",
+          roleName: data?.roleName || "",
+          formUsername: data?.username || "", // mapped correctly from data.username
+          canViewDashboard: data?.canViewDashboard ?? false,
+        }
+      : {
+          firstName: "",
+          lastName: "",
+          email: "",
+          roleName: "",
+          formUsername: "",
+          canViewDashboard: false,
+        };
 
   const {
     control,
@@ -234,81 +254,36 @@ export const UserForm = ({
     },
   } = useForm({
     resolver: yupResolver(validationSchema),
-
     mode: "onChange",
-
-    defaultValues: {
-      firstName: "",
-      lastName: "",
-      email: "",
-      roleName: "",
-      formUsername: "",
-      canViewDashboard: false,
-    },
+    values: formValues, // Replaces the need for useLayoutEffect + reset()
   });
 
   // ==========================================================
-  // LOAD EXISTING USER DATA WHEN UPDATING
+  // LOAD ROLES
   // ==========================================================
 
-  useLayoutEffect(() => {
+  // Using useEffect instead of useLayoutEffect for async fetching
+  useEffect(() => {
+    let isMounted = true;
+
     const fetchRoles = async () => {
       try {
         const response = await get("/getRoles");
-
-        const roleList =
-          response?.data ||
-          response ||
-          [];
-
-        setRoles(roleList);
-
-        if (data?.roleName) {
-          const matchedRole = roleList.find(
-            (r) => r.name === data.roleName
-          );
-
-          setSelectedRole(
-            matchedRole || null
-          );
+        if (isMounted) {
+          const roleList = response?.data || response || [];
+          setRoles(roleList);
         }
       } catch (error) {
-        console.error(
-          "Error fetching roles:",
-          error
-        );
+        console.error("Error fetching roles:", error);
       }
     };
 
     fetchRoles();
-  }, [data?.roleName]);
 
-  // ==========================================================
-  // RESET FORM WHEN UPDATE DATA CHANGES
-  // ==========================================================
-
-  useLayoutEffect(() => {
-    if (type === "update" && data) {
-      reset({
-        firstName: data.firstName || "",
-        lastName: data.lastName || "",
-        email: data.email || "",
-        roleName: data.roleName || "",
-        formUsername: data.username || "",
-        canViewDashboard:
-          data.canViewDashboard ?? false,
-      });
-    } else if (type === "create") {
-      reset({
-        firstName: "",
-        lastName: "",
-        email: "",
-        roleName: "",
-        formUsername: "",
-        canViewDashboard: false,
-      });
-    }
-  }, [type, data, reset]);
+    return () => {
+      isMounted = false;
+    };
+  }, []); // Run only on mount
 
   // ==========================================================
   // SUBMIT
@@ -316,16 +291,6 @@ export const UserForm = ({
 
   const onSubmit = async (values) => {
     try {
-      // ------------------------------------------------------
-      // CREATE USER
-      // ------------------------------------------------------
-      //
-      // IMPORTANT:
-      // No password is sent.
-      //
-      // Backend generates it automatically.
-      // ------------------------------------------------------
-
       if (type === "create") {
         const payload = {
           username: values.formUsername.trim(),
@@ -333,52 +298,27 @@ export const UserForm = ({
           firstName: values.firstName.trim(),
           lastName: values.lastName.trim(),
           roleName: values.roleName,
-          canViewDashboard:
-            values.canViewDashboard ?? false,
+          canViewDashboard: values.canViewDashboard ?? false,
         };
 
-        const response = await post(
-          "/signup",
-          payload
-        );
+        const response = await post("/signup", payload);
 
         toast.success(
           response?.message ||
             "User created successfully. Credentials have been emailed."
         );
-
-        if (fetchUsers) {
-          await fetchUsers();
-        }
-
-        reset();
-
-        if (onSuccess) {
-          onSuccess();
-        }
-
+        
+        if (fetchUsers) await fetchUsers();
+        if (onSuccess) onSuccess();
+        
         return;
       }
 
-      // ------------------------------------------------------
       // UPDATE USER
-      // ------------------------------------------------------
-      //
-      // IMPORTANT:
-      // Password is deliberately NOT included.
-      //
-      // Backend will never change the password from this
-      // endpoint.
-      // ------------------------------------------------------
-
-      const userId =
-        data?.id || data?._id;
+      const userId = data?.id || data?._id;
 
       if (!userId) {
-        toast.error(
-          "User ID is missing"
-        );
-
+        toast.error("User ID is missing");
         return;
       }
 
@@ -388,34 +328,20 @@ export const UserForm = ({
         firstName: values.firstName.trim(),
         lastName: values.lastName.trim(),
         roleName: values.roleName,
-        canViewDashboard:
-          values.canViewDashboard ?? false,
+        canViewDashboard: values.canViewDashboard ?? false,
       };
 
-      const response = await put(
-        `/users/${userId}`,
-        payload
-      );
+      const response = await put(`/users/${userId}`, payload);
 
       toast.success(
-        response?.message ||
-          "User updated successfully!"
+        response?.message || "User updated successfully!"
       );
 
-      if (fetchUsers) {
-        await fetchUsers();
-      }
+      if (fetchUsers) await fetchUsers();
+      if (onSuccess) onSuccess();
 
-      reset();
-
-      if (onSuccess) {
-        onSuccess();
-      }
     } catch (err) {
-      console.error(
-        "Error submitting user form:",
-        err
-      );
+      console.error("Error submitting user form:", err);
 
       const error =
         err?.response?.data?.message ||
@@ -472,63 +398,36 @@ export const UserForm = ({
                     <Autocomplete
                       disablePortal
                       options={roles}
-                      getOptionLabel={(option) =>
-                        option?.name || ""
-                      }
+                      getOptionLabel={(option) => option?.name || ""}
                       value={
-                        roles.find(
-                          (r) =>
-                            r.name === field.value
-                        ) || null
+                        roles.find((r) => r.name === field.value) || null
                       }
                       onChange={(_, value) => {
-                        field.onChange(
-                          value?.name || ""
-                        );
-
-                        setSelectedRole(
-                          value || null
-                        );
+                        field.onChange(value?.name || "");
                       }}
-                      isOptionEqualToValue={(
-                        option,
-                        value
-                      ) =>
-                        (option.id &&
-                          option.id === value.id) ||
-                        (option._id &&
-                          option._id === value._id)
+                      isOptionEqualToValue={(option, value) =>
+                        option.name === value.name ||
+                        (option.id && option.id === value.id) ||
+                        (option._id && option._id === value._id)
                       }
                       renderInput={(params) => (
                         <TextField
                           {...params}
                           placeholder="Select role"
                           size="small"
-                          error={
-                            !!errors.roleName
-                          }
-                          helperText={
-                            errors.roleName
-                              ?.message
-                          }
+                          error={!!errors.roleName}
+                          helperText={errors.roleName?.message}
                           autoComplete="off"
                         />
                       )}
                     />
                   ) : (
                     <TextField
-                      value={
-                        field.value || ""
-                      }
+                      value={field.value || ""}
                       fullWidth
                       disabled
-                      error={
-                        !!errors.roleName
-                      }
-                      helperText={
-                        errors.roleName
-                          ?.message
-                      }
+                      error={!!errors.roleName}
+                      helperText={errors.roleName?.message}
                     />
                   )
                 }
@@ -552,9 +451,7 @@ export const UserForm = ({
                     {...field}
                     placeholder="Enter first name"
                     fullWidth
-                    error={
-                      !!errors.firstName
-                    }
+                    error={!!errors.firstName}
                     autoComplete="off"
                     inputProps={{
                       autoComplete: "off",
@@ -562,10 +459,7 @@ export const UserForm = ({
                         autoComplete: "off",
                       },
                     }}
-                    helperText={
-                      errors.firstName
-                        ?.message
-                    }
+                    helperText={errors.firstName?.message}
                   />
                 )}
               />
@@ -588,9 +482,7 @@ export const UserForm = ({
                     {...field}
                     placeholder="Enter last name"
                     fullWidth
-                    error={
-                      !!errors.lastName
-                    }
+                    error={!!errors.lastName}
                     autoComplete="off"
                     inputProps={{
                       autoComplete: "off",
@@ -598,10 +490,7 @@ export const UserForm = ({
                         autoComplete: "off",
                       },
                     }}
-                    helperText={
-                      errors.lastName
-                        ?.message
-                    }
+                    helperText={errors.lastName?.message}
                   />
                 )}
               />
@@ -625,9 +514,7 @@ export const UserForm = ({
                     placeholder="Enter email address"
                     fullWidth
                     type="email"
-                    error={
-                      !!errors.email
-                    }
+                    error={!!errors.email}
                     autoComplete="off"
                     inputProps={{
                       autoComplete: "off",
@@ -635,9 +522,7 @@ export const UserForm = ({
                         autoComplete: "off",
                       },
                     }}
-                    helperText={
-                      errors.email?.message
-                    }
+                    helperText={errors.email?.message}
                   />
                 )}
               />
@@ -660,9 +545,7 @@ export const UserForm = ({
                     {...field}
                     placeholder="Enter username"
                     fullWidth
-                    error={
-                      !!errors.formUsername
-                    }
+                    error={!!errors.formUsername}
                     autoComplete="off"
                     inputProps={{
                       autoComplete: "off",
@@ -670,10 +553,7 @@ export const UserForm = ({
                         autoComplete: "off",
                       },
                     }}
-                    helperText={
-                      errors.formUsername
-                        ?.message
-                    }
+                    helperText={errors.formUsername?.message}
                   />
                 )}
               />
@@ -726,8 +606,7 @@ export const UserForm = ({
                 sx={{
                   mt: 1,
                   p: 2,
-                  border:
-                    "1px solid #e0e0e0",
+                  border: "1px solid #e0e0e0",
                   borderRadius: 1,
                 }}
               >
@@ -739,9 +618,7 @@ export const UserForm = ({
                       control={
                         <Switch
                           {...field}
-                          checked={
-                            !!field.value
-                          }
+                          checked={!!field.value}
                           color="primary"
                         />
                       }
@@ -778,19 +655,13 @@ export const UserForm = ({
         <Button
           disableElevation
           form="user-form"
-          disabled={
-            isSubmitting || !isValid
-          }
+          disabled={isSubmitting || !isValid}
           fullWidth
           type="submit"
-          sx={{
-            mx: 2,
-          }}
+          sx={{ mx: 2 }}
           variant="contained"
         >
-          {type === "update"
-            ? "Update"
-            : "Register"}
+          {type === "update" ? "Update" : "Register"}
         </Button>
       </DialogActions>
     </>
