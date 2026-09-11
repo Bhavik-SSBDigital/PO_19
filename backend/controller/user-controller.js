@@ -3,6 +3,9 @@ import crypto from "crypto";
 import nodemailer from "nodemailer";
 import { prisma } from "../lib/prisma.js";
 
+import dotenv from "dotenv";
+dotenv.config();
+
 /**
  * ============================================================
  * SMTP CONFIGURATION
