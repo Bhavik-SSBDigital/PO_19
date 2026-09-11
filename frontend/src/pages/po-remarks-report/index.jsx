@@ -18,6 +18,8 @@ import {
   Typography,
   Autocomplete,
   Divider,
+  Tabs,
+  Tab,
 } from "@mui/material";
 import DownloadIcon from "@mui/icons-material/Download";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
@@ -157,6 +159,12 @@ export default function PoRemarksReportPage() {
 
   const [downloading, setDownloading] = useState(false);
   const [downloadingIssueTracker, setDownloadingIssueTracker] = useState(false);
+
+  // Which section is visible. Tabs instead of stacking both sections means
+  // you never scroll past a 1000-row header section just to reach the
+  // line-level one — only the active tab's filters + table + pagination
+  // render at a time.
+  const [activeTab, setActiveTab] = useState("header");
 
   const [options, setOptions] = useState({
     points: [],
@@ -380,13 +388,25 @@ export default function PoRemarksReportPage() {
         </Stack>
       </Stack>
 
+      <Tabs
+        value={activeTab}
+        onChange={(_, val) => setActiveTab(val)}
+        sx={{ mb: 2 }}
+      >
+        <Tab
+          value="header"
+          label={`Header-Level Remarks${headerTotal ? ` (${headerTotal})` : ""}`}
+        />
+        <Tab
+          value="line"
+          label={`Line-Level Remarks${lineTotal ? ` (${lineTotal})` : ""}`}
+        />
+      </Tabs>
+
       {/* ============================= HEADER-LEVEL SECTION ============================= */}
-      <Box sx={{ bgcolor: "action.hover", borderRadius: 1, p: 2, mb: 4 }}>
-        <Typography variant="h6">
-          Header-Level Remarks
-          <Typography variant="caption" display="block" color="text.secondary">
-            PO-wide checks — not tied to a specific line item
-          </Typography>
+      <Box sx={{ display: activeTab === "header" ? "block" : "none" }}>
+        <Typography variant="caption" display="block" color="text.secondary" sx={{ mb: 1 }}>
+          PO-wide checks — not tied to a specific line item
         </Typography>
 
         <Grid container spacing={2} sx={{ mt: 0.5, mb: 2 }}>
@@ -532,15 +552,10 @@ export default function PoRemarksReportPage() {
         />
       </Box>
 
-      <Divider sx={{ mb: 4 }} />
-
       {/* ============================== LINE-LEVEL SECTION =============================== */}
-      <Box sx={{ bgcolor: "action.hover", borderRadius: 1, p: 2 }}>
-        <Typography variant="h6">
-          Line-Level Remarks
-          <Typography variant="caption" display="block" color="text.secondary">
-            Checks against a specific PO line item
-          </Typography>
+      <Box sx={{ display: activeTab === "line" ? "block" : "none" }}>
+        <Typography variant="caption" display="block" color="text.secondary" sx={{ mb: 1 }}>
+          Checks against a specific PO line item
         </Typography>
 
         <Grid container spacing={2} sx={{ mt: 0.5, mb: 2 }}>
