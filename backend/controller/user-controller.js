@@ -290,13 +290,25 @@ export const login = async (req, res) => {
       include: { role: true },
     });
 
+    console.log("LOGIN USERNAME:", JSON.stringify(username));
+    console.log("USER FOUND:", !!user);
+
     if (!user) {
-      return res.status(401).json({ message: "Invalid username or password" });
+      return res.status(401).json({
+        message: "Invalid username or password",
+      });
     }
 
     const passwordMatches = await bcrypt.compare(password, user.password);
+
+    console.log("USER ID:", user.id);
+    console.log("DB USERNAME:", JSON.stringify(user.username));
+    console.log("PASSWORD MATCH:", passwordMatches);
+
     if (!passwordMatches) {
-      return res.status(401).json({ message: "Invalid username or password" });
+      return res.status(401).json({
+        message: "Invalid username or password",
+      });
     }
 
     const accessToken = crypto.randomBytes(32).toString("hex");
