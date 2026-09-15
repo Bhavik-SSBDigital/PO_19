@@ -7,9 +7,9 @@ Implements the audit points defined in "Procurement audit points.xlsx"
     POAUDIT_*      -> entry point, one row per PO line item
     POAUDITCND_*   -> PO condition records (freight/tax conditions)
     POAUDITRC_*    -> Rate Contract master (all RCs, not just assigned ones)
-    DWS extract    -> NEW (this revision): one row per PO number, produced by
+    DWS extract    -> one row per PO number, produced by
                        dws_rate_approval_extract.js against the DWS backend -
-                       see CHANGELOG "THIS REVISION" below.
+                       see CHANGELOG below.
 
 Each of the three SAP inputs can be either .csv (the original export format) or
 .xlsx (a direct Excel export) - see load_table() below. The DWS extract is a
@@ -34,7 +34,68 @@ Output:
     <rc-json>       : unchanged - RC Overlap / point 20.
 
 ===============================================================================
-CHANGELOG - THIS REVISION (Point #8 rewritten to join DWS by PO number instead
+CHANGELOG - THIS REVISION (per client email: remove PO Qty vs PR Qty tolerance
+point, replace point #15 with a new RC-validity-by-Material-Code check, and
+add two GLOBAL PO exclusions applied across ALL 19 points)
+===============================================================================
+
+  1. POINT #15 REPLACED. The old point #15 ("PO Qty <= PR Qty <= PO Qty +
+     Overdelivery Tolerance") is REMOVED entirely per client feedback - it
+     "is not serving any purpose pre receipt of material." rule_06_
+     quantity_control() and its supporting OVER_DELIVERY_TOLERANCE_COLUMN
+     constant have been deleted.
+
+     Point #15 now means something new: it checks whether the PO's RC
+     number is the RC that is actually valid, for that PO's Material Code,
+     as of the PO's date - per the client's flowchart:
+        - Find RC master records where RC Material Code = PO's Material Code.
+        - Of those, find any whose validity window (RC valid from/to)
+          contains the PO's date.
+        - No such valid RC found -> Not Verified.
+        - A valid RC is found:
+            - PO's "RC no." matches that valid RC -> Verified.
+            - PO's "RC no." is blank or does not match -> Not Verified.
+     This is implemented in rule_15_rc_material_validity(). Unlike the old
+     point #15, this NEVER returns Manual/Data Missing - only Verified /
+     Not Verified, matching the client's flowchart exactly (two outcomes
+     only).
+     ASSUMPTION (logged under rule 15, confirm with client): "PO's date"
+     in the flowchart is read from 'PO Date(Doc date)' (the column
+     literally named "PO Date"), not 'PO Created date'.
+
+  2. GLOBAL EXCLUSION - PO Type ZSTO. Per "In all points, PO Type (ZSTO)
+     to be excluded", any PO line whose PO Type = 'ZSTO' is now excluded
+     from ALL 19 audit points (header and line level alike) - it is
+     evaluated as Not Applicable on every point, the same mechanism
+     already used for Deletion indicator 'L' and Returns Item 'X' lines.
+     ASSUMPTION (logged in run()): "excluded" is treated the same way as
+     the existing Returns Item exclusion (row is KEPT in every output,
+     marked Not Applicable on all points) rather than the Deletion
+     Indicator treatment (row dropped from output entirely). Confirm
+     with the client which behaviour they actually want.
+
+  3. GLOBAL EXCLUSION - Low-value Job Work POs (ZJVW / ZVJW). Per "Job
+     Work PO Types ZJVW / ZVJW: Exclude POs with PO Type = ZJVW or ZVJW
+     where the PO Net Price is INR 1, INR 0.01, or INR 00 from the AI
+     Audit", any PO line with PO Type in {ZJVW, ZVJW} AND a Net Price of
+     0, 0.01, or 1 is now ALSO excluded from all 19 audit points the same
+     way. The Net Price value is read from the 'Net price' column - this
+     header has been confirmed against the real POAUDIT extract (sample
+     dated 2026-09-10, which contains a ZJVW PO priced at exactly 1.00,
+     matching this rule).
+
+  Both new global exclusions are implemented by extending
+  _is_excluded_line() (previously only Deletion indicator / Returns
+  Item), so every point - including the header-level points 1-9, which
+  aggregate across a PO's eligible lines - automatically respects them
+  with no further changes needed elsewhere in the file.
+
+  Nothing else in this file (Points 1-9, 10-14, 16-19, RC Overlap, header/
+  line scoping, DWS join for point #8, point renumbering) changed in this
+  revision - see the CHANGELOG entries below for that history.
+
+===============================================================================
+CHANGELOG - PRIOR REVISION (Point #8 rewritten to join DWS by PO number instead
 of text-searching "Our Ref."; new --dws input)
 ===============================================================================
 
@@ -206,8 +267,21 @@ EXCLUDED_LINE_REMARK = (
     "(Deletion indicator 'L' and/or Returns Item 'X')"
 )
 
-# --- Rule support: Over Delivery tolerance column (new #15, old #6) --------
-OVER_DELIVERY_TOLERANCE_COLUMN = "Overdelivery Tolerance Limit"
+# --- GLOBAL exclusion support (THIS REVISION) -------------------------------
+# Per client email: "In all points, PO Type (ZSTO) to be excluded" and
+# "Job Work PO Types ZJVW / ZVJW: Exclude POs ... where the PO Net Price is
+# INR 1, INR 0.01, or INR 00 from the AI Audit." Both are applied across
+# ALL 19 points via _is_excluded_line() / _exclusion_remark() below - see
+# CHANGELOG.
+ZSTO_PO_TYPE = "ZSTO"
+JOB_WORK_PO_TYPES = {"ZJVW", "ZVJW"}
+JOB_WORK_LOW_VALUE_NET_PRICES = {0.0, 0.01, 1.0}
+NET_PRICE_COLUMN = "Net price"  # CONFIRMED against real POAUDIT extract (2026-09-10 sample)
+
+# --- Rule support: Over Delivery tolerance column ---------------------------
+# REMOVED THIS REVISION - the old point #15 (PO Qty vs PR Qty tolerance)
+# that used this column has been removed per client feedback ("not serving
+# any purpose pre receipt of material"). See CHANGELOG.
 
 # --- Rules support: PO types requiring manual check (new #6/#7, old #13/#14)
 MANUAL_CHECK_PO_TYPES = {"ZIRM", "ZICP"}
@@ -290,7 +364,7 @@ ITEM_CATEGORY_SUBCONTRACTING_CODE = next(
     code for code, v in ITEM_CATEGORY_CODE_MAP.items() if v["letter"] == "L"
 )  # "3"
 
-# --- Rule support (DEAD CODE as of THIS REVISION - see CHANGELOG) ----------
+# --- Rule support (DEAD CODE - see CHANGELOG "PRIOR REVISION") -------------
 # _is_rate_approval_tag()/RATE_APPROVAL_TAG_TOKENS are no longer called by
 # rule_15_rate_approval, which now joins DWS data by PO number instead of
 # text-searching "Our Ref.". Left in place only for reference.
@@ -304,7 +378,7 @@ def _is_rate_approval_tag(our_ref_raw):
     return any(token in normalized for token in RATE_APPROVAL_TAG_TOKENS)
 
 
-# --- Rule support: DWS Rate Approval extract (new #8, THIS REVISION) -------
+# --- Rule support: DWS Rate Approval extract --------------------------------
 # Column names expected in the CSV produced by dws_rate_approval_extract.js.
 DWS_PO_NUMBER_COLUMN = "po_number"
 DWS_APPROVER_USERNAME_COLUMN = "dws_approver_username"
@@ -480,8 +554,8 @@ def load_all(poaudit_path, cnd_path, rc_path):
 
 def load_dws_rate_approvals(path):
     """
-    NEW (THIS REVISION). Loads the CSV produced by dws_rate_approval_extract.js
-    (one row per PO number - dws_process_id, dws_tag, dws_process_status,
+    Loads the CSV produced by dws_rate_approval_extract.js (one row per PO
+    number - dws_process_id, dws_tag, dws_process_status,
     dws_approver_username, dws_approver_is_manager, dws_decision_at,
     dws_decision_comment) and returns a dict keyed by PO number.
 
@@ -546,6 +620,13 @@ def load_tax_master(base_folder):
 
 # ---------------------------------------------------------------------------
 # GLOBAL exclusion (applies to every one of the 19 points)
+#
+# Four independent reasons a line can be excluded, per CHANGELOG:
+#   - Deletion indicator = 'L'           (dropped entirely - see below)
+#   - Returns Item = 'X'                 (kept, marked Not Applicable)
+#   - PO Type = 'ZSTO'                   (kept, marked Not Applicable - NEW)
+#   - PO Type in {ZJVW, ZVJW} AND Net    (kept, marked Not Applicable - NEW)
+#     Price in {0, 0.01, 1}
 # ---------------------------------------------------------------------------
 
 def _is_return_item(row):
@@ -556,8 +637,56 @@ def _is_deleted_line(row):
     return s(row, DELETION_INDICATOR_COLUMN).strip().upper() == "L"
 
 
+def _is_zsto_po(row):
+    return s(row, "PO Type").strip().upper() == ZSTO_PO_TYPE
+
+
+def _is_low_value_job_work_po(row):
+    po_type = s(row, "PO Type").strip().upper()
+    if po_type not in JOB_WORK_PO_TYPES:
+        return False
+    net_price = parse_sap_number(s(row, NET_PRICE_COLUMN))
+    if net_price is None:
+        return False
+    return any(abs(net_price - v) < 0.0001 for v in JOB_WORK_LOW_VALUE_NET_PRICES)
+
+
 def _is_excluded_line(row):
-    return _is_deleted_line(row) or _is_return_item(row)
+    return (
+        _is_deleted_line(row)
+        or _is_return_item(row)
+        or _is_zsto_po(row)
+        or _is_low_value_job_work_po(row)
+    )
+
+
+def _exclusion_remark(row):
+    """Reason-specific Not Applicable remark for an excluded line - see
+    _is_excluded_line(). Falls back to the generic EXCLUDED_LINE_REMARK if
+    called on a row that (by the time this runs) no longer matches any
+    known exclusion reason, which should not normally happen."""
+    if _is_deleted_line(row):
+        return (
+            "Not Applicable - line item excluded from all audit points "
+            "(Deletion indicator 'L')"
+        )
+    if _is_return_item(row):
+        return (
+            "Not Applicable - line item excluded from all audit points "
+            "(Returns Item 'X')"
+        )
+    if _is_zsto_po(row):
+        return (
+            "Not Applicable - line item excluded from all audit points "
+            "(PO Type 'ZSTO')"
+        )
+    if _is_low_value_job_work_po(row):
+        return (
+            f"Not Applicable - line item excluded from all audit points "
+            f"(Job Work PO Type '{s(row, 'PO Type')}' with nominal Net Price "
+            f"of {s(row, NET_PRICE_COLUMN)})"
+        )
+    return EXCLUDED_LINE_REMARK
 
 
 def drop_lines_with_deletion_indicator(po_rows):
@@ -578,7 +707,7 @@ def drop_lines_with_deletion_indicator(po_rows):
 
 def evaluate_rule(rule_no, fn, row, ctx):
     if _is_excluded_line(row):
-        return NA, EXCLUDED_LINE_REMARK
+        return NA, _exclusion_remark(row)
     return fn(row, ctx)
 
 
@@ -669,48 +798,6 @@ def rule_05_delivery_after_pr(row, ctx):
     if delivery_date >= pr_date:
         return VERIFIED, "Delivery date after PR date"
     return NOT_VERIFIED, f"Delivery date {delivery_date.date()} is before PR date {pr_date.date()}"
-
-
-def rule_06_quantity_control(row, ctx):
-    po_type = s(row, "PO Type")
-    if po_type in {"ZSER", "ZCSR"}:
-        return NA, f"Not applicable for PO type {po_type}"
-
-    purchase_req = s(row, "Purchase Req")
-    if not purchase_req:
-        return NA, "No PR assigned to this PO line"
-
-    po_qty = parse_sap_number(s(row, "PO Qty."))
-    pr_qty = parse_sap_number(s(row, "PR Qty."))
-    if po_qty is None or pr_qty is None:
-        return MANUAL, "PO Qty. and/or PR Qty. missing or unparseable"
-
-    over_tolerance_raw = s(row, OVER_DELIVERY_TOLERANCE_COLUMN)
-    tolerance_pct = parse_sap_number(over_tolerance_raw)
-    if tolerance_pct is None:
-        tolerance_pct = 0
-        log_assumption(
-            15,
-            f"'{OVER_DELIVERY_TOLERANCE_COLUMN}' was blank for this line - treated as 0% "
-            f"Overdelivery Tolerance (no buffer above PO Qty allowed).",
-        )
-
-    ceiling = po_qty * (1 + tolerance_pct / 100)
-
-    if pr_qty < po_qty:
-        return NOT_VERIFIED, (
-            f"PR Qty ({pr_qty}) is less than PO Qty ({po_qty}) - PO quantity cannot "
-            f"exceed PR quantity"
-        )
-    if pr_qty <= ceiling:
-        return VERIFIED, (
-            f"PR Qty ({pr_qty}) is within the allowed range: PO Qty ({po_qty}) <= PR Qty "
-            f"<= PO Qty + Overdelivery Tolerance {tolerance_pct}% ({ceiling})"
-        )
-    return NOT_VERIFIED, (
-        f"PR Qty ({pr_qty}) exceeds PO Qty ({po_qty}) + Overdelivery Tolerance "
-        f"{tolerance_pct}% ({ceiling})"
-    )
 
 
 def rule_07_rc_released(row, ctx):
@@ -925,12 +1012,12 @@ def rule_14_exw_fca_no_freight(row, ctx):
 
 def rule_15_rate_approval(row, ctx):
     """
-    HEADER-LEVEL rule (see build_po_header_records) - reports as new point #8.
+    HEADER-LEVEL rule (see build_po_header_records) - reports as point #8.
 
-    THIS REVISION: no longer reads "Our Ref." at all. Joins the DWS Rate
-    Approval extract (ctx["dws_by_po"], loaded from --dws, produced by
-    dws_rate_approval_extract.js) purely on PO number - the real link, per
-    DWS's own schema (ProcessInstance.poNumbers). See CHANGELOG.
+    Joins the DWS Rate Approval extract (ctx["dws_by_po"], loaded from
+    --dws, produced by dws_rate_approval_extract.js) purely on PO number -
+    the real link, per DWS's own schema (ProcessInstance.poNumbers). See
+    CHANGELOG "PRIOR REVISION".
     """
     po_number = s(row, "PO number")
     dws = ctx.get("dws_by_po", {}).get(po_number)
@@ -952,6 +1039,74 @@ def rule_15_rate_approval(row, ctx):
     return NOT_VERIFIED, (
         f"DWS process found for PO {po_number} (status: {s(dws, DWS_PROCESS_STATUS_COLUMN)}) "
         f"but no approved step by a Manager was recorded"
+    )
+
+
+def rule_15b_rc_material_validity(row, ctx):
+    """
+    NEW POINT #15 (THIS REVISION). Replaces the old PO Qty vs PR Qty
+    tolerance check, which the client removed as "not serving any purpose
+    pre receipt of material."
+
+    Per the client's flowchart:
+      1. Take this PO line's Material Code.
+      2. Find RC master records (POAUDITRC) where RC Material Code =
+         this Material Code.
+      3. Among those, find any whose validity window contains the PO's
+         date: RC valid from <= PO Date <= RC valid to.
+      4. No such valid RC -> Not Verified.
+      5. A valid RC exists:
+           - PO's own "RC no." matches that valid RC -> Verified.
+           - PO's "RC no." is blank or does not match -> Not Verified.
+
+    Only two outcomes are produced (Verified / Not Verified) - no
+    Manual/Data Missing branch, matching the client's flowchart exactly.
+
+    ASSUMPTION: "PO Date" in the flowchart is read from
+    PURCHASING_DATE_COLUMN ("PO Date(Doc date)") rather than
+    "PO Created date" - both exist in the extract. Confirm with client.
+    """
+    log_assumption(
+        15,
+        f"New point #15 (RC validity by Material Code) reads the PO's date from "
+        f"'{PURCHASING_DATE_COLUMN}' (the column literally named \"PO Date\"), not "
+        f"'PO Created date'. Confirm this is the correct date with the client.",
+    )
+
+    material = s(row, "Material Code")
+    po_date = parse_sap_date(s(row, PURCHASING_DATE_COLUMN))
+    po_rc_no = s(row, "RC no.")
+
+    if not po_date:
+        return NOT_VERIFIED, (
+            f"PO date ('{PURCHASING_DATE_COLUMN}') is missing or unparseable - cannot "
+            f"confirm a valid RC for Material {material} as of the PO date"
+        )
+
+    candidates = ctx.get("rc_by_material", {}).get(material, [])
+    valid_rcs = [
+        c for c in candidates
+        if c["from"] and c["to"] and c["from"] <= po_date <= c["to"]
+    ]
+
+    if not valid_rcs:
+        return NOT_VERIFIED, (
+            f"No RC is valid for Material {material} as of PO date {po_date.date()} "
+            f"(checked {len(candidates)} RC master record(s) for this material)"
+        )
+
+    valid_rc_numbers = sorted({c["rc_no"] for c in valid_rcs})
+
+    if po_rc_no and po_rc_no in valid_rc_numbers:
+        return VERIFIED, (
+            f"PO references RC {po_rc_no}, which is valid for Material {material} "
+            f"as of PO date {po_date.date()}"
+        )
+
+    return NOT_VERIFIED, (
+        f"PO's RC no. is '{po_rc_no or '(blank)'}', but the RC valid for Material "
+        f"{material} as of PO date {po_date.date()} is {valid_rc_numbers} - PO does "
+        f"not reference the applicable RC"
     )
 
 
@@ -1111,7 +1266,7 @@ PO_LINE_RULES = [
     (12, "PR Creation date within 6 months (180 days) of PO", rule_03_pr_within_6_months),
     (13, "PR date precedes PO date", rule_04_pr_precedes_po),
     (14, "Delivery date after PR date", rule_05_delivery_after_pr),
-    (15, "PO Qty <= PR Qty <= PO Qty x (1 + Overdelivery Tolerance %) - per PO line, not cumulative", rule_06_quantity_control),
+    (15, "PO's RC no. matches the RC that is valid for its Material Code as of the PO date", rule_15b_rc_material_validity),
     (16, "Vendor-Material tax code consistency (all lines count, including deleted/returned)", rule_10_vendor_material_tax_consistency),
     (17, "Service PO (ZSER) uses Item Cat D + Acct Assignment K", rule_16_zser_item_category),
     (18, "Service PO (ZCSR) uses Item Cat D + Acct Assignment A", rule_17_zcsr_item_category),
@@ -1240,6 +1395,7 @@ def build_context(po_rows, cnd_by_po, rc_rows, dws_by_po=None):
     po9_rfq_by_po = {}
     po9_po_type_by_po = {}
     rc_overlaps = {}
+    rc_by_material = defaultdict(list)
 
     by_vendor_material = defaultdict(list)
     for r in rc_rows:
@@ -1253,6 +1409,17 @@ def build_context(po_rows, cnd_by_po, rc_rows, dws_by_po=None):
                 "rc_no": rc_no,
                 "from": valid_from,
                 "to": valid_to
+            })
+
+        # NEW (THIS REVISION): index every RC master record by Material
+        # Code alone (not vendor+material), regardless of whether dates
+        # parsed cleanly - used by rule_15b_rc_material_validity(), which
+        # itself only counts a candidate as "valid" if both dates parsed.
+        if material and rc_no:
+            rc_by_material[material].append({
+                "rc_no": rc_no,
+                "from": valid_from,
+                "to": valid_to,
             })
 
     for (vendor, material), rcs in by_vendor_material.items():
@@ -1323,6 +1490,7 @@ def build_context(po_rows, cnd_by_po, rc_rows, dws_by_po=None):
         "po9_core_groups": po9_core_groups,
         "cnd_by_po": cnd_by_po,
         "rc_overlaps": rc_overlaps,
+        "rc_by_material": rc_by_material,
         "dws_by_po": dws_by_po or {},
     }
 
@@ -1402,7 +1570,8 @@ def build_po_header_records(po_rows, ctx):
             if not eligible_rows:
                 status, remark = NA, (
                     "No eligible line items for this PO (all line items are "
-                    "excluded - Deletion indicator 'L' and/or Returns Item 'X')"
+                    "excluded - Deletion indicator 'L', Returns Item 'X', PO "
+                    "Type 'ZSTO', and/or a low-value ZJVW/ZVJW Job Work PO)"
                 )
             else:
                 per_line = [
@@ -1448,13 +1617,35 @@ def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None, header_
     po_rows = filter_to_scope(po_rows)
     po_rows = drop_lines_with_deletion_indicator(po_rows)
 
-    excluded_count = sum(1 for r in po_rows if _is_excluded_line(r))
-    if excluded_count:
+    returns_count = sum(1 for r in po_rows if _is_return_item(r) and not _is_deleted_line(r))
+    if returns_count:
         log_assumption(
             "Global Exclusion - Returns Item (line-level)",
-            f"{excluded_count} of {len(po_rows)} remaining in-scope PO line(s) were "
+            f"{returns_count} of {len(po_rows)} remaining in-scope PO line(s) were "
             f"excluded from ALL 19 audit points (marked Not Applicable on every point, "
             f"line-level and header-level alike) because they have Returns Item = 'X'.",
+        )
+
+    zsto_count = sum(1 for r in po_rows if _is_zsto_po(r))
+    if zsto_count:
+        log_assumption(
+            "Global Exclusion - PO Type ZSTO (THIS REVISION)",
+            f"{zsto_count} of {len(po_rows)} remaining in-scope PO line(s) were excluded "
+            f"from ALL 19 audit points (marked Not Applicable on every point, line-level "
+            f"and header-level alike) because PO Type = 'ZSTO', per client instruction "
+            f"('In all points, PO Type (ZSTO) to be excluded'). Rows are KEPT in every "
+            f"output rather than dropped - confirm this is the behaviour wanted, versus "
+            f"dropping them entirely the way Deletion Indicator 'L' rows are dropped.",
+        )
+
+    job_work_count = sum(1 for r in po_rows if _is_low_value_job_work_po(r))
+    if job_work_count:
+        log_assumption(
+            "Global Exclusion - Low-value Job Work ZJVW/ZVJW (THIS REVISION)",
+            f"{job_work_count} of {len(po_rows)} remaining in-scope PO line(s) were "
+            f"excluded from ALL 19 audit points (marked Not Applicable on every point) "
+            f"because PO Type is ZJVW or ZVJW AND the Net Price ('{NET_PRICE_COLUMN}') "
+            f"is 0, 0.01, or 1, per client instruction.",
         )
 
     ctx = build_context(po_rows, cnd_by_po, rc_rows, dws_by_po)
