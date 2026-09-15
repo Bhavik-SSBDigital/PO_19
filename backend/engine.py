@@ -1,202 +1,3 @@
-"""
-P2P Purchase Order Audit Engine
-================================
-Implements the audit points defined in "Procurement audit points.xlsx"
-(Final sheet) against the SAP extract files:
-
-    POAUDIT_*      -> entry point, one row per PO line item
-    POAUDITCND_*   -> PO condition records (freight/tax conditions)
-    POAUDITRC_*    -> Rate Contract master (all RCs, not just assigned ones)
-    DWS extract    -> one row per PO number, produced by
-                       dws_rate_approval_extract.js against the DWS backend -
-                       see CHANGELOG below.
-
-Each of the three SAP inputs can be either .csv (the original export format) or
-.xlsx (a direct Excel export) - see load_table() below. The DWS extract is a
-.csv produced by dws_rate_approval_extract.js.
-
-Output:
-    audit_results.xlsx
-        - "PO Line Results"  : one row per PO line item, one column per rule
-                                 (1-19, NEW numbering - see CHANGELOG below).
-        - "RC Overlap"       : RC-level results (point 20).
-        - "Assumptions"       : every assumption this script had to make.
-                                 THESE MUST BE CONFIRMED WITH THE CLIENT.
-
-    <addpo-json>    : one record per PO LINE ITEM. `results` holds only the
-                       LINE-LEVEL points (10 points: NEW numbers 10-19).
-                       Feeds audit_results via `node addpo.js <file>`.
-
-    <header-json>   : one record per PO NUMBER. `results` holds only the
-                       HEADER-LEVEL points (9 points: NEW numbers 1-9).
-                       Feeds po_header_results via `node addheader.js <file>`.
-
-    <rc-json>       : unchanged - RC Overlap / point 20.
-
-===============================================================================
-CHANGELOG - THIS REVISION (per client email: remove PO Qty vs PR Qty tolerance
-point, replace point #15 with a new RC-validity-by-Material-Code check, and
-add two GLOBAL PO exclusions applied across ALL 19 points)
-===============================================================================
-
-  1. POINT #15 REPLACED. The old point #15 ("PO Qty <= PR Qty <= PO Qty +
-     Overdelivery Tolerance") is REMOVED entirely per client feedback - it
-     "is not serving any purpose pre receipt of material." rule_06_
-     quantity_control() and its supporting OVER_DELIVERY_TOLERANCE_COLUMN
-     constant have been deleted.
-
-     Point #15 now means something new: it checks whether the PO's RC
-     number is the RC that is actually valid, for that PO's Material Code,
-     as of the PO's date - per the client's flowchart:
-        - Find RC master records where RC Material Code = PO's Material Code.
-        - Of those, find any whose validity window (RC valid from/to)
-          contains the PO's date.
-        - No such valid RC found -> Not Verified.
-        - A valid RC is found:
-            - PO's "RC no." matches that valid RC -> Verified.
-            - PO's "RC no." is blank or does not match -> Not Verified.
-     This is implemented in rule_15_rc_material_validity(). Unlike the old
-     point #15, this NEVER returns Manual/Data Missing - only Verified /
-     Not Verified, matching the client's flowchart exactly (two outcomes
-     only).
-     ASSUMPTION (logged under rule 15, confirm with client): "PO's date"
-     in the flowchart is read from 'PO Date(Doc date)' (the column
-     literally named "PO Date"), not 'PO Created date'.
-
-  2. GLOBAL EXCLUSION - PO Type ZSTO. Per "In all points, PO Type (ZSTO)
-     to be excluded", any PO line whose PO Type = 'ZSTO' is now excluded
-     from ALL 19 audit points (header and line level alike) - it is
-     evaluated as Not Applicable on every point, the same mechanism
-     already used for Deletion indicator 'L' and Returns Item 'X' lines.
-     ASSUMPTION (logged in run()): "excluded" is treated the same way as
-     the existing Returns Item exclusion (row is KEPT in every output,
-     marked Not Applicable on all points) rather than the Deletion
-     Indicator treatment (row dropped from output entirely). Confirm
-     with the client which behaviour they actually want.
-
-  3. GLOBAL EXCLUSION - Low-value Job Work POs (ZJVW / ZVJW). Per "Job
-     Work PO Types ZJVW / ZVJW: Exclude POs with PO Type = ZJVW or ZVJW
-     where the PO Net Price is INR 1, INR 0.01, or INR 00 from the AI
-     Audit", any PO line with PO Type in {ZJVW, ZVJW} AND a Net Price of
-     0, 0.01, or 1 is now ALSO excluded from all 19 audit points the same
-     way. The Net Price value is read from the 'Net price' column - this
-     header has been confirmed against the real POAUDIT extract (sample
-     dated 2026-09-10, which contains a ZJVW PO priced at exactly 1.00,
-     matching this rule).
-
-  Both new global exclusions are implemented by extending
-  _is_excluded_line() (previously only Deletion indicator / Returns
-  Item), so every point - including the header-level points 1-9, which
-  aggregate across a PO's eligible lines - automatically respects them
-  with no further changes needed elsewhere in the file.
-
-  Nothing else in this file (Points 1-9, 10-14, 16-19, RC Overlap, header/
-  line scoping, DWS join for point #8, point renumbering) changed in this
-  revision - see the CHANGELOG entries below for that history.
-
-===============================================================================
-CHANGELOG - PRIOR REVISION (Point #8 rewritten to join DWS by PO number instead
-of text-searching "Our Ref."; new --dws input)
-===============================================================================
-
-  ROOT CAUSE (confirmed by reading the real DWS backend source, plus the real
-  POAUDIT.csv): "Our Ref." in the SAP extract only ever contains a bare tag
-  like "DWS-APPROVED" / "DWS APPROVE" - it NEVER contains the approver's
-  initials anywhere in the same field. The previous implementation searched
-  for KKB/SRS/PJP/DAULAT/NHV/CVS INSIDE "Our Ref." itself, which can never
-  match anything - every applicable row was silently coming back Not
-  Verified, which is a false negative, not a real audit result. The
-  approver identity and the DWS "Tag" (category) both live in DWS's own
-  Postgres DB (ProcessInstance.tags / ProcessInstance.poNumbers /
-  ProcessStepInstance.assignedTo+status), joined on PO NUMBER (via DWS's
-  own POST /process/attach-po) - not on any text inside "Our Ref.".
-
-  FIX: a new pre-step, dws_rate_approval_extract.js, calls the DWS API
-  directly (GET /api/processes/admin-all?tag=..., GET /viewProcess/:id,
-  GET /getUsers) and writes one CSV row per PO number:
-  dws_rate_approval_for_po.csv (columns: po_number, dws_process_id,
-  dws_tag, dws_process_status, dws_approver_username,
-  dws_approver_is_manager, dws_decision_at, dws_decision_comment). This
-  file is now loaded here via a new --dws CLI argument and joined into
-  ctx["dws_by_po"] purely on PO number.
-
-  rule_15_rate_approval (reports as point #8) no longer reads "Our Ref."
-  or RATE_APPROVAL_TAG_TOKENS/_is_rate_approval_tag() at all. It now:
-    - Not Applicable, if no DWS record exists for this PO number (no
-      Rate-Approval-tagged DWS process was ever attached to it).
-    - Verified, if the DWS record shows an approved step whose assignee
-      holds the DWS "Manager" role (dws_approver_is_manager == True).
-    - Not Verified, if a DWS record/approver exists but that approver does
-      NOT hold the Manager role, or no approved step was recorded at all.
-
-  _is_rate_approval_tag() and RATE_APPROVAL_TAG_TOKENS are LEFT IN PLACE
-  below (unused by rule_15_rate_approval any more) only for reference /
-  in case a fallback text-check is ever wanted again - they are dead code
-  as of this revision.
-
-  Everything else in this file (Points 1-7, 9-19, RC Overlap, header/line
-  scoping, exclusion handling, point renumbering) is unchanged - see the
-  CHANGELOG entries below for that history.
-
-===============================================================================
-CHANGELOG - PRIOR REVISION (Point #9 rewritten: PO Type is now the primary
-differentiator, and the point no longer produces a Manual Verify / Data
-Missing outcome, per direct client feedback)
-===============================================================================
-
-  Client feedback: "Remove Manual verify - it should be either verified or
-  not verified. Add PO Type - if it is same then not verified and it is
-  different then it should be verified. Reason of verified whether PO
-  type/RFQ is different."
-
-  1. PO TYPE IS NOW THE PRIMARY DIFFERENTIATOR FOR POINT #9. Previously,
-     two POs sharing the 4-parameter core key (Vendor, Purchasing Group,
-     Plant, Purchasing Date = "PO Date(Doc date)") were compared using
-     RFQ ("order acknowledgement") alone to decide Verified vs Not
-     Verified. Per this feedback, PO Type is now checked FIRST, ahead of
-     RFQ:
-       - If PO Type is the SAME as another PO sharing the 4 core
-         parameters, that pair is a candidate duplicate and RFQ is then
-         consulted (same blank-handling rule as before: both blank, or
-         both non-blank and equal, means "still matching" -> Not
-         Verified; anything else -> Verified against that specific PO).
-       - If PO Type is DIFFERENT from that other PO, the pair is NOT
-         treated as a duplicate at all - Verified, regardless of RFQ -
-         because a different PO Type means it's a different kind of
-         purchasing event even if raised the same day to the same
-         vendor/plant/purchasing group.
-     A PO is only Not Verified if at least one other PO shares the 4 core
-     parameters AND has the same PO Type AND does not get separated out
-     by RFQ.
-
-  2. MANUAL VERIFY REMOVED. rule_19_multiple_po_same_day now only ever
-     returns Verified or Not Verified for this point - there is no
-     Manual Verify / Data Missing branch. A blank PO Type or blank RFQ is
-     compared as a value in its own right (blank == blank still counts
-     as "the same"), so a missing PO Type/RFQ can never push the result
-     into a manual/missing-data outcome; it always resolves to one of the
-     two binary results.
-
-  3. REMARK NOW NAMES THE REASON FOR "VERIFIED" EXPLICITLY. When a PO is
-     Verified, the remark states whether it is because PO Type is
-     different, RFQ no. is different, or both - naming the specific
-     other PO(s) each reason applies to, per the client's "Reason of
-     verified whether PO type/RFQ is different" instruction. When a PO is
-     Not Verified, the remark states that Vendor, Purchasing Group,
-     Plant, Purchasing Date AND PO Type all match, and RFQ did not
-     differentiate it.
-
-  Supporting change: build_context() now also builds a per-PO
-  representative PO Type ("po9_po_type_by_po"), the same way it already
-  built a per-PO representative RFQ ("po9_rfq_by_po") - see the function
-  for details. Nothing else about point #9's grouping (the 4-parameter
-  core key, or the "PO Date(Doc date)" / "order acknowledgement" source
-  columns) changed in this revision.
-
-  (Older CHANGELOG history omitted here for length - unchanged from the
-  version reviewed with the client; nothing else in this file changed.)
-"""
-
 import argparse
 import csv
 import json
@@ -211,27 +12,15 @@ VERIFIED = "Verified"
 NOT_VERIFIED = "Not Verified"
 NA = "Not Applicable"
 MANUAL = "Data Missing"
-# Distinct from MANUAL/"Data Missing": used ONLY for the ZIRM/ZICP
-# manual-check routing on points #6/#7 (import PO types the client wants
-# a human to check), never for genuinely missing/unparseable data. See
-# CHANGELOG "THIS REVISION".
 MANUAL_CHECK = "Manual Check"
 
-# ---------------------------------------------------------------------------
-# Config / master lists taken directly from the rule sheet (Final sheet.csv)
-# ---------------------------------------------------------------------------
-# ZFB5 added per client request (points #6/#7) - see CHANGELOG.
 FREIGHT_CONDITION_TYPES = {"ZBF1", "ZBF2", "ZRA3", "ZRB3", "ZRE3", "ZFB5"}
 
-# Reference-only (does not affect any logic): ordinary pricing/tax condition
-# types the client flagged as "why is this showing verified?" for EYW lines
-# (points #6/#7).
 NON_FREIGHT_REFERENCE_CONDITION_TYPES = {
     "R000", "NAVM", "PBXX", "NAVS", "JEXS", "ZPB0", "R001", "ZIB2", "ZPB1",
 }
 DWS_APPROVERS = {"KKB", "SRS", "PJP", "DAULAT", "NHV", "CVS"}
 
-# --- Rule support: MSME payment terms (new #4, old #11) --------------------
 MSME_PAYMENT_TERMS = {
     "Z100": {"days": 15, "desc": "15 DAYS CREDIT"},
     "Z101": {"days": 30, "desc": "30 DAYS CREDIT"},
@@ -253,12 +42,11 @@ VALID_PURCHASE_GROUPS = {
 
 RC_PLACEHOLDER_PO_TYPES = {"ZTWK"}
 
-PR_RELEASED_VALUES = {"2"}          # ASSUMPTION - confirm with client
-RC_RELEASED_VALUES = {"R"}          # ASSUMPTION - confirm with client
+PR_RELEASED_VALUES = {"2"}
+RC_RELEASED_VALUES = {"R"}
 
 SIX_MONTHS_DAYS = 180
 
-# --- GLOBAL exclusion support (applies to ALL 19 points) -------------------
 RETURN_ITEM_COLUMN = "Returns Item"
 DELETION_INDICATOR_COLUMN = "Deletion indicator"
 
@@ -267,27 +55,14 @@ EXCLUDED_LINE_REMARK = (
     "(Deletion indicator 'L' and/or Returns Item 'X')"
 )
 
-# --- GLOBAL exclusion support (THIS REVISION) -------------------------------
-# Per client email: "In all points, PO Type (ZSTO) to be excluded" and
-# "Job Work PO Types ZJVW / ZVJW: Exclude POs ... where the PO Net Price is
-# INR 1, INR 0.01, or INR 00 from the AI Audit." Both are applied across
-# ALL 19 points via _is_excluded_line() / _exclusion_remark() below - see
-# CHANGELOG.
 ZSTO_PO_TYPE = "ZSTO"
 JOB_WORK_PO_TYPES = {"ZJVW", "ZVJW"}
 JOB_WORK_LOW_VALUE_NET_PRICES = {0.0, 0.01, 1.0}
-NET_PRICE_COLUMN = "Net price"  # CONFIRMED against real POAUDIT extract (2026-09-10 sample)
+NET_PRICE_COLUMN = "Net price"
 
-# --- Rule support: Over Delivery tolerance column ---------------------------
-# REMOVED THIS REVISION - the old point #15 (PO Qty vs PR Qty tolerance)
-# that used this column has been removed per client feedback ("not serving
-# any purpose pre receipt of material"). See CHANGELOG.
-
-# --- Rules support: PO types requiring manual check (new #6/#7, old #13/#14)
 MANUAL_CHECK_PO_TYPES = {"ZIRM", "ZICP"}
 
-# --- Rule support: GSTIN -> state code (new #3, old #9) --------------------
-GSTIN_COLUMN = "Tax Number 3"       # ASSUMPTION - confirm exact header with client
+GSTIN_COLUMN = "Tax Number 3"
 GST_STATE_CODE_MAP = {
     "01": "JAMMU AND KASHMIR", "02": "HIMACHAL PRADESH", "03": "PUNJAB",
     "04": "CHANDIGARH", "05": "UTTARAKHAND", "06": "HARYANA", "07": "DELHI",
@@ -302,7 +77,6 @@ GST_STATE_CODE_MAP = {
     "36": "TELANGANA", "37": "ANDHRA PRADESH", "38": "LADAKH",
 }
 
-# --- Rule support: point #9 grouping dimensions -----------------------------
 PURCHASING_DATE_COLUMN = "PO Date(Doc date)"
 RFQ_NO_COLUMN = "order acknowledgement"
 
@@ -338,10 +112,6 @@ GST_NOT_APPLICABLE_TOKENS = {
     ]
 }
 
-# ---------------------------------------------------------------------------
-# Item Category code -> SAP external letter, per the client-provided table
-# (received 2026-07-29).
-# ---------------------------------------------------------------------------
 ITEM_CATEGORY_CODE_MAP = {
     "0": {"desc": "Standard", "letter": None},
     "1": {"desc": "Limit", "letter": "B"},
@@ -359,15 +129,11 @@ ITEM_CATEGORY_CODES_SEEN_IN_DATA = {"0", "3", "7", "9"}
 
 ITEM_CATEGORY_SERVICE_CODE = next(
     code for code, v in ITEM_CATEGORY_CODE_MAP.items() if v["letter"] == "D"
-)  # "9"
+)
 ITEM_CATEGORY_SUBCONTRACTING_CODE = next(
     code for code, v in ITEM_CATEGORY_CODE_MAP.items() if v["letter"] == "L"
-)  # "3"
+)
 
-# --- Rule support (DEAD CODE - see CHANGELOG "PRIOR REVISION") -------------
-# _is_rate_approval_tag()/RATE_APPROVAL_TAG_TOKENS are no longer called by
-# rule_15_rate_approval, which now joins DWS data by PO number instead of
-# text-searching "Our Ref.". Left in place only for reference.
 RATE_APPROVAL_TAG_TOKENS = {
     "DWSAPPROVED", "DWSAAPPROVED", "DWSAPPROVAL", "DWSAPPROVE",
 }
@@ -378,8 +144,6 @@ def _is_rate_approval_tag(our_ref_raw):
     return any(token in normalized for token in RATE_APPROVAL_TAG_TOKENS)
 
 
-# --- Rule support: DWS Rate Approval extract --------------------------------
-# Column names expected in the CSV produced by dws_rate_approval_extract.js.
 DWS_PO_NUMBER_COLUMN = "po_number"
 DWS_APPROVER_USERNAME_COLUMN = "dws_approver_username"
 DWS_APPROVER_IS_MANAGER_COLUMN = "dws_approver_is_manager"
@@ -394,9 +158,6 @@ def log_assumption(rule_no, text):
     ASSUMPTIONS.append({"Rule": rule_no, "Assumption": text})
 
 
-# ---------------------------------------------------------------------------
-# Parsing helpers (SAP exports use quirky formats)
-# ---------------------------------------------------------------------------
 def parse_sap_date(value):
     if value is None:
         return None
@@ -434,22 +195,16 @@ def s(row, col):
     return str(row.get(col, "") or "").strip()
 
 
-# ---------------------------------------------------------------------------
-# Tax-code normalization (used by the GST Tax Logic rule, new #3)
-# ---------------------------------------------------------------------------
 def normalize_tax_code(value):
     s_ = str(value).strip().upper()
     if not s_:
         return s_
-    if re.match(r"^\d+\.0$", s_):        # "7.0" -> "7" (float artifact)
+    if re.match(r"^\d+\.0$", s_):
         s_ = s_[:-2]
-    s_ = re.sub(r"^0+(?=\d)", "", s_)    # "07" -> "7"; "0" stays "0"; "0A" stays "0A"
+    s_ = re.sub(r"^0+(?=\d)", "", s_)
     return s_
 
 
-# ---------------------------------------------------------------------------
-# Load data
-# ---------------------------------------------------------------------------
 EXCEL_EXTENSIONS = {".xlsx", ".xlsm", ".xls"}
 CSV_EXTENSIONS = {".csv", ".txt"}
 
@@ -553,16 +308,6 @@ def load_all(poaudit_path, cnd_path, rc_path):
 
 
 def load_dws_rate_approvals(path):
-    """
-    Loads the CSV produced by dws_rate_approval_extract.js (one row per PO
-    number - dws_process_id, dws_tag, dws_process_status,
-    dws_approver_username, dws_approver_is_manager, dws_decision_at,
-    dws_decision_comment) and returns a dict keyed by PO number.
-
-    Returns {} if path is None/blank - point #8 then falls back to Not
-    Applicable for every PO (no DWS data available at all), rather than
-    crashing the whole run.
-    """
     if not path:
         log_assumption(
             8,
@@ -618,16 +363,6 @@ def load_tax_master(base_folder):
         }
     return mapping
 
-# ---------------------------------------------------------------------------
-# GLOBAL exclusion (applies to every one of the 19 points)
-#
-# Four independent reasons a line can be excluded, per CHANGELOG:
-#   - Deletion indicator = 'L'           (dropped entirely - see below)
-#   - Returns Item = 'X'                 (kept, marked Not Applicable)
-#   - PO Type = 'ZSTO'                   (kept, marked Not Applicable - NEW)
-#   - PO Type in {ZJVW, ZVJW} AND Net    (kept, marked Not Applicable - NEW)
-#     Price in {0, 0.01, 1}
-# ---------------------------------------------------------------------------
 
 def _is_return_item(row):
     return s(row, RETURN_ITEM_COLUMN).strip().upper() == "X"
@@ -661,10 +396,6 @@ def _is_excluded_line(row):
 
 
 def _exclusion_remark(row):
-    """Reason-specific Not Applicable remark for an excluded line - see
-    _is_excluded_line(). Falls back to the generic EXCLUDED_LINE_REMARK if
-    called on a row that (by the time this runs) no longer matches any
-    known exclusion reason, which should not normally happen."""
     if _is_deleted_line(row):
         return (
             "Not Applicable - line item excluded from all audit points "
@@ -735,10 +466,6 @@ def _format_po_list(pos, limit=5):
         shown += f", and {len(pos) - limit} more"
     return shown
 
-
-# ---------------------------------------------------------------------------
-# Rule implementations
-# ---------------------------------------------------------------------------
 
 def rule_01_release_verification(row, ctx):
     po_type = s(row, "PO Type")
@@ -1011,14 +738,6 @@ def rule_14_exw_fca_no_freight(row, ctx):
 
 
 def rule_15_rate_approval(row, ctx):
-    """
-    HEADER-LEVEL rule (see build_po_header_records) - reports as point #8.
-
-    Joins the DWS Rate Approval extract (ctx["dws_by_po"], loaded from
-    --dws, produced by dws_rate_approval_extract.js) purely on PO number -
-    the real link, per DWS's own schema (ProcessInstance.poNumbers). See
-    CHANGELOG "PRIOR REVISION".
-    """
     po_number = s(row, "PO number")
     dws = ctx.get("dws_by_po", {}).get(po_number)
 
@@ -1044,38 +763,52 @@ def rule_15_rate_approval(row, ctx):
 
 def rule_15b_rc_material_validity(row, ctx):
     """
-    NEW POINT #15 (THIS REVISION). Replaces the old PO Qty vs PR Qty
-    tolerance check, which the client removed as "not serving any purpose
-    pre receipt of material."
+    Point #15 - RC validity by Material Code.
 
-    Per the client's flowchart:
-      1. Take this PO line's Material Code.
-      2. Find RC master records (POAUDITRC) where RC Material Code =
-         this Material Code.
-      3. Among those, find any whose validity window contains the PO's
-         date: RC valid from <= PO Date <= RC valid to.
-      4. No such valid RC -> Not Verified.
-      5. A valid RC exists:
-           - PO's own "RC no." matches that valid RC -> Verified.
-           - PO's "RC no." is blank or does not match -> Not Verified.
+    UPDATED PER CLIENT FEEDBACK: "When PO Material Code is not there in RC
+    data then it should be Not Applicable." Previously, a Material Code with
+    ZERO RC master records at all (POAUDITRC has no row for it, for any
+    vendor/date) fell through to the same "No RC is valid ... (checked 0 RC
+    master record(s))" Not Verified branch as a material that DOES appear in
+    the RC master but has no RC valid on the PO's specific date. Those are
+    now split into two different outcomes:
 
-    Only two outcomes are produced (Verified / Not Verified) - no
-    Manual/Data Missing branch, matching the client's flowchart exactly.
+      - Material Code has NO RC master record at all (0 candidates)
+            -> Not Applicable (NEW - this is the fix)
+      - Material Code HAS RC master record(s), but none is valid as of the
+        PO's date, OR a valid RC exists but the PO's "RC no." is blank/does
+        not match it
+            -> Not Verified (UNCHANGED)
+      - Material Code HAS a valid RC as of the PO's date AND the PO's
+        "RC no." matches it
+            -> Verified (UNCHANGED)
 
-    ASSUMPTION: "PO Date" in the flowchart is read from
-    PURCHASING_DATE_COLUMN ("PO Date(Doc date)") rather than
-    "PO Created date" - both exist in the extract. Confirm with client.
+    This only affects the "0 RC master records for this material" case -
+    every other branch of this rule is unchanged.
     """
     log_assumption(
         15,
         f"New point #15 (RC validity by Material Code) reads the PO's date from "
         f"'{PURCHASING_DATE_COLUMN}' (the column literally named \"PO Date\"), not "
-        f"'PO Created date'. Confirm this is the correct date with the client.",
+        f"'PO Created date'. Confirm this is the correct date with the client. Also "
+        f"per client feedback: a Material Code with NO RC master record at all is "
+        f"now Not Applicable (rather than Not Verified) - only a material that DOES "
+        f"appear in the RC master but has no RC valid as of the PO's date, or whose "
+        f"valid RC isn't referenced by the PO, is Not Verified.",
     )
 
     material = s(row, "Material Code")
-    po_date = parse_sap_date(s(row, PURCHASING_DATE_COLUMN))
     po_rc_no = s(row, "RC no.")
+
+    candidates = ctx.get("rc_by_material", {}).get(material, [])
+
+    if not candidates:
+        return NA, (
+            f"Material {material} does not appear in the RC master (POAUDITRC) at "
+            f"all - point #15 is Not Applicable for this line"
+        )
+
+    po_date = parse_sap_date(s(row, PURCHASING_DATE_COLUMN))
 
     if not po_date:
         return NOT_VERIFIED, (
@@ -1083,7 +816,6 @@ def rule_15b_rc_material_validity(row, ctx):
             f"confirm a valid RC for Material {material} as of the PO date"
         )
 
-    candidates = ctx.get("rc_by_material", {}).get(material, [])
     valid_rcs = [
         c for c in candidates
         if c["from"] and c["to"] and c["from"] <= po_date <= c["to"]
@@ -1091,8 +823,8 @@ def rule_15b_rc_material_validity(row, ctx):
 
     if not valid_rcs:
         return NOT_VERIFIED, (
-            f"No RC is valid for Material {material} as of PO date {po_date.date()} "
-            f"(checked {len(candidates)} RC master record(s) for this material)"
+            f"Material {material} has {len(candidates)} RC master record(s), but none "
+            f"is valid as of PO date {po_date.date()}"
         )
 
     valid_rc_numbers = sorted({c["rc_no"] for c in valid_rcs})
@@ -1244,13 +976,9 @@ def rule_rc_overlap(row, ctx):
     return VERIFIED, "No overlapping RC validity found"
 
 
-# ---------------------------------------------------------------------------
-# Rule registry + HEADER vs LINE classification
-# ---------------------------------------------------------------------------
 HEADER_LEVEL_RULE_NOS = {1, 2, 3, 4, 5, 6, 7, 8, 9}
 
 PO_LINE_RULES = [
-    # ---- HEADER-LEVEL (1-9) ----
     (1, "RC released", rule_07_rc_released),
     (2, "RC assigned consistently across same-material lines", rule_08_rc_consistency),
     (3, "IGST only for non-Gujarat vendors", rule_09_tax_logic),
@@ -1260,7 +988,6 @@ PO_LINE_RULES = [
     (7, "EXW/FCA must not have freight condition", rule_14_exw_fca_no_freight),
     (8, "Rate approval by authorised approver (DWS, joined by PO number)", rule_15_rate_approval),
     (9, "Multiple POs to same Vendor/Purchasing Group/Plant/Purchasing Date - PO Type is the primary differentiator, RFQ secondary; always Verified/Not Verified", rule_19_multiple_po_same_day),
-    # ---- LINE-LEVEL (10-19) ----
     (10, "Release Verification (PR released before PO)", rule_01_release_verification),
     (11, "PR assigned to each PO line", rule_02_pr_assigned),
     (12, "PR Creation date within 6 months (180 days) of PO", rule_03_pr_within_6_months),
@@ -1411,10 +1138,6 @@ def build_context(po_rows, cnd_by_po, rc_rows, dws_by_po=None):
                 "to": valid_to
             })
 
-        # NEW (THIS REVISION): index every RC master record by Material
-        # Code alone (not vendor+material), regardless of whether dates
-        # parsed cleanly - used by rule_15b_rc_material_validity(), which
-        # itself only counts a candidate as "valid" if both dates parsed.
         if material and rc_no:
             rc_by_material[material].append({
                 "rc_no": rc_no,
