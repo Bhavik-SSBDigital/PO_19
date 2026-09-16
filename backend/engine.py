@@ -761,41 +761,58 @@ def rule_15_rate_approval(row, ctx):
     )
 
 
-def rule_15b_rc_material_validity(row, ctx):
+RULE_15_APPLICABLE_PO_TYPES = {"ZLRM", "ZLCP"}
+
+
+def rule_15c_rc_material_validity(row, ctx):
     """
     Point #15 - RC validity by Material Code.
 
-    UPDATED PER CLIENT FEEDBACK: "When PO Material Code is not there in RC
-    data then it should be Not Applicable." Previously, a Material Code with
-    ZERO RC master records at all (POAUDITRC has no row for it, for any
-    vendor/date) fell through to the same "No RC is valid ... (checked 0 RC
-    master record(s))" Not Verified branch as a material that DOES appear in
-    the RC master but has no RC valid on the PO's specific date. Those are
-    now split into two different outcomes:
+    UPDATED PER CLIENT FLOWCHART (THIS REVISION). The flowchart changes
+    point #15 in three ways versus the prior revision:
 
-      - Material Code has NO RC master record at all (0 candidates)
-            -> Not Applicable (NEW - this is the fix)
-      - Material Code HAS RC master record(s), but none is valid as of the
-        PO's date, OR a valid RC exists but the PO's "RC no." is blank/does
-        not match it
-            -> Not Verified (UNCHANGED)
-      - Material Code HAS a valid RC as of the PO's date AND the PO's
-        "RC no." matches it
-            -> Verified (UNCHANGED)
+      1. SCOPE NARROWED TO ZLRM/ZLCP. The point now applies ONLY to PO Type
+         ZLRM or ZLCP - every other PO Type is Not Applicable. (Previously
+         this point ran for every PO line regardless of PO Type.)
 
-    This only affects the "0 RC master records for this material" case -
-    every other branch of this rule is unchanged.
+      2. "Material not found in RC master" -> Not Applicable. (Unchanged
+         from the immediately prior fix - kept as-is because the flowchart's
+         "Material found? NO -> NA" branch matches it exactly.)
+
+      3. "PO Date NOT within any RC's validity window for this material"
+         is now Not Applicable, NOT Not Verified. (CHANGED from the prior
+         revision, where this case was Not Verified - the flowchart's
+         "PO Date within RC validity? NO -> NA" branch is explicit that a
+         material with RC record(s) that don't happen to cover the PO's
+         date is Not Applicable, not a finding.)
+
+      Once a valid RC IS found for the material as of the PO's date, the
+      flowchart's remaining branches (Verified/Not Verified) are unchanged
+      in effect from the prior revision:
+        - PO's "RC no." is blank -> Not Verified (an applicable RC was
+          available and should have been referenced).
+        - PO's "RC no." matches the valid RC -> Verified.
+        - PO's "RC no." is present but does NOT match the valid RC ->
+          Not Verified.
+
+    Only Not Applicable / Verified / Not Verified are produced - no Manual/
+    Data Missing outcome, matching the flowchart exactly.
     """
     log_assumption(
         15,
-        f"New point #15 (RC validity by Material Code) reads the PO's date from "
-        f"'{PURCHASING_DATE_COLUMN}' (the column literally named \"PO Date\"), not "
-        f"'PO Created date'. Confirm this is the correct date with the client. Also "
-        f"per client feedback: a Material Code with NO RC master record at all is "
-        f"now Not Applicable (rather than Not Verified) - only a material that DOES "
-        f"appear in the RC master but has no RC valid as of the PO's date, or whose "
-        f"valid RC isn't referenced by the PO, is Not Verified.",
+        f"Point #15 (RC validity by Material Code) now applies ONLY to PO Type "
+        f"ZLRM/ZLCP per the client's flowchart - every other PO Type is Not "
+        f"Applicable for this point (this is a NARROWING from the prior revision, "
+        f"which ran this check for every PO line). It reads the PO's date from "
+        f"'{PURCHASING_DATE_COLUMN}'. A Material Code with no RC master record at "
+        f"all, OR with RC record(s) but none valid as of the PO's date, is Not "
+        f"Applicable (the 'PO Date within RC validity?' NO branch was changed from "
+        f"Not Verified to Not Applicable per the flowchart).",
     )
+
+    po_type = s(row, "PO Type")
+    if po_type not in RULE_15_APPLICABLE_PO_TYPES:
+        return NA, f"PO type is {po_type}, not one of {sorted(RULE_15_APPLICABLE_PO_TYPES)}"
 
     material = s(row, "Material Code")
     po_rc_no = s(row, "RC no.")
@@ -811,9 +828,9 @@ def rule_15b_rc_material_validity(row, ctx):
     po_date = parse_sap_date(s(row, PURCHASING_DATE_COLUMN))
 
     if not po_date:
-        return NOT_VERIFIED, (
-            f"PO date ('{PURCHASING_DATE_COLUMN}') is missing or unparseable - cannot "
-            f"confirm a valid RC for Material {material} as of the PO date"
+        return NA, (
+            f"PO date ('{PURCHASING_DATE_COLUMN}') is missing or unparseable - "
+            f"cannot confirm a valid RC for Material {material} as of the PO date"
         )
 
     valid_rcs = [
@@ -822,23 +839,39 @@ def rule_15b_rc_material_validity(row, ctx):
     ]
 
     if not valid_rcs:
-        return NOT_VERIFIED, (
-            f"Material {material} has {len(candidates)} RC master record(s), but none "
-            f"is valid as of PO date {po_date.date()}"
+        return NA, (
+            f"Material {material} has {len(candidates)} RC master record(s), but "
+            f"none is valid as of PO date {po_date.date()}"
         )
 
     valid_rc_numbers = sorted({c["rc_no"] for c in valid_rcs})
 
-    if po_rc_no and po_rc_no in valid_rc_numbers:
+    if not po_rc_no:
+        # Flowchart's "RC No. in PO? NO -> RC available for same material?"
+        # branch. Having reached here, a valid RC for this material IS
+        # available (valid_rc_numbers is non-empty), so this always lands
+        # on Not Verified in practice; the VERIFIED path is kept only for
+        # literal parity with the flowchart's "NO -> VERIFIED" leaf.
+        if valid_rc_numbers:
+            return NOT_VERIFIED, (
+                f"PO's RC no. is blank, but RC {valid_rc_numbers} is available and "
+                f"valid for Material {material} as of PO date {po_date.date()}"
+            )
+        return VERIFIED, (
+            f"PO's RC no. is blank and no RC is available for Material {material} "
+            f"as of PO date {po_date.date()}"
+        )
+
+    if po_rc_no in valid_rc_numbers:
         return VERIFIED, (
             f"PO references RC {po_rc_no}, which is valid for Material {material} "
             f"as of PO date {po_date.date()}"
         )
 
     return NOT_VERIFIED, (
-        f"PO's RC no. is '{po_rc_no or '(blank)'}', but the RC valid for Material "
-        f"{material} as of PO date {po_date.date()} is {valid_rc_numbers} - PO does "
-        f"not reference the applicable RC"
+        f"PO's RC no. is '{po_rc_no}', but the RC valid for Material {material} as "
+        f"of PO date {po_date.date()} is {valid_rc_numbers} - PO does not "
+        f"reference the applicable RC"
     )
 
 
@@ -993,7 +1026,7 @@ PO_LINE_RULES = [
     (12, "PR Creation date within 6 months (180 days) of PO", rule_03_pr_within_6_months),
     (13, "PR date precedes PO date", rule_04_pr_precedes_po),
     (14, "Delivery date after PR date", rule_05_delivery_after_pr),
-    (15, "PO's RC no. matches the RC that is valid for its Material Code as of the PO date", rule_15b_rc_material_validity),
+    (15, "For ZLRM/ZLCP only: PO's RC no. matches the RC that is valid for its Material Code as of the PO date", rule_15c_rc_material_validity),
     (16, "Vendor-Material tax code consistency (all lines count, including deleted/returned)", rule_10_vendor_material_tax_consistency),
     (17, "Service PO (ZSER) uses Item Cat D + Acct Assignment K", rule_16_zser_item_category),
     (18, "Service PO (ZCSR) uses Item Cat D + Acct Assignment A", rule_17_zcsr_item_category),
