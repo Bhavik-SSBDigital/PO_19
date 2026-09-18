@@ -8,6 +8,46 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
+# ============================================================================
+# CHANGELOG (see point_guide.md - this is the running log of every rule
+# change, kept here so future edits know why a check does what it does)
+#
+# THIS REVISION:
+#   - Point 15 replaced/confirmed: now (and going forward) an RC-material-
+#     -validity check (PO Type ZLRM/ZLCP only), not the old "PO Qty vs PR
+#     Qty" logic - the DB text in seed-point-definitions.js had drifted and
+#     was still describing the old PO-Qty-vs-PR-Qty logic; fixed in the same
+#     change per point_guide.md. Also added: when the PO's RC no. matches a
+#     valid RC and MULTIPLE RCs are valid for that material on that date,
+#     the other valid RC number(s) are now listed in the Verified remark.
+#   - Point 15 / RC Overlap now formally require the RC master to be
+#     CUMULATIVE (every RC file received is merged into history, never
+#     overwritten) - see merge-rc-master.js and the --rc argument's help
+#     text below. engine.py itself is unchanged for this - it already just
+#     reads whatever file --rc points at; the cumulative behavior lives in
+#     the merge step that must run before engine.py now.
+#   - Point 6 (EYW freight condition): now also requires the matched
+#     freight condition's VALUE to be > INR 0.00, not just the condition
+#     type being present. See FREIGHT_CONDITION_VALUE_COLUMNS,
+#     _condition_value(), _freight_condition_value_match(). Column name
+#     CONFIRMED as "Condition value" against a real POAUDITCND sample
+#     (2026-09-18) - falls back to Manual Check only if none of the
+#     fallback-cased names are found at all.
+#   - Global exclusions (PO Type ZSTO; PO Type ZJVW/ZVJW with Net Price
+#     INR 0/0.01/1) were ALREADY implemented in a prior revision
+#     (_is_excluded_line / JOB_WORK_PO_TYPES / ZSTO_PO_TYPE) and apply to
+#     every point automatically via evaluate_rule() - reconfirmed, no
+#     change needed.
+#   - STILL OUTSTANDING (not done in this revision): "Cumulative Daily PO
+#     Dataset for Point 9" - point #9's same-day duplicate-PO detection
+#     (rule_19_multiple_po_same_day) currently only compares POs within a
+#     single engine.py run's po_rows, so if a day's POs arrive across
+#     multiple separate files/runs, duplicates across those files won't be
+#     caught. This needs the same kind of cumulative-merge treatment as the
+#     RC master (a "day's cumulative PO dataset" merged across every file
+#     received that calendar day, reset at day boundary) - not yet built.
+# ============================================================================
+
 VERIFIED = "Verified"
 NOT_VERIFIED = "Not Verified"
 NA = "Not Applicable"
@@ -15,6 +55,20 @@ MANUAL = "Data Missing"
 MANUAL_CHECK = "Manual Check"
 
 FREIGHT_CONDITION_TYPES = {"ZBF1", "ZBF2", "ZRA3", "ZRB3", "ZRE3", "ZFB5"}
+
+# Point 6 (EYW inco-term) needs more than "is a freight condition type
+# present" - the condition's VALUE must also be > INR 0.00. CONFIRMED
+# against a real POAUDITCND sample (2026-09-18): the column is literally
+# named "Condition value" (lowercase v). Kept as a list, with that
+# confirmed name first, so a differently-cased export still works without
+# a code change.
+FREIGHT_CONDITION_VALUE_COLUMNS = (
+    "Condition value",
+    "Condition Value",
+    "Amount",
+    "Condition Amount",
+    "Net value",
+)
 
 NON_FREIGHT_REFERENCE_CONDITION_TYPES = {
     "R000", "NAVM", "PBXX", "NAVS", "JEXS", "ZPB0", "R001", "ZIB2", "ZPB1",
@@ -685,7 +739,69 @@ def _other_condition_types_note(matched_type, all_types):
     return f" (other condition type(s) on this line, not freight: {others})"
 
 
+def _condition_value(c):
+    """Best-effort read of a single condition row's amount, trying each
+    candidate column name in FREIGHT_CONDITION_VALUE_COLUMNS in turn.
+    Returns None if none of them are present/parseable - callers must
+    treat None as "unknown", never as "zero"."""
+    for col in FREIGHT_CONDITION_VALUE_COLUMNS:
+        if col in c and s(c, col) != "":
+            v = parse_sap_number(s(c, col))
+            if v is not None:
+                return v
+    return None
+
+
+def _freight_condition_value_match(po_number, item_no, cnd_by_po):
+    """
+    Point 6 (EYW) variant of _freight_condition_match(): also requires the
+    matched condition's value to be > 0. Returns a tuple:
+      (verified_type_or_None, freight_rows_found, any_value_readable)
+    - verified_type_or_None: the freight condition type with value > 0,
+      or None if no such row exists.
+    - freight_rows_found: list of (type, value_or_None) for every freight
+      -type condition row found on this line, regardless of value.
+    - any_value_readable: True if at least one freight row's value could
+      actually be parsed (used to tell "definitively <= 0" apart from
+      "column name unrecognised, can't tell").
+    """
+    item_s = str(item_no).lstrip("0")
+    freight_rows = [
+        c for c in cnd_by_po.get(po_number, [])
+        if s(c, "Item no").lstrip("0") == item_s and s(c, "Condition Type") in FREIGHT_CONDITION_TYPES
+    ]
+    found = []
+    any_value_readable = False
+    verified_type = None
+    for c in freight_rows:
+        t = s(c, "Condition Type")
+        val = _condition_value(c)
+        found.append((t, val))
+        if val is not None:
+            any_value_readable = True
+            if val > 0 and verified_type is None:
+                verified_type = t
+    return verified_type, found, any_value_readable
+
+
 def rule_13_eyw_freight_required(row, ctx):
+    """
+    LATEST UPDATE: per the client's revised Point 6 spec, an EYW PO line
+    needs a freight condition (ZBF1/ZBF2/ZRA3/ZRB3/ZRE3, plus ZFB5 kept
+    from the prior revision - see FREIGHT_CONDITION_TYPES) that ALSO has a
+    value > INR 0.00 - the type being present is no longer sufficient by
+    itself, matching the flowchart's 3 EYW branches:
+      - applicable freight condition present with value > 0  -> VERIFIED
+      - no applicable freight condition present at all       -> NOT VERIFIED
+      - applicable freight condition present but value <= 0  -> NOT VERIFIED
+      - Inco Term != EYW                                     -> NA
+    See _freight_condition_value_match()/_condition_value() - the value
+    column is confirmed as "Condition value" against a real POAUDITCND
+    sample (2026-09-18); a couple of alternate-casing fallbacks are kept
+    in FREIGHT_CONDITION_VALUE_COLUMNS in case a future export differs,
+    and if NONE of those names are found this still returns Manual Check
+    rather than a silent Not Verified.
+    """
     po_type = s(row, "PO Type")
     if po_type in MANUAL_CHECK_PO_TYPES:
         return MANUAL_CHECK, (
@@ -698,18 +814,36 @@ def rule_13_eyw_freight_required(row, ctx):
         return NA, f"Inco term is {inco_term}, not EYW"
     po_number = s(row, "PO number")
     item_no = s(row, "PO Line item")
-    matched_type, all_types = _freight_condition_match(po_number, item_no, ctx["cnd_by_po"])
-    if matched_type:
+    verified_type, found, any_value_readable = _freight_condition_value_match(
+        po_number, item_no, ctx["cnd_by_po"]
+    )
+
+    if verified_type:
         return VERIFIED, (
-            f"Freight condition '{matched_type}' present for EYW PO line"
-            f"{_other_condition_types_note(matched_type, all_types)}"
+            f"Freight condition '{verified_type}' present for EYW PO line with a "
+            f"value > INR 0.00"
         )
-    if all_types:
+
+    if not found:
         return NOT_VERIFIED, (
-            f"EYW PO line missing a freight condition (condition type(s) present: "
-            f"{sorted(set(all_types))}, none recognised as freight)"
+            "EYW PO line missing a freight condition (no applicable freight "
+            f"condition type {sorted(FREIGHT_CONDITION_TYPES)} found for this line)"
         )
-    return NOT_VERIFIED, "EYW PO line missing a freight condition (no condition records found for this line)"
+
+    if any_value_readable:
+        return NOT_VERIFIED, (
+            f"EYW PO line has freight condition type(s) {sorted({t for t, _ in found})} "
+            f"but the value is INR 0.00 or less on all of them "
+            f"({[(t, v) for t, v in found]}) - a freight condition must carry a "
+            f"positive value"
+        )
+
+    return MANUAL_CHECK, (
+        f"EYW PO line has freight condition type(s) {sorted({t for t, _ in found})}, "
+        f"but this condition file does not have a recognised value/amount column "
+        f"(tried {list(FREIGHT_CONDITION_VALUE_COLUMNS)}) - cannot confirm the "
+        f"value is > INR 0.00 automatically; please verify manually"
+    )
 
 
 def rule_14_exw_fca_no_freight(row, ctx):
@@ -795,6 +929,21 @@ def rule_15c_rc_material_validity(row, ctx):
         - PO's "RC no." is present but does NOT match the valid RC ->
           Not Verified.
 
+    LATEST UPDATE (Net Price exclusion for Job Work PO Types): a PO line
+    with PO Type ZJVW or ZVJW and a nominal Net Price of INR 0.00, INR
+    0.01, or INR 1 is excluded from the AI Audit entirely - this point
+    (like every other point) never even reaches the branches above for
+    such a line; evaluate_rule() short-circuits it to Not Applicable
+    before calling this function at all (see _is_low_value_job_work_po() /
+    _is_excluded_line() / JOB_WORK_PO_TYPES / JOB_WORK_LOW_VALUE_NET_PRICES
+    near the top of this file - this was already a GLOBAL exclusion
+    covering all 19 points, so no separate check is needed here; this note
+    just documents, at point #15 itself, that the exclusion applies here
+    too). In practice this is also moot for point #15 specifically: ZJVW/
+    ZVJW are not in RULE_15_APPLICABLE_PO_TYPES ({ZLRM, ZLCP}) either, so
+    the PO-type gate two lines below would already return Not Applicable
+    for them regardless of Net Price.
+
     Only Not Applicable / Verified / Not Verified are produced - no Manual/
     Data Missing outcome, matching the flowchart exactly.
     """
@@ -863,9 +1012,16 @@ def rule_15c_rc_material_validity(row, ctx):
         )
 
     if po_rc_no in valid_rc_numbers:
+        other_valid_rcs = sorted(n for n in valid_rc_numbers if n != po_rc_no)
+        note = (
+            f" (other RC(s) also valid for Material {material} as of this date: "
+            f"{other_valid_rcs})"
+            if other_valid_rcs
+            else ""
+        )
         return VERIFIED, (
             f"PO references RC {po_rc_no}, which is valid for Material {material} "
-            f"as of PO date {po_date.date()}"
+            f"as of PO date {po_date.date()}{note}"
         )
 
     return NOT_VERIFIED, (
@@ -1462,7 +1618,20 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the P2P PO audit rule engine")
     parser.add_argument("--poaudit", required=True, help="Path to POAUDIT (.csv or .xlsx)")
     parser.add_argument("--cnd", required=True, help="Path to POAUDITCND (.csv or .xlsx)")
-    parser.add_argument("--rc", required=True, help="Path to POAUDITRC (.csv or .xlsx)")
+    parser.add_argument(
+        "--rc",
+        required=True,
+        help=(
+            "Path to the RC master (.csv or .xlsx). MUST be the CUMULATIVE "
+            "RC master, not just the latest file received - run "
+            "'node scripts/merge-rc-master.js <new_rc_file>' first to merge "
+            "a newly-received RC file into backend/data/rc_master_cumulative.csv, "
+            "then pass that cumulative file here. Point #15 and RC Overlap "
+            "both depend on this covering every RC ever received, not only "
+            "the most recent extract - see merge-rc-master.js's own header "
+            "comment for why."
+        ),
+    )
     parser.add_argument("--dws", default=None, help="Path to dws_rate_approval_for_po.csv (from dws_rate_approval_extract.js) - powers point #8")
     parser.add_argument("--out", default="audit_results.xlsx", help="Output xlsx path (for humans/client review)")
     parser.add_argument("--addpo-json", default=None, help="JSON for `node addpo.js <file>` (line-level, audit_results table)")

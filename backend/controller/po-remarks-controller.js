@@ -6,6 +6,9 @@ import {
   findSystemPoint,
   normalizeBuyerResult,
 } from "../utility/system-result.js";
+// Closure tallies must only count the system's "Not Verified" points as
+// mandatory - see utility/not-verified-scope.js.
+import { getMandatoryPoints } from "../utility/not-verified-scope.js";
 
 const SUBMITTER_SELECT = {
   id: true,
@@ -43,8 +46,11 @@ async function resolveAuditResult({ auditResultId, poNumber, poLineItem }) {
 
 // Recomputes the line-item tally from the CURRENT state of the DB
 // (fresh read, so this is always correct even under concurrent writes)
-// and auto-locks the line item the instant every point is covered.
-// Returns the tally so callers can hand it straight back to the frontend.
+// and auto-locks the line item the instant every MANDATORY point (the
+// system's "Not Verified" subset - see utility/not-verified-scope.js) is
+// covered. A point already Verified/N-A/Manual Review never blocks
+// closure. Returns the tally so callers can hand it straight back to the
+// frontend.
 async function recomputeAndMaybeAutoClose(auditResultId, userId) {
   const fresh = await prisma.auditResult.findUnique({
     where: { id: auditResultId },
@@ -61,7 +67,7 @@ async function recomputeAndMaybeAutoClose(auditResultId, userId) {
   ).map((r) => r.pointNo);
 
   const tally = computeTally(
-    fresh.results,
+    getMandatoryPoints(fresh.results),
     fresh.checkedPoints,
     remarkedPointNos,
   );
@@ -332,7 +338,7 @@ export const getPoRemarks = async (req, res) => {
         })
       ).map((r) => r.pointNo);
       tally = computeTally(
-        resolvedAuditResult.results,
+        getMandatoryPoints(resolvedAuditResult.results),
         resolvedAuditResult.checkedPoints,
         remarkedPointNos,
       );

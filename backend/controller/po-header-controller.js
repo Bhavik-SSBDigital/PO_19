@@ -15,6 +15,9 @@ import {
   findSystemPoint,
   normalizeBuyerResult,
 } from "../utility/system-result.js";
+// Closure tallies must only count the system's "Not Verified" points as
+// mandatory - see utility/not-verified-scope.js.
+import { getMandatoryPoints } from "../utility/not-verified-scope.js";
 
 const SUBMITTER_SELECT = {
   id: true,
@@ -40,8 +43,11 @@ function canWriteHeaderRemarks(user, headerRecord) {
 
 // Header-level counterpart to recomputeAndMaybeAutoClose() in
 // po-remarks-controller.js. Same rule: union of checkedPoints and
-// distinct remarked pointNos must cover every point in
-// PoHeaderResult.results before the PO's header auto-closes.
+// distinct remarked pointNos must cover every MANDATORY point (the
+// system's "Not Verified" subset - see utility/not-verified-scope.js) in
+// PoHeaderResult.results before the PO's header auto-closes. A point the
+// system already marked Verified/N-A/Manual Review never has to be
+// touched by the buyer.
 async function recomputeAndMaybeAutoCloseHeader(po_number, userId) {
   const fresh = await prisma.poHeaderResult.findUnique({
     where: { po_number },
@@ -57,8 +63,11 @@ async function recomputeAndMaybeAutoCloseHeader(po_number, userId) {
     })
   ).map((r) => r.pointNo);
 
+  // Only the system's "Not Verified" points are mandatory for closure -
+  // an already Verified/N-A/Manual Review point never blocks (or counts
+  // toward) this tally. See utility/not-verified-scope.js.
   const tally = computeTally(
-    fresh.results,
+    getMandatoryPoints(fresh.results),
     fresh.checkedPoints,
     remarkedPointNos,
   );
@@ -228,7 +237,7 @@ export const getPoHeaderRemarks = async (req, res) => {
         })
       ).map((r) => r.pointNo);
       tally = computeTally(
-        headerRecord.results,
+        getMandatoryPoints(headerRecord.results),
         headerRecord.checkedPoints,
         remarkedPointNos,
       );

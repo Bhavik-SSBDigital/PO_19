@@ -8,6 +8,9 @@ import {
 } from "../utility/severity.js";
 import { computeTally } from "../utility/point-tally.js";
 import { systemResultLabel } from "../utility/system-result.js";
+// Closure tallies must only count the system's "Not Verified" points as
+// mandatory - see utility/not-verified-scope.js.
+import { getMandatoryPoints } from "../utility/not-verified-scope.js";
 import {
   getVendorName,
   getVendorInfo,
@@ -251,12 +254,20 @@ function withPointReference(
   });
 }
 
-// Shared tally helper for both call sites below.
+// Shared tally helper for both call sites below. Only the system's "Not
+// Verified" points are mandatory for closure - see
+// utility/not-verified-scope.js. Matches the same scoping used by
+// header-results.js and po-remarks-controller.js so this line item's
+// tally can never disagree with the one that actually drives auto-close.
 function tallyForRow(row, remarksByPoint) {
   const remarkedPointNos = [...remarksByPoint.keys()]
     .filter((k) => (remarksByPoint.get(k) || []).length > 0)
     .map(Number);
-  return computeTally(row.results, row.checkedPoints, remarkedPointNos);
+  return computeTally(
+    getMandatoryPoints(row.results),
+    row.checkedPoints,
+    remarkedPointNos,
+  );
 }
 
 /**

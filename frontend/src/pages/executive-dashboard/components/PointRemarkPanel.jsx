@@ -70,12 +70,22 @@ const PointRemarkPanel = ({
   const [checked, setChecked] = useState(initialChecked);
   const [checkBusy, setCheckBusy] = useState(false);
   const [isSystemResultWrong, setIsSystemResultWrong] = useState("informative");
-  const [buyerResult, setBuyerResult] = useState(systemResult || "");
+  const [buyerResult, setBuyerResult] = useState("");
 
-  // Reset buyerResult to systemResult when switching to "informative"
+  // Keep buyerResult in sync with the "Is PO corrected?" toggle:
+  //  - "informative" (No) -> pre-fill with the system's own result, since
+  //    that's genuinely the intended default for a non-disputing remark.
+  //  - "wrong" (Yes, PO corrected) -> force back to BLANK. Previously this
+  //    silently carried over the system's result, so the dropdown looked
+  //    pre-answered even though the buyer hadn't chosen anything yet -
+  //    confusing, since the whole point of this mode is to let the buyer
+  //    pick something DIFFERENT from the system. Never pre-select a value
+  //    here; make the buyer choose explicitly every time.
   useEffect(() => {
     if (isSystemResultWrong === "informative") {
       setBuyerResult(systemResult || "");
+    } else {
+      setBuyerResult("");
     }
   }, [isSystemResultWrong, systemResult]);
 
@@ -213,13 +223,24 @@ const PointRemarkPanel = ({
   let chipVariant = "outlined";
 
   if (count > 0) {
+    // A point WITH a remark is "View Remarks" regardless of section lock
+    // state — viewing is always allowed. Locking only ever blocks adding
+    // a NEW remark, never viewing existing ones.
     chipLabel = "View Remarks";
     chipColor = ownRemark ? "primary" : "info";
     chipVariant = "filled";
   } else if (canSubmit && locked) {
-    chipLabel = "Locked";
-    chipColor = "warning";
-    chipIcon = <LockRoundedIcon fontSize="small" />;
+    // IMPORTANT: `locked` here is the SECTION's (whole line item's /
+    // whole PO header's) closure state, not this point's own state — a
+    // point can have zero remarks and still be perfectly fine, because it
+    // was never mandatory (system already said Verified/N-A/Manual
+    // Review). Do NOT label this "Locked" - that reads as if THIS POINT
+    // was closed, which is never true; only a section closes. Show a
+    // quiet, non-alarming "No Remark" instead, with no lock icon.
+    chipLabel = "No Remark";
+    chipColor = "default";
+    chipVariant = "outlined";
+    chipIcon = <ChatBubbleRoundedIcon fontSize="small" />;
   } else if (canSubmit) {
     chipLabel = "Add Remark";
     chipColor = "success";
@@ -292,7 +313,7 @@ const PointRemarkPanel = ({
               {latest.buyerResult && (
                 <Box component="span" sx={{ display: "block", color: "text.secondary" }}>
                   Buyer's Result: {latest.buyerResult}
-                  {latest.isSystemResultWrong ? " (flagged as wrong)" : " (informative)"}
+                  {latest.isSystemResultWrong ? " (PO Corrected)" : " (System Altercation)"}
                 </Box>
               )}
             </Typography>
@@ -302,9 +323,16 @@ const PointRemarkPanel = ({
 
       <Dialog open={open} onClose={() => setOpen(false)} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
         <DialogTitle sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", bgcolor: "grey.50", borderBottom: "1px solid", borderColor: "divider" }}>
-          <Typography variant="h6" fontWeight={700}>
-            Point {pointNo} Remarks
-          </Typography>
+          <Box>
+            <Typography variant="h6" fontWeight={700}>
+              Point {pointNo}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              {count > 0
+                ? `${count} remark${count === 1 ? "" : "s"} on this point`
+                : "No remarks on this point yet"}
+            </Typography>
+          </Box>
           <IconButton onClick={() => setOpen(false)} size="small">
             <CloseIcon />
           </IconButton>
@@ -324,13 +352,16 @@ const PointRemarkPanel = ({
           ) : (
             <Stack spacing={2} sx={{ mb: canSubmit && !locked && !ownRemark ? 3 : 0 }}>
               {locked && (
-                <Chip
+                <Alert
                   icon={<LockRoundedIcon fontSize="small" />}
-                  label="This line item is checked — remarks are locked"
-                  color="warning"
-                  variant="outlined"
+                  severity="info"
                   sx={{ fontWeight: 600 }}
-                />
+                >
+                  The section this point belongs to has been closed.
+                  {count === 0
+                    ? " No remark was recorded for this specific point — that's expected if it never needed one."
+                    : " You can still view the remark(s) below, but no new ones can be added."}
+                </Alert>
               )}
 
               {!locked && systemResult && (
@@ -390,7 +421,7 @@ const PointRemarkPanel = ({
                       )}
                       <Chip
                         size="small"
-                        label={r.isSystemResultWrong ? "System result flagged wrong" : "Informative only"}
+                        label={r.isSystemResultWrong ? "PO Corrected" : "System Altercation"}
                         color={r.isSystemResultWrong ? "error" : "default"}
                         variant={r.isSystemResultWrong ? "filled" : "outlined"}
                         sx={{ height: 24, fontSize: "0.7rem", fontWeight: 600 }}
@@ -426,15 +457,15 @@ const PointRemarkPanel = ({
 
               <FormControl>
                 <FormLabel sx={{ fontWeight: 700, fontSize: "0.85rem", mb: 0.5 }}>
-                  Is the system's result wrong, or is this just informative?
+                  Is PO corrected?
                 </FormLabel>
                 <RadioGroup
                   row
                   value={isSystemResultWrong}
                   onChange={(e) => setIsSystemResultWrong(e.target.value)}
                 >
-                  <FormControlLabel value="wrong" control={<Radio size="small" />} label="System's result is wrong" />
-                  <FormControlLabel value="informative" control={<Radio size="small" />} label="Just informative" />
+                  <FormControlLabel value="wrong" control={<Radio size="small" />} label="Yes — PO corrected" />
+                  <FormControlLabel value="informative" control={<Radio size="small" />} label="No — informative only" />
                 </RadioGroup>
               </FormControl>
 
@@ -443,13 +474,13 @@ const PointRemarkPanel = ({
                 size="small"
                 fullWidth
                 label="Buyer's Result (what should it be?)"
-                value={buyerResult || systemResult || ""}
+                value={buyerResult}
                 onChange={(e) => setBuyerResult(e.target.value)}
                 disabled={isSystemResultWrong === "informative"}
                 helperText={
                   isSystemResultWrong === "informative"
                     ? "Buyer's result is not needed for informative remarks. It will use the system's result."
-                    : "Defaults to the system's result — change it if you disagree."
+                    : "Select what the result should actually be — nothing is pre-selected."
                 }
               >
                 {SYSTEM_RESULT_OPTIONS.map((opt) => (

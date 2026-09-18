@@ -31,7 +31,11 @@ export const VerificationChip = ({ result }) => {
   if (result.manual_verification) {
     return (
       <Chip
-        icon={<PanToolAltRoundedIcon style={{ fontSize: "13px", color: "#b45309" }} />}
+        icon={
+          <PanToolAltRoundedIcon
+            style={{ fontSize: "13px", color: "#b45309" }}
+          />
+        }
         size="small"
         label="Manual Verify"
         sx={{
@@ -54,7 +58,12 @@ export const VerificationChip = ({ result }) => {
         size="small"
         label="Not Applicable"
         color="default"
-        sx={{ borderRadius: "20px", width: "130px", fontSize: "12px", fontWeight: "700" }}
+        sx={{
+          borderRadius: "20px",
+          width: "130px",
+          fontSize: "12px",
+          fontWeight: "700",
+        }}
       />
     );
   }
@@ -65,7 +74,12 @@ export const VerificationChip = ({ result }) => {
         size="small"
         label="Data Missing"
         color="warning"
-        sx={{ borderRadius: "20px", width: "120px", fontSize: "12px", fontWeight: "700" }}
+        sx={{
+          borderRadius: "20px",
+          width: "120px",
+          fontSize: "12px",
+          fontWeight: "700",
+        }}
       />
     );
   }
@@ -76,7 +90,12 @@ export const VerificationChip = ({ result }) => {
         size="small"
         label="Verified"
         color="success"
-        sx={{ borderRadius: "20px", width: "110px", fontSize: "12px", fontWeight: "700" }}
+        sx={{
+          borderRadius: "20px",
+          width: "110px",
+          fontSize: "12px",
+          fontWeight: "700",
+        }}
       />
     );
   }
@@ -86,18 +105,28 @@ export const VerificationChip = ({ result }) => {
       size="small"
       label="Not Verified"
       color="error"
-      sx={{ borderRadius: "20px", width: "110px", fontSize: "12px", fontWeight: "700" }}
+      sx={{
+        borderRadius: "20px",
+        width: "110px",
+        fontSize: "12px",
+        fontWeight: "700",
+      }}
     />
   );
 };
 
 const getSeverityColor = (severity) => {
   switch (severity?.toLowerCase()) {
-    case "critical": return "error";
-    case "high": return "warning";
-    case "medium": return "info";
-    case "low": return "success";
-    default: return "default";
+    case "critical":
+      return "error";
+    case "high":
+      return "warning";
+    case "medium":
+      return "info";
+    case "low":
+      return "success";
+    default:
+      return "default";
   }
 };
 
@@ -123,6 +152,10 @@ const AuditResults = ({ searchData }) => {
 
   const [locked, setLocked] = useState(false);
   const [lockBusy, setLockBusy] = useState(false);
+  // Default view = only the system's "Not Verified" points - see the
+  // identical filter in PoHeaderChecksPanel.jsx. Display-only; never
+  // changes what's fetched or how the tally/auto-close is computed.
+  const [showAllPoints, setShowAllPoints] = useState(false);
 
   // NEW — local, live-patchable copy of the results array.
   const [rows, setRows] = useState([]);
@@ -187,11 +220,15 @@ const AuditResults = ({ searchData }) => {
       });
       setLocked(Boolean(res?.remarksLocked));
       toast.success(
-        res?.remarksLocked ? "Line item marked as checked" : "Line item reopened",
+        res?.remarksLocked
+          ? "Line item marked as checked"
+          : "Line item reopened",
       );
     } catch (error) {
       toast.error(
-        error?.response?.data?.message || error?.message || "Failed to update checked status",
+        error?.response?.data?.message ||
+          error?.message ||
+          "Failed to update checked status",
       );
     } finally {
       setLockBusy(false);
@@ -201,6 +238,11 @@ const AuditResults = ({ searchData }) => {
   if (!searchData || !searchData.results || searchData.results.length === 0) {
     return null;
   }
+
+  const isNotVerified = (p) =>
+    !p.verified && !p.not_applicable && !p.manual_verification;
+  const visibleRows = showAllPoints ? rows : rows.filter(isNotVerified);
+  const hiddenCount = rows.length - visibleRows.length;
 
   return (
     <Box sx={{ mt: 3, mb: 2, px: 2 }}>
@@ -221,7 +263,13 @@ const AuditResults = ({ searchData }) => {
         {poNumber && poLineItem && (
           <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
             <Chip
-              icon={locked ? <LockRoundedIcon fontSize="small" /> : <LockOpenRoundedIcon fontSize="small" />}
+              icon={
+                locked ? (
+                  <LockRoundedIcon fontSize="small" />
+                ) : (
+                  <LockOpenRoundedIcon fontSize="small" />
+                )
+              }
               label={locked ? "Line Item Checked — Remarks Locked" : "Open"}
               color={locked ? "warning" : "default"}
               size="small"
@@ -243,32 +291,84 @@ const AuditResults = ({ searchData }) => {
       </Box>
 
       {/* Reads `rows`, not searchData.results — this is what makes it live */}
-      <SectionTallyBar points={rows} locked={locked} label="Line points reviewed" />
+      <SectionTallyBar
+        points={rows}
+        locked={locked}
+        label="Line points reviewed"
+      />
+
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          mb: 1,
+          flexWrap: "wrap",
+          gap: 1,
+        }}
+      >
+        <Typography
+          variant="caption"
+          sx={{ fontWeight: 700, color: "text.secondary" }}
+        >
+          Showing {showAllPoints ? "all" : "Not Verified"} points (
+          {visibleRows.length} of {rows.length})
+        </Typography>
+        {hiddenCount > 0 || showAllPoints ? (
+          <Button
+            size="small"
+            onClick={() => setShowAllPoints((v) => !v)}
+            sx={{ textTransform: "none", fontWeight: 700 }}
+          >
+            {showAllPoints
+              ? "Show Not Verified only"
+              : `Show all ${rows.length} points (${hiddenCount} already Verified/N-A/Manual Review)`}
+          </Button>
+        ) : null}
+      </Box>
 
       <TableContainer component={Paper} variant="outlined">
         <Table size="small">
           <TableHead sx={{ bgcolor: "#f5f5f5" }}>
             <TableRow>
               <TableCell sx={{ fontWeight: 600, width: "5%" }}>Pt #</TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "20%" }}>Title & Summary</TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "20%" }}>Logic</TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "7%" }}>Severity</TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "10%" }}>Status</TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "12%" }}>System Remarks</TableCell>
-              <TableCell sx={{ fontWeight: 600, width: "26%" }}>Buyer Remarks</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "20%" }}>
+                Title & Summary
+              </TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "20%" }}>
+                Logic
+              </TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "7%" }}>
+                Severity
+              </TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "10%" }}>
+                Status
+              </TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "12%" }}>
+                System Remarks
+              </TableCell>
+              <TableCell sx={{ fontWeight: 600, width: "26%" }}>
+                Buyer Remarks
+              </TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
-            {rows.map((row, index) => (
+            {visibleRows.map((row, index) => (
               <TableRow key={row.pointNo ?? index} hover>
-                <TableCell sx={{ verticalAlign: "top", fontWeight: 700 }}>{row.pointNo}</TableCell>
+                <TableCell sx={{ verticalAlign: "top", fontWeight: 700 }}>
+                  {row.pointNo}
+                </TableCell>
 
                 <TableCell sx={{ verticalAlign: "top" }}>
                   <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
                     {row.title || `Point ${row.pointNo}`}
                   </Typography>
                   {row.summary && (
-                    <Typography variant="body2" color="textSecondary" sx={{ mt: 0.5 }}>
+                    <Typography
+                      variant="body2"
+                      color="textSecondary"
+                      sx={{ mt: 0.5 }}
+                    >
                       {row.summary}
                     </Typography>
                   )}
@@ -280,7 +380,12 @@ const AuditResults = ({ searchData }) => {
 
                 <TableCell sx={{ verticalAlign: "top" }}>
                   {row.severity && (
-                    <Chip label={row.severity} size="small" color={getSeverityColor(row.severity)} variant="outlined" />
+                    <Chip
+                      label={row.severity}
+                      size="small"
+                      color={getSeverityColor(row.severity)}
+                      variant="outlined"
+                    />
                   )}
                 </TableCell>
 
@@ -298,7 +403,9 @@ const AuditResults = ({ searchData }) => {
                       ))}
                     </ul>
                   ) : (
-                    <Typography variant="body2" color="textSecondary">None</Typography>
+                    <Typography variant="body2" color="textSecondary">
+                      None
+                    </Typography>
                   )}
                 </TableCell>
 
@@ -320,11 +427,32 @@ const AuditResults = ({ searchData }) => {
                       compact
                     />
                   ) : (
-                    <Typography variant="caption" color="text.secondary">—</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      —
+                    </Typography>
                   )}
                 </TableCell>
               </TableRow>
             ))}
+            {visibleRows.length === 0 && rows.length > 0 && (
+              <TableRow>
+                <TableCell
+                  colSpan={7}
+                  align="center"
+                  sx={{ color: "text.secondary", py: 3 }}
+                >
+                  Nothing "Not Verified" here — every line point is already
+                  Verified / Not Applicable / Manual Review.{" "}
+                  <Button
+                    size="small"
+                    onClick={() => setShowAllPoints(true)}
+                    sx={{ textTransform: "none", fontWeight: 700 }}
+                  >
+                    Show all {rows.length} points
+                  </Button>
+                </TableCell>
+              </TableRow>
+            )}
           </TableBody>
         </Table>
       </TableContainer>

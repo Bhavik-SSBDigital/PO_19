@@ -29,6 +29,8 @@ const SUBMITTER_SELECT = {
   lastName: true,
 };
 
+const RC_STATUS_OPTIONS = ["Verified", "Not Verified"];
+
 /**
  * ============================================================================
  * LINE-LEVEL (PoRemark) — unchanged behavior
@@ -65,6 +67,17 @@ function buildScopedRemarkWhere(req, body = {}) {
       submittedAt.lte = end;
     }
     and.push({ submittedAt });
+  }
+  // Dimension B filter (see utility/effective-result.js): "POs Corrected"
+  // vs "System Altercations". isSystemResultWrong is a real column on
+  // PoRemark/PoHeaderRemark/PoRcRemark, so this filters directly in the
+  // DB rather than the fetch-all-then-filter pattern used below for
+  // systemResult (which isn't a column - it's derived from the joined
+  // AuditResult/PoHeaderResult/RcOverlapResult).
+  if (body.isPoCorrected === "corrected") {
+    and.push({ isSystemResultWrong: true });
+  } else if (body.isPoCorrected === "altercation") {
+    and.push({ isSystemResultWrong: false });
   }
 
   const auditResultAnd = [];
@@ -109,6 +122,10 @@ function buildLineReportRow(remark) {
     resultAltered: remark.isSystemResultWrong
       ? "Yes — system result flagged wrong"
       : "No — informative only",
+    // Dimension B (see utility/effective-result.js) - reporting-only label,
+    // never used for pending/closed coverage math. Drives the
+    // POs Corrected | System Altercations filter below.
+    isPoCorrected: !!remark.isSystemResultWrong,
 
     submittedById: remark.submittedBy,
     submittedByName:
@@ -206,7 +223,7 @@ async function fetchLineRemarksAndRows(
 
 /**
  * ============================================================================
- * HEADER-LEVEL (PoHeaderRemark) — NEW
+ * HEADER-LEVEL (PoHeaderRemark)
  *
  * Same visibility + filter contract as line-level, but keyed by po_number
  * directly (no line item, no AuditResult). Scoped through the poHeaderResult
@@ -245,6 +262,11 @@ function buildScopedHeaderRemarkWhere(req, body = {}) {
       submittedAt.lte = end;
     }
     and.push({ submittedAt });
+  }
+  if (body.isPoCorrected === "corrected") {
+    and.push({ isSystemResultWrong: true });
+  } else if (body.isPoCorrected === "altercation") {
+    and.push({ isSystemResultWrong: false });
   }
 
   const headerResultAnd = [];
@@ -289,6 +311,10 @@ function buildHeaderReportRow(remark) {
     resultAltered: remark.isSystemResultWrong
       ? "Yes — system result flagged wrong"
       : "No — informative only",
+    // Dimension B (see utility/effective-result.js) - reporting-only label,
+    // never used for pending/closed coverage math. Drives the
+    // POs Corrected | System Altercations filter below.
+    isPoCorrected: !!remark.isSystemResultWrong,
 
     submittedById: remark.submittedBy,
     submittedByName:
@@ -391,10 +417,171 @@ async function fetchHeaderRemarksAndRows(
 
 /**
  * ============================================================================
- * Combined endpoint — returns BOTH sections. Each section has its own
- * page/pageSize so the two tables can paginate independently:
+ * RC-LEVEL (PoRcRemark) — NEW
+ *
+ * Same visibility contract as line/header-level, but keyed by
+ * rcOverlapResultId (no po_number, no line item, no pointNo — an RC only
+ * has ONE check). Scoped through the rcOverlapResult relation. Filters
+ * that don't apply to an RC (plant, poType, systemResult-by-point) are
+ * either no-ops or replaced with the RC-appropriate equivalent
+ * (`rcStatus` instead of `systemResult`).
+ * ============================================================================
+ */
+function buildScopedRcRemarkWhere(req, body = {}) {
+  const user = req.user || {};
+  const and = [];
+
+  if (body.rcNumber) {
+    and.push({ rcNumber: { contains: body.rcNumber, mode: "insensitive" } });
+  }
+  if (body.search) {
+    and.push({
+      OR: [
+        { rcNumber: { contains: body.search, mode: "insensitive" } },
+        { vendorCode: { contains: body.search, mode: "insensitive" } },
+        { rcMaterialCode: { contains: body.search, mode: "insensitive" } },
+        { remark: { contains: body.search, mode: "insensitive" } },
+      ],
+    });
+  }
+  if (body.dateFrom || body.dateTo) {
+    const submittedAt = {};
+    if (body.dateFrom) submittedAt.gte = new Date(body.dateFrom);
+    if (body.dateTo) {
+      const end = new Date(body.dateTo);
+      end.setHours(23, 59, 59, 999);
+      submittedAt.lte = end;
+    }
+    and.push({ submittedAt });
+  }
+  if (body.isPoCorrected === "corrected") {
+    and.push({ isSystemResultWrong: true });
+  } else if (body.isPoCorrected === "altercation") {
+    and.push({ isSystemResultWrong: false });
+  }
+
+  const rcResultAnd = [];
+  if (body.vendorCode) rcResultAnd.push({ vendorCode: body.vendorCode });
+  if (body.rcMaterialCode)
+    rcResultAnd.push({ rcMaterialCode: body.rcMaterialCode });
+  if (body.purchaseGroup)
+    rcResultAnd.push({ purchaseGroups: { has: body.purchaseGroup } });
+  if (body.rcStatus) rcResultAnd.push({ status: body.rcStatus });
+  if (rcResultAnd.length) {
+    and.push({ rcOverlapResult: { AND: rcResultAnd } });
+  }
+
+  if (user.isAdmin || user.isProcurementManager) {
+    if (body.submittedBy) and.push({ submittedBy: body.submittedBy });
+  } else if (user.isBuyer) {
+    const userId = user.id || user.userId;
+    and.push({ submittedBy: userId });
+  } else {
+    const err = new Error("Not authorized to view the remarks report");
+    err.status = 403;
+    throw err;
+  }
+
+  return and.length ? { AND: and } : {};
+}
+
+function buildRcReportRow(remark) {
+  const rc = remark.rcOverlapResult || {};
+  const vendor = getVendorInfo(rc.vendorCode);
+  const purchaseGroupNames = (rc.purchaseGroups || [])
+    .map((code) => getPurchaseGroupName(code) || code)
+    .join(", ");
+
+  return {
+    level: "rc",
+    poNumber: "",
+    lineItem: "",
+    rcNumber: remark.rcNumber,
+    pointNo: "",
+    pointTitle: "RC Overlap (Rule 19)",
+
+    buyerRemark: remark.remark,
+    buyerResult: remark.buyerResult || "",
+    resultAltered: remark.isSystemResultWrong
+      ? "Yes — system result flagged wrong"
+      : "No — informative only",
+    // Dimension B (see utility/effective-result.js) - reporting-only label,
+    // never used for pending/closed coverage math. Drives the
+    // POs Corrected | System Altercations filter below.
+    isPoCorrected: !!remark.isSystemResultWrong,
+
+    submittedById: remark.submittedBy,
+    submittedByName:
+      [remark.submitter?.firstName, remark.submitter?.lastName]
+        .filter(Boolean)
+        .join(" ") ||
+      remark.submitter?.username ||
+      "",
+    submittedAt: remark.submittedAt,
+
+    systemResult: rc.status || "",
+    systemSeverity: "",
+    systemRemarks: rc.remark || "",
+
+    vendorCode: rc.vendorCode || "",
+    vendorName: vendor?.name || getVendorName(rc.vendorCode),
+    vendorGstin: vendor?.gstin || "",
+    rcMaterialCode: rc.rcMaterialCode || "",
+    purchaseGroups: purchaseGroupNames,
+    validFrom: rc.validFrom,
+    validTo: rc.validTo,
+    remarksLocked: !!rc.remarksLocked,
+    issueStatus: rc.remarksLocked ? "Closed" : "Open",
+  };
+}
+
+async function fetchRcRemarksAndRows(
+  req,
+  { paginate, pageKey = "rcPage", pageSizeKey = "rcPageSize" },
+) {
+  const body = req.body || {};
+  const where = buildScopedRcRemarkWhere(req, body);
+
+  const orderBy =
+    body.sort === "po" ? [{ rcNumber: "asc" }] : [{ submittedAt: "desc" }];
+
+  const queryArgs = {
+    where,
+    include: { submitter: { select: SUBMITTER_SELECT }, rcOverlapResult: true },
+    orderBy,
+  };
+
+  if (paginate) {
+    const page = body[pageKey] ?? 1;
+    const pageSize = body[pageSizeKey] ?? 25;
+    const take = Math.min(Number(pageSize) || 25, 500);
+    const skip = (Math.max(Number(page) || 1, 1) - 1) * take;
+    const [remarks, total] = await Promise.all([
+      prisma.poRcRemark.findMany({ ...queryArgs, take, skip }),
+      prisma.poRcRemark.count({ where }),
+    ]);
+    return {
+      rows: remarks.map(buildRcReportRow),
+      total,
+      page: Number(page),
+      pageSize: take,
+    };
+  }
+
+  const remarks = await prisma.poRcRemark.findMany({
+    ...queryArgs,
+    take: 20000,
+  });
+  return { rows: remarks.map(buildRcReportRow), total: remarks.length };
+}
+
+/**
+ * ============================================================================
+ * Combined endpoint — returns ALL THREE sections. Each section has its own
+ * page/pageSize so the tables can paginate independently:
  *   body.page / body.pageSize             -> line-level section
  *   body.headerPage / body.headerPageSize -> header-level section
+ *   body.rcPage / body.rcPageSize         -> RC-level section
  * ============================================================================
  */
 export const getPoRemarksReport = async (req, res) => {
@@ -402,12 +589,13 @@ export const getPoRemarksReport = async (req, res) => {
     await ensureSeverityLoaded();
     await ensurePointDefinitionsLoaded();
 
-    const [line, header] = await Promise.all([
+    const [line, header, rc] = await Promise.all([
       fetchLineRemarksAndRows(req, { paginate: true }),
       fetchHeaderRemarksAndRows(req, { paginate: true }),
+      fetchRcRemarksAndRows(req, { paginate: true }),
     ]);
 
-    return res.status(200).json({ line, header });
+    return res.status(200).json({ line, header, rc });
   } catch (error) {
     if (error.status)
       return res.status(error.status).json({ message: error.message });
@@ -431,14 +619,19 @@ export const getPoRemarksReportFilters = async (req, res) => {
     const headerScopeWhere = isAdminOrPM
       ? {}
       : { submittedBy: user.id || user.userId };
+    const rcScopeWhere = isAdminOrPM
+      ? {}
+      : { submittedBy: user.id || user.userId };
 
     const [
       distinctLinePoints,
       distinctHeaderPoints,
       lineRemarksWithVendor,
       headerRemarksWithVendor,
+      rcRemarksWithVendor,
       lineSubmitterRows,
       headerSubmitterRows,
+      rcSubmitterRows,
     ] = await Promise.all([
       prisma.poRemark.findMany({
         where: lineScopeWhere,
@@ -462,6 +655,10 @@ export const getPoRemarksReportFilters = async (req, res) => {
         where: headerScopeWhere,
         select: { poHeaderResult: { select: { vendor_code: true } } },
       }),
+      prisma.poRcRemark.findMany({
+        where: rcScopeWhere,
+        select: { rcOverlapResult: { select: { vendorCode: true } } },
+      }),
       isAdminOrPM
         ? prisma.poRemark.findMany({
             distinct: ["submittedBy"],
@@ -470,6 +667,12 @@ export const getPoRemarksReportFilters = async (req, res) => {
         : Promise.resolve([]),
       isAdminOrPM
         ? prisma.poHeaderRemark.findMany({
+            distinct: ["submittedBy"],
+            select: { submitter: { select: SUBMITTER_SELECT } },
+          })
+        : Promise.resolve([]),
+      isAdminOrPM
+        ? prisma.poRcRemark.findMany({
             distinct: ["submittedBy"],
             select: { submitter: { select: SUBMITTER_SELECT } },
           })
@@ -499,12 +702,22 @@ export const getPoRemarksReportFilters = async (req, res) => {
       const name = getVendorName(code);
       vendorMap.set(code, { code, label: name ? `${code} — ${name}` : code });
     }
+    for (const r of rcRemarksWithVendor) {
+      const code = r.rcOverlapResult?.vendorCode;
+      if (!code || vendorMap.has(code)) continue;
+      const name = getVendorName(code);
+      vendorMap.set(code, { code, label: name ? `${code} — ${name}` : code });
+    }
     const vendors = [...vendorMap.values()].sort((a, b) =>
       a.code.localeCompare(b.code),
     );
 
     const submitterMap = new Map();
-    for (const r of [...lineSubmitterRows, ...headerSubmitterRows]) {
+    for (const r of [
+      ...lineSubmitterRows,
+      ...headerSubmitterRows,
+      ...rcSubmitterRows,
+    ]) {
       const s = r.submitter;
       if (!s || submitterMap.has(s.id)) continue;
       const name =
@@ -533,6 +746,7 @@ export const getPoRemarksReportFilters = async (req, res) => {
         label: p.name ? `${p.code} — ${p.name}` : p.code,
       })),
       systemResults: SYSTEM_RESULT_OPTIONS.map((r) => ({ code: r, label: r })),
+      rcStatuses: RC_STATUS_OPTIONS.map((s) => ({ code: s, label: s })),
     });
   } catch (error) {
     console.error("Error in getPoRemarksReportFilters:", error);
@@ -572,6 +786,29 @@ const REPORT_COLUMNS = [
   ["Issue Status", "issueStatus"],
 ];
 
+// RC-level rows have a different shape (no PO/line item/pointNo, but
+// rcNumber/rcMaterialCode/validFrom/validTo/purchaseGroups instead), so the
+// RC sheet gets its own column set rather than reusing REPORT_COLUMNS.
+const RC_REPORT_COLUMNS = [
+  ["RC Number", "rcNumber"],
+  ["Vendor Code", "vendorCode"],
+  ["Vendor Name", "vendorName"],
+  ["Vendor GSTIN", "vendorGstin"],
+  ["Material Code", "rcMaterialCode"],
+  ["Purchase Group(s)", "purchaseGroups"],
+  ["Valid From", "validFrom"],
+  ["Valid To", "validTo"],
+  ["RC Status", "systemResult"],
+  ["Buyer's Remark", "buyerRemark"],
+  ["Buyer's Result", "buyerResult"],
+  ["Result Altered?", "resultAltered"],
+  ["Submitted By", "submittedByName"],
+  ["Submitted At", "submittedAt"],
+  ["System Remarks", "systemRemarks"],
+  ["Remarks Locked", "remarksLocked"],
+  ["Issue Status", "issueStatus"],
+];
+
 function rowsToSheetData(columns, rows) {
   return [
     columns.map(([header]) => header),
@@ -597,14 +834,16 @@ function addSheet(workbook, columns, rows, sheetName) {
 export const downloadPoRemarksReport = async (req, res) => {
   try {
     await ensurePointDefinitionsLoaded();
-    const [line, header] = await Promise.all([
+    const [line, header, rc] = await Promise.all([
       fetchLineRemarksAndRows(req, { paginate: false }),
       fetchHeaderRemarksAndRows(req, { paginate: false }),
+      fetchRcRemarksAndRows(req, { paginate: false }),
     ]);
 
     const workbook = XLSX.utils.book_new();
     addSheet(workbook, REPORT_COLUMNS, line.rows, "Line-Level Remarks");
     addSheet(workbook, REPORT_COLUMNS, header.rows, "Header-Level Remarks");
+    addSheet(workbook, RC_REPORT_COLUMNS, rc.rows, "RC-Level Remarks");
     const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
 
     const filename = `buyer-remarks-report-${new Date().toISOString().slice(0, 10)}.xlsx`;
@@ -641,12 +880,26 @@ const ISSUE_TRACKER_COLUMNS = [
   ["PO Type Name", "poTypeName"],
 ];
 
+const RC_ISSUE_TRACKER_COLUMNS = [
+  ["RC Number", "rcNumber"],
+  ["Issue Status", "issueStatus"],
+  ["Buyer's Remark", "buyerRemark"],
+  ["RC Status", "systemResult"],
+  ["Buyer's Result", "buyerResult"],
+  ["Result Altered?", "resultAltered"],
+  ["Submitted By", "submittedByName"],
+  ["Submitted At", "submittedAt"],
+  ["Vendor Name", "vendorName"],
+  ["Purchase Group(s)", "purchaseGroups"],
+];
+
 export const downloadIssueTrackerReport = async (req, res) => {
   try {
     await ensurePointDefinitionsLoaded();
-    const [line, header] = await Promise.all([
+    const [line, header, rc] = await Promise.all([
       fetchLineRemarksAndRows(req, { paginate: false }),
       fetchHeaderRemarksAndRows(req, { paginate: false }),
+      fetchRcRemarksAndRows(req, { paginate: false }),
     ]);
 
     const workbook = XLSX.utils.book_new();
@@ -657,6 +910,7 @@ export const downloadIssueTrackerReport = async (req, res) => {
       header.rows,
       "Header-Level Issues",
     );
+    addSheet(workbook, RC_ISSUE_TRACKER_COLUMNS, rc.rows, "RC-Level Issues");
     const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
 
     const filename = `issue-tracker-${new Date().toISOString().slice(0, 10)}.xlsx`;

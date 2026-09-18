@@ -81,13 +81,13 @@ const DEFINITIONS = [
     pointNo: 6,
     scope: "header",
     severity: "Medium",
-    title: "EYW Inco-Term Requires Freight Condition",
+    title: "EYW Inco-Term Requires Freight Condition (with value > 0)",
     summary:
-      "Confirms PO lines using Inco Term EYW carry a freight condition type (ZBF1/ZBF2/ZRA3/ZRB3/ZRE3/ZFB5).",
+      "Confirms PO lines using Inco Term EYW carry a freight condition type (ZBF1/ZBF2/ZRA3/ZRB3/ZRE3/ZFB5) AND that condition's value is greater than INR 0.00.",
     logic:
-      'Not Applicable if Inco term isn\'t EYW. Verified if a matching freight condition exists on that PO+line in POAUDITCND, else Not Verified. The remark names the exact matched condition type (e.g. "ZRB3") and lists any other, non-freight condition types also present on the line.',
+      'Not Applicable if Inco term isn\'t EYW. Verified if a freight condition exists on that PO+line in POAUDITCND with a value > INR 0.00. Not Verified if no freight condition type is present at all, OR if one is present but its value is INR 0.00 or less on every matching row. The value column is "Condition value" (confirmed from a real POAUDITCND sample); a couple of alternate-casing fallbacks are tried if that exact column is absent, and Manual Check (not a silent Not Verified) is returned only if none of those names are found at all.',
     dataPoints:
-      "Inco term, PO number, PO Line item, Condition Type (POAUDITCND)",
+      "Inco term, PO number, PO Line item, Condition Type (POAUDITCND), Condition Value/Amount (POAUDITCND)",
   },
   {
     pointNo: 7,
@@ -184,13 +184,13 @@ const DEFINITIONS = [
     pointNo: 15,
     scope: "line",
     severity: "High",
-    title: "PO Quantity vs PR Quantity (Tolerance)",
+    title: "PO References the Applicable Rate Contract (RC)",
     summary:
-      "Confirms this PO line's own PR quantity sits between its PO quantity and PO quantity plus the allowed overdelivery buffer - a direct per-line check, not a cumulative one.",
+      "For PO Types ZLRM/ZLCP only: if the PO's material has an active/valid Rate Contract as of the PO date, confirms the PO actually references that RC number rather than some other/no reference.",
     logic:
-      "Not Applicable for PO types ZSER/ZCSR or when no PR is assigned. Direct single-line comparison: Not Verified if PR Qty < PO Qty (PO qty may never exceed PR qty); Verified if PO Qty <= PR Qty <= PO Qty x (1 + Overdelivery Tolerance % / 100); Not Verified if PR Qty exceeds that ceiling. 'Under Delivery tolerance' is not used by this rule. A blank Overdelivery Tolerance Limit is treated as 0% (no buffer).",
+      "Not Applicable if PO Type isn't ZLRM/ZLCP, OR if the PO's Material Code has no RC master record at all, OR the Material Code has RC record(s) but none is valid as of the PO's Purchasing Date (RC validity is looked up in the CUMULATIVE RC master - every RC file received is merged into history, never overwritten, so a PO is checked against every RC ever received for that material, not just the most recent file). When an applicable/valid RC DOES exist for the material as of that date: Verified if the PO's RC no. matches one of the valid RC numbers (if more than one RC is valid for that material on that date, the other valid RC number(s) are listed as additional information in the remark); Not Verified if the PO's RC no. is blank when an applicable RC was available, or if it's present but doesn't match any valid RC number for that material. Verified if the PO's RC no. is blank AND no applicable RC exists for that material either (nothing to reference).",
     dataPoints:
-      "PO Type, Purchase Req, PR Qty., PO Qty., Overdelivery Tolerance Limit",
+      "PO Type, PO number, Material Code, RC no. (PO), Purchasing Date, RC Master: Material Code / RC Number / Valid From / Valid To",
   },
   {
     pointNo: 16,

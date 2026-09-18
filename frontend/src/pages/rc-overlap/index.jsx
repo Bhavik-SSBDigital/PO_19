@@ -4,10 +4,25 @@ import { toast } from "react-toastify";
 
 import RcOverlapTable from "pages/rc-overlap/components/RcOverlapTable";
 import RcOverlapDetailDialog from "pages/rc-overlap/components/RcOverlapDetailDialog";
+import RcOverlapDownloadExcel from "pages/rc-overlap/components/download-excel";
 import { post } from "utils/axiosApi";
 
 const PAGE_SIZE = 25;
 const SEARCH_DEBOUNCE_MS = 350;
+
+// Mirrors the useRoleFlags hook in pages/audit/search-audit-data.jsx so the
+// RC Overlap page can gate remark write access (buyer-only) and lock/unlock
+// access (admin/PM/buyer) the same way the PO Data page does for line- and
+// header-level remarks.
+const useRoleFlags = () => {
+  const role = localStorage.getItem("role") || "";
+  return {
+    isAdmin: role === "isAdmin",
+    isBuyer: role === "isBuyer",
+    isProcurementManager: role === "isProcurementManager",
+    isAuditor: role === "isAuditor",
+  };
+};
 
 /**
  * Standalone RC Overlap page (/rc-overlap).
@@ -21,8 +36,18 @@ const SEARCH_DEBOUNCE_MS = 350;
  * full detail; a Buyer only sees RCs relevant to their own purchasing
  * group. The `scope` the backend returns drives the restrictedNotice shown
  * below, mirroring the PO Data page's pattern.
+ *
+ * NEW: RC-level remarks. A buyer can leave a remark against an RC (and
+ * mark it "Checked", locking further remarks) the same way they already
+ * can for header- and line-level audit points — see
+ * controller/rc-remarks-controller.js. That UI lives inside
+ * RcOverlapDetailDialog; this page just needs to know who's looking so it
+ * can pass roleFlags/currentUserId down.
  */
 const RcOverlapPage = () => {
+  const roleFlags = useRoleFlags();
+  const currentUserId = localStorage.getItem("userId");
+
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
@@ -30,7 +55,11 @@ const RcOverlapPage = () => {
   const [scope, setScope] = useState(null);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
-  const [status, setStatus] = useState("");
+  // Default filter = "Not Verified" (Part 4 of the closure overhaul): the
+  // buyer's own workflow always lands on the actionable subset first, with
+  // the option to switch to All/Verified via the dropdown exactly like
+  // before.
+  const [status, setStatus] = useState("Not Verified");
   const [selectedRcId, setSelectedRcId] = useState(null);
 
   const debounceRef = useRef(null);
@@ -57,7 +86,7 @@ const RcOverlapPage = () => {
   }, []);
 
   useEffect(() => {
-    fetchData(1, "", "");
+    fetchData(1, "", "Not Verified");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -81,6 +110,12 @@ const RcOverlapPage = () => {
     fetchData(value, search, status);
   };
 
+  // Re-runs the current page's fetch after a remark is added/edited/
+  // deleted or the RC is locked/unlocked from the detail dialog, so the
+  // "Buyer Check" column in the table stays in sync without a full page
+  // reload.
+  const refreshCurrentPage = () => fetchData(page, search, status);
+
   const pageCount = Math.max(Math.ceil(total / PAGE_SIZE), 1);
 
   return (
@@ -92,6 +127,10 @@ const RcOverlapPage = () => {
         <Typography variant="body1" sx={{ color: "#64748b" }}>
           Every Rate Contract checked for overlapping validity periods against other RCs for the same vendor and material — click any row for details.
         </Typography>
+      </Box>
+
+      <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 1.5 }}>
+        <RcOverlapDownloadExcel search={search} status={status} />
       </Box>
 
       <RcOverlapTable
@@ -107,6 +146,9 @@ const RcOverlapPage = () => {
         status={status}
         onStatusChange={handleStatusChange}
         onRowClick={(row) => setSelectedRcId(row.id)}
+        roleFlags={roleFlags}
+        currentUserId={currentUserId}
+        onChanged={refreshCurrentPage}
         restrictedNotice={
           scope?.restrictedToPurchaseGroup
             ? "Showing only RC Overlap records relevant to your purchasing group"
@@ -114,7 +156,13 @@ const RcOverlapPage = () => {
         }
       />
 
-      <RcOverlapDetailDialog rcId={selectedRcId} onClose={() => setSelectedRcId(null)} />
+      <RcOverlapDetailDialog
+        rcId={selectedRcId}
+        onClose={() => setSelectedRcId(null)}
+        roleFlags={roleFlags}
+        currentUserId={currentUserId}
+        onChanged={refreshCurrentPage}
+      />
     </Box>
   );
 };

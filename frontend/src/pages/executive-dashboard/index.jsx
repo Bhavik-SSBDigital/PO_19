@@ -18,6 +18,7 @@ import {
 } from "@mui/material";
 import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
 import FileDownloadRoundedIcon from "@mui/icons-material/FileDownloadRounded";
+import CheckCircleOutlineRoundedIcon from "@mui/icons-material/CheckCircleOutlineRounded";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import LayersRoundedIcon from "@mui/icons-material/LayersRounded";
 import WarningAmberRoundedIcon from "@mui/icons-material/WarningAmberRounded";
@@ -256,6 +257,83 @@ const KpiCard = ({
     cardElement
   );
 };
+
+// Body of a "Remarks Impact" card (see the dashboard's REMARKS IMPACT
+// section). Split out so both the clickable (CardActionArea) and
+// non-clickable render paths share one implementation.
+const RemarksImpactCardBody = ({
+  title,
+  closedLabel,
+  pending,
+  closed,
+  totalNotVerified,
+  loading,
+  nothingPending,
+  clickable,
+}) => (
+  <CardContent sx={{ p: 3 }}>
+    <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <Typography variant="overline" color="text.secondary" sx={{ fontWeight: 700, letterSpacing: 1 }}>
+        {title} — Not Verified
+      </Typography>
+      {clickable && (
+        <Typography variant="caption" sx={{ color: "#4f46e5", fontWeight: 700 }}>
+          View list →
+        </Typography>
+      )}
+    </Box>
+    {loading ? (
+      <Skeleton width="80%" height={40} sx={{ borderRadius: 2, my: 1 }} />
+    ) : nothingPending ? (
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1, my: 1.5 }}>
+        <CheckCircleOutlineRoundedIcon fontSize="small" sx={{ color: "#15803d" }} />
+        <Typography variant="body1" sx={{ fontWeight: 700, color: "#15803d" }}>
+          No Not Verified {title.toLowerCase()} items — nothing pending here.
+        </Typography>
+      </Box>
+    ) : (
+      <Box sx={{ display: "flex", alignItems: "baseline", gap: 2, my: 1 }}>
+        <Box>
+          <Typography variant="h4" sx={{ fontWeight: 800, color: "#dc2626" }}>
+            {pending}
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            Pending
+          </Typography>
+        </Box>
+        <Box>
+          <Typography variant="h4" sx={{ fontWeight: 800, color: "#059669" }}>
+            {closed}
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            {closedLabel}
+          </Typography>
+        </Box>
+        <Box>
+          <Typography variant="h4" sx={{ fontWeight: 800, color: "text.secondary" }}>
+            {totalNotVerified}
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            Total Not Verified
+          </Typography>
+        </Box>
+      </Box>
+    )}
+    {!loading && !nothingPending && (
+      <Typography
+        variant="caption"
+        color="text.secondary"
+        sx={{ mt: 1, display: "block", pt: 1.5, borderTop: "1px dashed", borderColor: "grey.200" }}
+      >
+        {pending} pending + {closed} {closedLabel.toLowerCase()} = {totalNotVerified} total flagged
+        Not Verified by the system. This "Total Not Verified" number never changes — only
+        how much of it is still pending vs. already closed moves, the instant a remark or
+        check is added.
+        {clickable ? " Click this card to see the pending list." : ""}
+      </Typography>
+    )}
+  </CardContent>
+);
 
 const ChartPanel = ({
   title,
@@ -571,6 +649,31 @@ const ExecutiveDashboard = () => {
   const [poPreview, setPoPreview] = useState(null);
   const abortRef = useRef(null);
 
+  // "Remarks Impact" cards - see utility/effective-result.js on the
+  // backend. Independent small fetch (not part of the big executive
+  // summary) so it stays cheap and simple: for each section, the required
+  // identity System Generated = Pending + Closed. Refetched on the same
+  // `onChanged` callback every remark-adding component already calls, so
+  // these numbers move the instant a remark is added/edited/deleted -
+  // never by editing the underlying system result.
+  const [remarksImpact, setRemarksImpact] = useState(null);
+  const [remarksImpactLoading, setRemarksImpactLoading] = useState(true);
+
+  const fetchRemarksImpact = useCallback(async (activeFilters) => {
+    setRemarksImpactLoading(true);
+    try {
+      const response = await post(
+        "/reports/remarks-impact-summary",
+        buildSummaryBody(activeFilters),
+      );
+      setRemarksImpact(response);
+    } catch (err) {
+      console.error("Error fetching remarks impact summary:", err);
+    } finally {
+      setRemarksImpactLoading(false);
+    }
+  }, []);
+
   const fetchSummary = useCallback(async (activeFilters) => {
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -600,8 +703,9 @@ const ExecutiveDashboard = () => {
 
   useEffect(() => {
     fetchSummary(filters);
+    fetchRemarksImpact(filters);
     return () => abortRef.current?.abort();
-  }, [filters, fetchSummary]);
+  }, [filters, fetchSummary, fetchRemarksImpact]);
 
   useEffect(() => {
     const loadOptions = async () => {
@@ -893,7 +997,10 @@ const ExecutiveDashboard = () => {
               }}
             >
               <IconButton
-                onClick={() => fetchSummary(filters)}
+                onClick={() => {
+                  fetchSummary(filters);
+                  fetchRemarksImpact(filters);
+                }}
                 disabled={loading}
                 sx={{
                   bgcolor: alpha("#4f46e5", 0.1),
@@ -1025,6 +1132,103 @@ const ExecutiveDashboard = () => {
         </Grid>
       </Grid>
 
+      {/* REMARKS IMPACT — the required identity per section:
+          Total Not Verified = Pending + Points/RCs Closed. Moves the
+          instant a remark is added/edited/deleted (see
+          getRemarksImpactSummary in dashboard-controller.js) — the
+          underlying system result is never rewritten; these are
+          read-time derived counts. Each card is clickable through to the
+          actual list behind the number (this used to be a dead end). */}
+      <Typography
+        variant="overline"
+        sx={{
+          fontWeight: 800,
+          color: "text.secondary",
+          letterSpacing: 1.5,
+          display: "block",
+          mb: 1.5,
+        }}
+      >
+        Remarks Impact
+      </Typography>
+      <Grid container spacing={3} sx={{ mb: 5 }}>
+        {[
+          {
+            key: "header",
+            title: "Header",
+            closedLabel: "Points Closed",
+            onClick: () =>
+              openHeaderKpiDrilldown(
+                "notVerifiedAny",
+                "Header Points Pending (Not Verified)",
+              ),
+          },
+          {
+            key: "line",
+            title: "Line Item",
+            closedLabel: "Points Closed",
+            onClick: () =>
+              openDrilldown(
+                "anyException",
+                true,
+                "Line Points Pending (Not Verified)",
+              ),
+          },
+          {
+            key: "rc",
+            title: "RC Overlap",
+            closedLabel: "RCs Closed",
+            onClick: () => window.location.assign("/rc-overlap"),
+          },
+        ].map(({ key, title, closedLabel, onClick }) => {
+          const section = remarksImpact?.[key] || {};
+          const totalNotVerified = section.systemGenerated ?? 0;
+          const pending = section.pending ?? 0;
+          const closed = section.closed ?? 0;
+          const nothingPending = !remarksImpactLoading && totalNotVerified === 0;
+          const canClick = !remarksImpactLoading && pending > 0;
+          return (
+            <Grid item xs={12} md={4} key={key}>
+              <Card
+                elevation={0}
+                sx={{
+                  height: "100%",
+                  borderRadius: 4,
+                  border: "1px solid",
+                  borderColor: nothingPending ? "#bbf7d0" : "grey.100",
+                  boxShadow: "0 10px 30px -5px rgba(0,0,0,0.04)",
+                }}
+              >
+                {canClick ? (
+                  <CardActionArea onClick={onClick} sx={{ height: "100%" }}>
+                    <RemarksImpactCardBody
+                      title={title}
+                      closedLabel={closedLabel}
+                      pending={pending}
+                      closed={closed}
+                      totalNotVerified={totalNotVerified}
+                      loading={remarksImpactLoading}
+                      nothingPending={nothingPending}
+                      clickable
+                    />
+                  </CardActionArea>
+                ) : (
+                  <RemarksImpactCardBody
+                    title={title}
+                    closedLabel={closedLabel}
+                    pending={pending}
+                    closed={closed}
+                    totalNotVerified={totalNotVerified}
+                    loading={remarksImpactLoading}
+                    nothingPending={nothingPending}
+                  />
+                )}
+              </Card>
+            </Grid>
+          );
+        })}
+      </Grid>
+
       {missingHeaderDataCount > 0 && (
         <Paper
           elevation={0}
@@ -1094,7 +1298,7 @@ const ExecutiveDashboard = () => {
             value={headerKpis.closedPOCount ?? "—"}
             valueColor="#059669"
             loading={loading}
-            sublabel={`${headerKpis.openPOCount ?? 0} still open — out of the same Total POs above. Click to view closed POs.`}
+            sublabel={`Whole PO headers fully closed (every mandatory point covered) — not the same as the point-level "Points Closed" count below. ${headerKpis.openPOCount ?? 0} still open — out of the same Total POs above. Click to view closed POs.`}
             info={kpiDefs.closedPOCount || "POs where header checks are locked."}
             onClick={
               headerKpis.closedPOCount
@@ -2058,7 +2262,10 @@ const ExecutiveDashboard = () => {
         drilldown={drilldown}
         appliedFilters={buildSummaryBody(filters)}
         onClose={() => setDrilldown(null)}
-        onDataChanged={() => fetchSummary(filters)}
+        onDataChanged={() => {
+          fetchSummary(filters);
+          fetchRemarksImpact(filters);
+        }}
       />
       <HeaderDrilldownDialog
         drilldown={headerDrilldown}
@@ -2075,7 +2282,10 @@ const ExecutiveDashboard = () => {
         preview={poPreview}
         onClose={() => setPoPreview(null)}
         onOpenFullPage={openFullSearchPage}
-        onHeaderChanged={() => fetchSummary(filters)}
+        onHeaderChanged={() => {
+          fetchSummary(filters);
+          fetchRemarksImpact(filters);
+        }}
       />
     </Box>
   );

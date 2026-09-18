@@ -19,6 +19,9 @@ import { severityOf } from "./severity.js";
 // ADD near the top, alongside the other point-definitions import:
 import { computeTally } from "./point-tally.js";
 import { systemResultLabel } from "./system-result.js";
+// Closure tallies (and therefore auto-close) must only ever count the
+// system's "Not Verified" points as mandatory - see not-verified-scope.js.
+import { getMandatoryPoints } from "./not-verified-scope.js";
 // CHANGED: point content now comes from the DB via point-definitions.js,
 // not the file-based point-reference.js. ensurePointDefinitionsLoaded()
 // is called INSIDE this module's exported functions (not left to callers
@@ -167,6 +170,13 @@ function shapeHeader(record, poNumber, remarksByPoint = new Map()) {
     .filter((k) => (remarksByPoint.get(k) || []).length > 0)
     .map(Number);
 
+  // Auto-close scope fix: only the points the system flagged "Not
+  // Verified" are mandatory. A point already Verified/N-A/Manual Review
+  // was never something the buyer had to touch, so it must never block
+  // (or count toward) the tally that drives auto-close. See
+  // utility/not-verified-scope.js.
+  const mandatoryPoints = getMandatoryPoints(record.results);
+
   return {
     poNumber: record.po_number,
     points,
@@ -180,7 +190,9 @@ function shapeHeader(record, poNumber, remarksByPoint = new Map()) {
     lockedAt: record.remarksLockedAt || null,
     checkedPoints,
     // { totalPoints, checkedCount, remarkedCount, coveredCount, remainingCount, isComplete }
-    tally: computeTally(record.results, checkedPoints, remarkedPointNos),
+    // totalPoints here is the MANDATORY (Not Verified) count only - not all
+    // 9 header points. See not-verified-scope.js.
+    tally: computeTally(mandatoryPoints, checkedPoints, remarkedPointNos),
     headerRemarksByPoint: mapToObject(remarksByPoint),
   };
 }

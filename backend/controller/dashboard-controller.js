@@ -27,6 +27,8 @@ import {
   HEADER_LEVEL_RULE_NOS,
   LINE_TABLE_RULE_NOS,
 } from "../utility/point-scope.js";
+import { getMandatoryPoints } from "../utility/not-verified-scope.js";
+import { isPointCovered } from "../utility/effective-result.js";
 
 const PURCHASE_GROUPS = [
   "P02",
@@ -1135,3 +1137,142 @@ function rowHasException(row) {
 function rowHasStatus(row, status) {
   return (row.results || []).some((p) => classifyPoint(p) === status);
 }
+
+/**
+ * ============================================================================
+ * "Remarks Impact" dashboard cards — Header / Line / RC, each showing the
+ * required identity:
+ *     Not Verified (System Generated) = Not Verified (Pending) + Closed
+ *
+ * DIMENSION A ONLY (coverage - see utility/effective-result.js). A point/RC
+ * counts as "Closed" the instant it has ANY remark or check against it,
+ * regardless of the buyer's opinion (agreed with the system, disputed it,
+ * or just left an informative note) - so this reflects your "for each
+ * remarks change, not verified count must be reduced, everywhere" rule
+ * exactly: an add/edit/delete of a remark changes these NUMBERS via this
+ * live read-time derivation, but NEVER touches AuditResult.results /
+ * PoHeaderResult.results / RcOverlapResult.status themselves.
+ *
+ * Scoping matches getExecutiveSummary(): Admin/PM see everything (or the
+ * purchaseGroup filter they picked); a Buyer is restricted to their own
+ * purchasing group's PO numbers (and RCs referencing that group).
+ * ============================================================================
+ */
+export const getRemarksImpactSummary = async (req, res) => {
+  try {
+    const user = req.user || {};
+    const body = req.body || {};
+
+    // ---- LINE-LEVEL ----------------------------------------------------
+    const lineWhere = buildWhere(body, user);
+    const lineRows = await prisma.auditResult.findMany({
+      where: lineWhere,
+      select: { id: true, po_number: true, results: true, checkedPoints: true },
+    });
+    const poNumbers = [...new Set(lineRows.map((r) => r.po_number))];
+
+    const lineRemarks = lineRows.length
+      ? await prisma.poRemark.findMany({
+          where: { auditResultId: { in: lineRows.map((r) => r.id) } },
+          distinct: ["auditResultId", "pointNo"],
+          select: { auditResultId: true, pointNo: true },
+        })
+      : [];
+    const lineRemarksByRow = new Map();
+    for (const r of lineRemarks) {
+      if (!lineRemarksByRow.has(r.auditResultId)) {
+        lineRemarksByRow.set(r.auditResultId, new Set());
+      }
+      lineRemarksByRow.get(r.auditResultId).add(Number(r.pointNo));
+    }
+
+    let lineSystemGenerated = 0;
+    let lineClosed = 0;
+    for (const row of lineRows) {
+      const mandatory = getMandatoryPoints(row.results);
+      lineSystemGenerated += mandatory.length;
+      const remarkedSet = lineRemarksByRow.get(row.id) || new Set();
+      for (const p of mandatory) {
+        if (isPointCovered(p.pointNo, row.checkedPoints, [...remarkedSet])) {
+          lineClosed++;
+        }
+      }
+    }
+
+    // ---- HEADER-LEVEL ---------------------------------------------------
+    // Scoped to the same PO numbers the line-level query already resolved
+    // (which is itself purchase-group-scoped via buildWhere), so a Buyer
+    // never sees header points for POs outside their own group.
+    const headerRows = poNumbers.length
+      ? await prisma.poHeaderResult.findMany({
+          where: { po_number: { in: poNumbers } },
+          select: {
+            id: true,
+            po_number: true,
+            results: true,
+            checkedPoints: true,
+          },
+        })
+      : [];
+    const headerRemarks = headerRows.length
+      ? await prisma.poHeaderRemark.findMany({
+          where: { po_number: { in: headerRows.map((r) => r.po_number) } },
+          distinct: ["po_number", "pointNo"],
+          select: { po_number: true, pointNo: true },
+        })
+      : [];
+    const headerRemarksByPo = new Map();
+    for (const r of headerRemarks) {
+      if (!headerRemarksByPo.has(r.po_number)) {
+        headerRemarksByPo.set(r.po_number, new Set());
+      }
+      headerRemarksByPo.get(r.po_number).add(Number(r.pointNo));
+    }
+
+    let headerSystemGenerated = 0;
+    let headerClosed = 0;
+    for (const row of headerRows) {
+      const mandatory = getMandatoryPoints(row.results);
+      headerSystemGenerated += mandatory.length;
+      const remarkedSet = headerRemarksByPo.get(row.po_number) || new Set();
+      for (const p of mandatory) {
+        if (isPointCovered(p.pointNo, row.checkedPoints, [...remarkedSet])) {
+          headerClosed++;
+        }
+      }
+    }
+
+    // ---- RC-LEVEL ---------------------------------------------------
+    const isUnrestricted =
+      user.isAdmin || user.isProcurementManager || !user.isBuyer;
+    const rcWhere = { status: "Not Verified" };
+    if (!isUnrestricted) {
+      const ownGroup = getPurchaseGroupCode(user.username);
+      rcWhere.purchaseGroups = { has: ownGroup || "__no_group_assigned__" };
+    }
+    const rcRows = await prisma.rcOverlapResult.findMany({
+      where: rcWhere,
+      select: { id: true, remarksLocked: true },
+    });
+    const rcSystemGenerated = rcRows.length;
+    const rcClosed = rcRows.filter((r) => r.remarksLocked).length;
+
+    const shape = (systemGenerated, closed) => ({
+      systemGenerated,
+      closed,
+      pending: Math.max(systemGenerated - closed, 0),
+    });
+
+    return res.status(200).json({
+      header: shape(headerSystemGenerated, headerClosed),
+      line: shape(lineSystemGenerated, lineClosed),
+      rc: shape(rcSystemGenerated, rcClosed),
+      scope: scopeOf(user),
+    });
+  } catch (error) {
+    console.error("Error in getRemarksImpactSummary:", error);
+    return res
+      .status(500)
+      .json({ message: "Failed to compute remarks impact summary" });
+  }
+};

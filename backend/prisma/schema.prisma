@@ -3,7 +3,22 @@
 // (or `npx prisma migrate dev`) against DATABASE_URL to create these tables -
 // you do not need to run schema.sql separately if you use this file.
 //
-// CHANGES IN THIS VERSION (point content moved into DB, points renumbered):
+// CHANGES IN THIS VERSION (RC-level remarks, mirrors header/line remarks):
+//   - RcOverlapResult gained a "checked" locking system, exactly analogous
+//     to AuditResult.remarksLocked (line-level) and PoHeaderResult.remarksLocked
+//     (PO-header-level): remarksLocked / remarksLockedBy / remarksLockedAt.
+//     Once locked, no remark can be added/edited/deleted against that RC,
+//     by anyone. Completely independent of the line-level and header-level
+//     locking systems - locking an RC never touches any AuditResult or
+//     PoHeaderResult row, and vice versa.
+//   - New model PoRcRemark: one row per remark a buyer (or admin/PM) leaves
+//     against a specific RC (vendor + material + RC number). Unlike
+//     PoRemark/PoHeaderRemark there is no pointNo - an RC only has ONE
+//     check (Rule 19 / RC Overlap), not a family of numbered points - so
+//     this is simpler: one remark per submitting user per RC.
+//   Nothing else changed from the previous schema revision.
+//
+// PREVIOUS CHANGES (point content moved into DB, points renumbered):
 //   - AuditPointConfig gained title/summary/logic/dataPoints/scope. This
 //     table is now the SINGLE source of truth for point content (it used
 //     to hold severity only; title/summary/logic/dataPoints previously
@@ -21,9 +36,6 @@
 //     scripts/migrate-point-numbers.js exactly once before the new
 //     numbering is trusted anywhere. See utility/point-number-map.js for
 //     the old->new mapping and utility/point-scope.js for the new ranges.
-//   Nothing else changed from the previous schema revision (header-level
-//   closing as its own system, RC Overlap access control, buyer remarks +
-//   PM advanced filtering).
 
 generator client {
   provider = "prisma-client-js"
@@ -75,6 +87,7 @@ model User {
   verifiedManuals   ManualVerification[]
   poRemarks         PoRemark[] // remarks this user has submitted (buyers, mainly)
   poHeaderRemarks   PoHeaderRemark[] // header-level (PO-wide) remarks this user has submitted
+  rcRemarks         PoRcRemark[] // RC-level (RC Overlap) remarks this user has submitted
 
   @@map("users")
 }
@@ -415,6 +428,12 @@ model PoRemark {
 // level, keyed by (vendor, RC material code, RC number). Backs the
 // standalone "RC Overlap" section/page instead of a point inside a PO
 // line's `results` array.
+//
+// remarksLocked/By/At — the RC-LEVEL "checked" flag, exactly analogous to
+// AuditResult.remarksLocked (line-level) and PoHeaderResult.remarksLocked
+// (PO-header-level). Once an RC is locked, no RC-level remark can be
+// added, edited, or deleted against it, by anyone. Independent of both
+// other locking systems in every direction.
 // ---------------------------------------------------------------------------
 model RcOverlapResult {
   id             String    @id @default(uuid())
@@ -428,8 +447,14 @@ model RcOverlapResult {
   remark         String?
   purchaseGroups String[]  @default([]) @map("purchase_groups")
 
+  remarksLocked   Boolean   @default(false) @map("remarks_locked")
+  remarksLockedBy String?   @map("remarks_locked_by")
+  remarksLockedAt DateTime? @map("remarks_locked_at")
+
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  rcRemarks      PoRcRemark[]
 
   @@unique([vendorCode, rcMaterialCode, rcNumber])
   @@index([vendorCode])
@@ -437,6 +462,40 @@ model RcOverlapResult {
   @@index([status])
   @@index([purchaseGroups])
   @@map("rc_overlap_results")
+}
+
+// ---------------------------------------------------------------------------
+// po_rc_remarks — one row per remark a buyer (or admin/PM) leaves against
+// a specific RC (vendor + material + RC number). Mirrors po_remarks /
+// po_header_remarks, but there is no pointNo: an RC only has ONE check
+// (Rule 19 / RC Overlap), not a family of numbered points, so this is a
+// single remark thread per RC per submitting user.
+//
+// vendorCode/rcMaterialCode/rcNumber are denormalized snapshots (same
+// pattern as PoRemark.po_number/po_line_item) so the report controller
+// can build rows without an extra join in the common case.
+// ---------------------------------------------------------------------------
+model PoRcRemark {
+  id                String   @id @default(uuid())
+  rcOverlapResultId String   @map("rc_overlap_result_id")
+  vendorCode        String   @map("vendor_code")
+  rcMaterialCode    String   @map("rc_material_code")
+  rcNumber          String   @map("rc_number")
+  remark            String
+  submittedBy       String   @map("submitted_by")
+  submittedAt       DateTime @default(now()) @map("submitted_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+  isSystemResultWrong Boolean @default(false) @map("is_system_result_wrong")
+  buyerResult         String? @map("buyer_result") // buyer's opinion of status: "Verified" | "Not Verified"
+
+  rcOverlapResult RcOverlapResult @relation(fields: [rcOverlapResultId], references: [id], onDelete: Cascade)
+  submitter       User            @relation(fields: [submittedBy], references: [id])
+
+  @@unique([rcOverlapResultId, submittedBy])
+  @@index([rcOverlapResultId])
+  @@index([vendorCode])
+  @@index([rcNumber])
+  @@map("po_rc_remarks")
 }
 
 // ---------------------------------------------------------------------------

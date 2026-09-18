@@ -66,12 +66,17 @@ const PoHeaderRemarkPanel = ({
   const [checked, setChecked] = useState(initialChecked);
   const [checkBusy, setCheckBusy] = useState(false);
   const [isSystemResultWrong, setIsSystemResultWrong] = useState("informative");
-  const [buyerResult, setBuyerResult] = useState(systemResult || "");
+  const [buyerResult, setBuyerResult] = useState("");
 
-  // Reset buyerResult to systemResult when switching to "informative"
+  // Keep buyerResult in sync with the "Is PO corrected?" toggle - see the
+  // identical comment in PointRemarkPanel.jsx. "wrong" (Yes, PO corrected)
+  // must always reset to blank, never carry over the system's own value
+  // as if it were already the buyer's choice.
   useEffect(() => {
     if (isSystemResultWrong === "informative") {
       setBuyerResult(systemResult || "");
+    } else {
+      setBuyerResult("");
     }
   }, [isSystemResultWrong, systemResult]);
 
@@ -204,20 +209,19 @@ const PoHeaderRemarkPanel = ({
                 ? "primary"
                 : "info"
               : canSubmit && locked
-              ? "warning"
+              ? "inherit"
               : canSubmit
               ? "success"
               : "inherit"
           }
           onClick={() => setOpen(true)}
-          startIcon={locked && canSubmit ? <LockRoundedIcon fontSize="small" /> : null}
           sx={{ textTransform: "none", fontWeight: 700, borderRadius: "20px", minWidth: "120px" }}
         >
           {remarks.length > 0
             ? "View Remarks"
             : canSubmit
             ? locked
-              ? "Locked"
+              ? "No Remark"
               : "Add Remark"
             : "No Remarks"}
         </Button>
@@ -238,9 +242,16 @@ const PoHeaderRemarkPanel = ({
 
       <Dialog open={open} onClose={() => setOpen(false)} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
         <DialogTitle sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", bgcolor: "#eef2ff", borderBottom: "1px solid", borderColor: "divider" }}>
-          <Typography variant="h6" fontWeight={700}>
-            Header Point {pointNo} Remarks — PO {poNumber}
-          </Typography>
+          <Box>
+            <Typography variant="h6" fontWeight={700}>
+              Header Point {pointNo} — PO {poNumber}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              {remarks.length > 0
+                ? `${remarks.length} remark${remarks.length === 1 ? "" : "s"} on this point`
+                : "No remarks on this point yet"}
+            </Typography>
+          </Box>
           <IconButton onClick={() => setOpen(false)} size="small">
             <CloseIcon />
           </IconButton>
@@ -260,13 +271,16 @@ const PoHeaderRemarkPanel = ({
           ) : (
             <Stack spacing={2} sx={{ mb: canSubmit && !locked && !ownRemark ? 3 : 0 }}>
               {locked && (
-                <Chip
+                <Alert
                   icon={<LockRoundedIcon fontSize="small" />}
-                  label="This PO's header checks are closed — remarks are locked"
-                  color="warning"
-                  variant="outlined"
+                  severity="info"
                   sx={{ fontWeight: 600 }}
-                />
+                >
+                  This PO's header checks are closed.
+                  {remarks.length === 0
+                    ? " No remark was recorded for this specific point — that's expected if it never needed one."
+                    : " You can still view the remark(s) below, but no new ones can be added."}
+                </Alert>
               )}
 
               {!locked && systemResult && (
@@ -326,7 +340,7 @@ const PoHeaderRemarkPanel = ({
                       )}
                       <Chip
                         size="small"
-                        label={r.isSystemResultWrong ? "System result flagged wrong" : "Informative only"}
+                        label={r.isSystemResultWrong ? "PO Corrected" : "System Altercation"}
                         color={r.isSystemResultWrong ? "error" : "default"}
                         variant={r.isSystemResultWrong ? "filled" : "outlined"}
                         sx={{ height: 24, fontSize: "0.7rem", fontWeight: 600 }}
@@ -354,11 +368,11 @@ const PoHeaderRemarkPanel = ({
 
               <FormControl>
                 <FormLabel sx={{ fontWeight: 700, fontSize: "0.85rem", mb: 0.5 }}>
-                  Is the system's result wrong, or is this just informative?
+                  Is PO corrected?
                 </FormLabel>
                 <RadioGroup row value={isSystemResultWrong} onChange={(e) => setIsSystemResultWrong(e.target.value)}>
-                  <FormControlLabel value="wrong" control={<Radio size="small" />} label="System's result is wrong" />
-                  <FormControlLabel value="informative" control={<Radio size="small" />} label="Just informative" />
+                  <FormControlLabel value="wrong" control={<Radio size="small" />} label="Yes — PO corrected" />
+                  <FormControlLabel value="informative" control={<Radio size="small" />} label="No — informative only" />
                 </RadioGroup>
               </FormControl>
 
@@ -367,13 +381,13 @@ const PoHeaderRemarkPanel = ({
                 size="small"
                 fullWidth
                 label="Buyer's Result (what should it be?)"
-                value={buyerResult || systemResult || ""}
+                value={buyerResult}
                 onChange={(e) => setBuyerResult(e.target.value)}
                 disabled={isSystemResultWrong === "informative"}
                 helperText={
                   isSystemResultWrong === "informative"
                     ? "Buyer's result is not needed for informative remarks. It will use the system's result."
-                    : "Defaults to the system's result — change it if you disagree."
+                    : "Select what the result should actually be — nothing is pre-selected."
                 }
               >
                 {SYSTEM_RESULT_OPTIONS.map((opt) => (

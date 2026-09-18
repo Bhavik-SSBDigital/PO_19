@@ -200,6 +200,9 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
 
   // NEW — local, live-patchable copy of the line-level results.
   const [resultsRows, setResultsRows] = useState([]);
+  // Default view = only the system's "Not Verified" points - same fix as
+  // PoHeaderChecksPanel.jsx / results-table.jsx. Display-only.
+  const [showAllLinePoints, setShowAllLinePoints] = useState(false);
 
   const [lineItemOptions, setLineItemOptions] = useState([]);
   const [lineItemOptionsLoading, setLineItemOptionsLoading] = useState(false);
@@ -334,6 +337,14 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
     if (patch.remarksLocked !== undefined) {
       setLineLocked(Boolean(patch.remarksLocked));
     }
+    // BUG FIX: this only used to update the dialog's own local table, so
+    // adding/editing/deleting a LINE-level remark from inside this dialog
+    // never refreshed the dashboard's own "Remarks Impact" cards behind
+    // it — they'd look frozen until the next full page reload. Reuse the
+    // same "something changed, refresh the outer dashboard" callback the
+    // header path already calls, so both paths keep the dashboard's
+    // numbers live.
+    onHeaderChanged?.();
   };
 
   const scalarEntries = useMemo(() => {
@@ -596,6 +607,22 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
                 {/* Reads `resultsRows`, not details.results — live tally */}
                 <SectionTallyBar points={resultsRows} locked={lineLocked} label="Line points reviewed" />
 
+                <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1, flexWrap: "wrap", gap: 1 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 700, color: "text.secondary" }}>
+                    Showing {showAllLinePoints ? "all" : "Not Verified"} points (
+                    {(showAllLinePoints ? resultsRows : resultsRows.filter((p) => !p.verified && !p.not_applicable && !p.manual_verification)).length} of {resultsRows.length})
+                  </Typography>
+                  {resultsRows.some((p) => p.verified || p.not_applicable || p.manual_verification) || showAllLinePoints ? (
+                    <Button
+                      size="small"
+                      onClick={() => setShowAllLinePoints((v) => !v)}
+                      sx={{ textTransform: "none", fontWeight: 700 }}
+                    >
+                      {showAllLinePoints ? "Show Not Verified only" : `Show all ${resultsRows.length} points`}
+                    </Button>
+                  ) : null}
+                </Box>
+
                 <TableContainer component={Paper} variant="outlined">
                   <Table size="small">
                     <TableHead>
@@ -610,7 +637,10 @@ const PoDetailsPreviewDialog = ({ preview, onClose, onOpenFullPage, onHeaderChan
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {resultsRows.map((row, idx) => (
+                      {(showAllLinePoints
+                        ? resultsRows
+                        : resultsRows.filter((p) => !p.verified && !p.not_applicable && !p.manual_verification)
+                      ).map((row, idx) => (
                         <TableRow key={row.pointNo ?? idx}>
                           <TableCell sx={{ verticalAlign: "top", fontWeight: 700 }}>{row.pointNo}</TableCell>
                           <TableCell sx={{ verticalAlign: "top" }}>

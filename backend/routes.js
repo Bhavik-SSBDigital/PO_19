@@ -4,6 +4,7 @@ import {
   getRcOverlapDetail,
   getRcOverlapSummary,
 } from "./controller/rc-overlap-controller.js";
+import { downloadRcOverlapReport } from "./controller/rc-overlap-export-controller.js";
 import {
   login,
   signup,
@@ -35,6 +36,7 @@ import {
   getExecutiveDrilldown,
   getExecutiveHeaderDrilldown,
   getExecutiveHeaderKpiDrilldown,
+  getRemarksImpactSummary,
 } from "./controller/dashboard-controller.js";
 
 import {
@@ -69,6 +71,17 @@ import {
   toggleHeaderPointChecked,
 } from "./controller/po-header-controller.js";
 
+// RC-LEVEL remarks (NEW) — mirrors po-remarks-controller.js / the header
+// remark functions above, but scoped to a single RC Overlap record. See
+// controller/rc-remarks-controller.js for the access-control notes.
+import {
+  submitRcRemark,
+  updateRcRemark,
+  getRcRemarks,
+  deleteRcRemark,
+  setRcCheckedStatus,
+} from "./controller/rc-remarks-controller.js";
+
 const router = express.Router();
 
 // --- Auth ---
@@ -90,6 +103,11 @@ router.post("/getPOAuditResult", requireAuth, get_po_audit_result);
 
 // --- Dashboard (Executive P2P Compliance Control Tower) ---
 router.post("/reports/executive-summary", requireAuth, getExecutiveSummary);
+router.post(
+  "/reports/remarks-impact-summary",
+  requireAuth,
+  getRemarksImpactSummary,
+);
 router.post("/reports/filter-options", requireAuth, getFilterOptions);
 router.post("/reports/executive-drilldown", requireAuth, getExecutiveDrilldown);
 router.post(
@@ -250,6 +268,49 @@ router.post(
 router.post("/reports/rc-overlap", requireAuth, getRcOverlapResults);
 router.post("/reports/rc-overlap-detail", requireAuth, getRcOverlapDetail);
 router.post("/reports/rc-overlap-summary", requireAuth, getRcOverlapSummary);
+router.post(
+  "/reports/rc-overlap/download",
+  requireAuth,
+  downloadRcOverlapReport,
+);
+
+// --- RC-LEVEL remarks (NEW) ---
+// Matches the RcOverlapDetailDialog.jsx frontend, which calls these via
+// the existing `post` axios helper only (including for delete), so there
+// is no new axios helper to add on the frontend. deleteRcRemark also
+// accepts the id from req.params if you'd rather call this with the
+// DELETE method/:id style used by po-remarks/po-header-remarks below —
+// both styles work against the same controller function.
+router.post(
+  "/rc-remarks",
+  requireAuth,
+  requireAnyOf("isBuyer", "isAdmin", "isProcurementManager"),
+  getRcRemarks,
+);
+router.post(
+  "/rc-remarks/submit",
+  requireAuth,
+  requireAnyOf("isBuyer"),
+  submitRcRemark,
+);
+router.post(
+  "/rc-remarks/update",
+  requireAuth,
+  requireAnyOf("isBuyer"),
+  updateRcRemark,
+);
+router.post(
+  "/rc-remarks/delete",
+  requireAuth,
+  requireAnyOf("isBuyer"),
+  deleteRcRemark,
+);
+router.post(
+  "/rc-remarks/toggle-checked",
+  requireAuth,
+  requireAnyOf("isBuyer", "isAdmin", "isProcurementManager"),
+  setRcCheckedStatus,
+);
 
 router.post(
   "/reports/po-remarks-report",

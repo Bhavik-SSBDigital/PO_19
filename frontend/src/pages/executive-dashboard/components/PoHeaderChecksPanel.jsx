@@ -73,6 +73,12 @@ const PoHeaderChecksPanel = ({
 }) => {
   const [expanded, setExpanded] = useState(variant === "full");
   const [busy, setBusy] = useState(false);
+  // Default view = only the system's "Not Verified" points (the ones a
+  // buyer actually needs to look at). Everything else (Verified / N-A /
+  // Manual Review) is hidden until the buyer explicitly asks to see it —
+  // this is a display filter only, it never changes what's fetched or
+  // how the tally/auto-close is computed.
+  const [showAllPoints, setShowAllPoints] = useState(false);
 
   const {
     points = [],
@@ -192,6 +198,10 @@ const PoHeaderChecksPanel = ({
     );
   }
 
+  const isNotVerified = (p) => !p.verified && !p.not_applicable && !p.manual_verification;
+  const visiblePoints = showAllPoints ? localPoints : localPoints.filter(isNotVerified);
+  const hiddenCount = localPoints.length - visiblePoints.length;
+
   return (
     <Box sx={{ mb: 3 }}>
       <Box
@@ -240,6 +250,23 @@ const PoHeaderChecksPanel = ({
       {/* Reads `localPoints`, not `points` — this is what makes it live */}
       <SectionTallyBar points={localPoints} locked={localLocked} label="Header points reviewed" />
 
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1, flexWrap: "wrap", gap: 1 }}>
+        <Typography variant="caption" sx={{ fontWeight: 700, color: "text.secondary" }}>
+          Showing {showAllPoints ? "all" : "Not Verified"} points ({visiblePoints.length} of {totalPoints})
+        </Typography>
+        {hiddenCount > 0 || showAllPoints ? (
+          <Button
+            size="small"
+            onClick={() => setShowAllPoints((v) => !v)}
+            sx={{ textTransform: "none", fontWeight: 700 }}
+          >
+            {showAllPoints
+              ? "Show Not Verified only"
+              : `Show all ${totalPoints} points (${hiddenCount} already Verified/N-A/Manual Review)`}
+          </Button>
+        ) : null}
+      </Box>
+
       <TableContainer component={Paper} variant="outlined" sx={{ borderColor: "#c7d2fe" }}>
         <Table size="small">
           <TableHead sx={{ bgcolor: "#eef2ff" }}>
@@ -254,7 +281,7 @@ const PoHeaderChecksPanel = ({
             </TableRow>
           </TableHead>
           <TableBody>
-            {localPoints.map((row, index) => (
+            {visiblePoints.map((row, index) => (
               <TableRow key={row.pointNo ?? index} hover>
                 <TableCell sx={{ verticalAlign: "top", fontWeight: 700 }}>{row.pointNo}</TableCell>
                 <TableCell sx={{ verticalAlign: "top" }}>
@@ -313,6 +340,17 @@ const PoHeaderChecksPanel = ({
                 </TableCell>
               </TableRow>
             ))}
+            {visiblePoints.length === 0 && localPoints.length > 0 && (
+              <TableRow>
+                <TableCell colSpan={7} align="center" sx={{ color: "text.secondary", py: 3 }}>
+                  Nothing "Not Verified" here — every header point is already Verified /
+                  Not Applicable / Manual Review.{" "}
+                  <Button size="small" onClick={() => setShowAllPoints(true)} sx={{ textTransform: "none", fontWeight: 700 }}>
+                    Show all {totalPoints} points
+                  </Button>
+                </TableCell>
+              </TableRow>
+            )}
             {localPoints.length === 0 && (
               <TableRow>
                 <TableCell colSpan={7} align="center" sx={{ color: "text.secondary", py: 3 }}>
