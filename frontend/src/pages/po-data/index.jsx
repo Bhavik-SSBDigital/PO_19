@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Box, Typography, Tabs, Tab, Chip, Pagination } from "@mui/material";
+import { Box, Typography, Tabs, Tab, Chip, Pagination, Button, Tooltip as MuiTooltip } from "@mui/material";
+import FileDownloadRoundedIcon from "@mui/icons-material/FileDownloadRounded";
 import { toast } from "react-toastify";
+import moment from "moment";
 
 import PoWiseExceptionsTable from "pages/executive-dashboard/components/PoWiseExceptionsTable";
 import PoLineItemBreakdownDialog from "pages/executive-dashboard/components/PoLineItemBreakdownDialog";
@@ -116,6 +118,80 @@ const PODataPage = () => {
     setPoPreview(null);
   };
 
+  const handleExport = async (exceptionsOnly) => {
+    try {
+      toast.info("Preparing structured line-item export. This might take a moment...");
+      // Pass all current filters, request backend to attach Remarks and Line Items
+      const response = await post("/reports/po-data", { ...advancedFilters, includeRemarks: true });
+      let rows = response?.results || [];
+
+      if (exceptionsOnly) {
+        // Filter out POs that have zero exceptions to save processing time
+        rows = rows.filter((r) => r.exceptionLineCount > 0);
+      }
+
+      if (rows.length === 0) {
+        toast.warning("No data found to export.");
+        return;
+      }
+
+      // Headers for a flat, line-item level CSV 
+      const csvLines = [
+        "PO Number,PO Date,Vendor Code,Vendor Name,PO Type,Plant,Purchasing Group,PO Review Status,PO Compliance %,Header Remarks,PO Line Item,Material Code,Net Value,Line Has Exception,Line Closed,Line Remarks"
+      ];
+
+      const escapeCsv = (val) => `"${String(val ?? "").replace(/"/g, '""')}"`;
+
+      rows.forEach((r) => {
+        const baseRow = [
+          r.poNumber,
+          r.poDate ? moment(r.poDate).format("DD-MMM-YYYY") : "",
+          r.vendorCode,
+          r.vendorName,
+          r.poTypeName || r.poType,
+          r.plantName || r.plant,
+          r.purchaseGroupName || r.purchaseGroup,
+          r.reviewStatus,
+          r.compliancePct != null ? `${r.compliancePct}%` : "N/A",
+          r.headerRemarksText || "No header remarks"
+        ].map(escapeCsv);
+
+        if (r.lineItemDetails && r.lineItemDetails.length > 0) {
+          r.lineItemDetails.forEach(li => {
+            // If the user requested Exceptions Only, skip any compliant (no-exception) lines
+            if (exceptionsOnly && !li.hasException) return;
+
+            const lineData = [
+              li.poLineItem || li.lineItem || "—",
+              li.materialCode || "—",
+              li.netValue,
+              li.hasException ? "Yes" : "No",
+              li.closed ? "Yes" : "No",
+              li.lineRemarksText || "No line remarks"
+            ].map(escapeCsv);
+
+            csvLines.push([...baseRow, ...lineData].join(","));
+          });
+        } else {
+          // Edge case fallback if a PO exists with 0 lines
+          csvLines.push([...baseRow, "—", "—", "—", "—", "—", "—"].map(escapeCsv).join(","));
+        }
+      });
+
+      const blob = new Blob([csvLines.join("\n")], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `PO_LineItem_Data_${exceptionsOnly ? 'Exceptions' : 'Full'}_${moment().format("YYYYMMDD_HHmm")}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("Export downloaded successfully");
+    } catch (error) {
+      console.error("Export failed:", error);
+      toast.error("Failed to export structured PO data");
+    }
+  };
+
   const rowsByTab = useMemo(() => {
     const buckets = { pending: [], in_progress: [], reviewed: [] };
     for (const row of poData) {
@@ -138,13 +214,42 @@ const PODataPage = () => {
 
   return (
     <Box sx={{ maxWidth: 'xl', mx: 'auto', p: { xs: 2, sm: 3 } }}>
-      <Box sx={{ mb: 4 }}>
-        <Typography variant="h4" sx={{ fontWeight: 800, color: '#0f172a', mb: 1 }}>
-          PO Data & Exceptions Master
-        </Typography>
-        <Typography variant="body1" sx={{ color: '#64748b' }}>
-          Comprehensive view of every Purchase Order in scope — filterable by purchasing group and individual line-item compliance status.
-        </Typography>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 4, flexWrap: 'wrap', gap: 2 }}>
+        <Box>
+          <Typography variant="h4" sx={{ fontWeight: 800, color: '#0f172a', mb: 1 }}>
+            PO Data & Exceptions Master
+          </Typography>
+          <Typography variant="body1" sx={{ color: '#64748b' }}>
+            Comprehensive view of every Purchase Order in scope — filterable by purchasing group and individual line-item compliance status.
+          </Typography>
+        </Box>
+        <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+          <MuiTooltip title="Exports every single line item across all POs currently in your view, regardless of whether they have exceptions.">
+            <span>
+              <Button
+                variant="outlined"
+                startIcon={<FileDownloadRoundedIcon />}
+                onClick={() => handleExport(false)}
+                sx={{ fontWeight: 700, borderRadius: 2 }}
+              >
+                Export Full Data
+              </Button>
+            </span>
+          </MuiTooltip>
+          
+          <MuiTooltip title="Exports ONLY the specific line items that failed compliance checks (has exceptions). Clean lines are filtered out.">
+            <span>
+              <Button
+                variant="contained"
+                startIcon={<FileDownloadRoundedIcon />}
+                onClick={() => handleExport(true)}
+                sx={{ fontWeight: 700, borderRadius: 2, bgcolor: '#dc2626', '&:hover': { bgcolor: '#b91c1c' } }}
+              >
+                Export Exceptions Only
+              </Button>
+            </span>
+          </MuiTooltip>
+        </Box>
       </Box>
 
       <PoAdvancedFilterBar
@@ -184,7 +289,6 @@ const PODataPage = () => {
         loading={loading}
         onRowAction={handleRowAction}
         rows={pagedRows}
-        /* Clearly distinguishes page size from total to prevent user confusion */
         title={`${activeTabDef.label} — Page ${activePage} (Showing ${pagedRows.length} of ${activeRows.length} Total)`}
         showTotals
         showProgress

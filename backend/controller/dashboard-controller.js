@@ -49,6 +49,14 @@ const PURCHASE_GROUPS = [
 function buildWhere(body = {}, user = {}) {
   const where = { type: "PO" };
 
+  // FIX: `poNumber` was accepted by the frontend's FilterBar and sent in
+  // every request body (see buildSummaryBody() in ExecutiveDashboard.jsx),
+  // but this function never read it, so typing a PO number and hitting
+  // Apply silently did nothing - every KPI, chart, and Remarks Impact
+  // number ignored it. The FilterBar's label says "Exact match", so this
+  // is an exact equality filter, not a partial/contains search.
+  if (body.poNumber) where.po_number = body.poNumber;
+
   if (body.poDateFrom || body.poDateTo) {
     where.po_created_date = {};
     if (body.poDateFrom) where.po_created_date.gte = new Date(body.poDateFrom);
@@ -1156,6 +1164,13 @@ function rowHasStatus(row, status) {
  * Scoping matches getExecutiveSummary(): Admin/PM see everything (or the
  * purchaseGroup filter they picked); a Buyer is restricted to their own
  * purchasing group's PO numbers (and RCs referencing that group).
+ *
+ * NOTE ON RC SCOPE: RcOverlapResult carries no po_number / po_created_date
+ * / plant / vendor fields of its own (see schema.prisma) - only
+ * purchaseGroups - so date/plant/vendor/PO-number filters from the filter
+ * bar cannot narrow the RC section the way they narrow header/line. This
+ * is a data-model limitation, not a bug: there is nothing on RcOverlapResult
+ * to filter those fields against.
  * ============================================================================
  */
 export const getRemarksImpactSummary = async (req, res) => {
@@ -1274,5 +1289,323 @@ export const getRemarksImpactSummary = async (req, res) => {
     return res
       .status(500)
       .json({ message: "Failed to compute remarks impact summary" });
+  }
+};
+
+/**
+ * ============================================================================
+ * The EXACT list behind any one of the 3 numbers on a "Remarks Impact"
+ * card (Total Not Verified / Pending / Closed), for any of the 3 sections
+ * (header/line/rc). This is what makes those numbers clickable-through:
+ * every query here is the SAME mandatory-points + coverage logic
+ * getRemarksImpactSummary() uses, so the list returned always has exactly
+ * as many rows as the card said it would - no separate, looser
+ * "approximately this many" drilldown that could disagree with the card.
+ *
+ * body: { section: "header"|"line"|"rc", bucket: "total"|"pending"|"closed",
+ *         isPoCorrected?: "corrected"|"altercation" (bucket="closed" only),
+ *         page, pageSize, ...same scoping filters as getRemarksImpactSummary }
+ * ============================================================================
+ */
+export const getRemarksImpactList = async (req, res) => {
+  try {
+    const user = req.user || {};
+    const body = req.body || {};
+    const section = body.section;
+    const bucket = body.bucket || "pending";
+    const page = Math.max(Number(body.page) || 1, 1);
+    const pageSize = Math.min(Number(body.pageSize) || 25, 200);
+
+    if (!["header", "line", "rc"].includes(section)) {
+      return res
+        .status(400)
+        .json({ message: "section must be header, line, or rc" });
+    }
+    if (!["total", "pending", "closed"].includes(bucket)) {
+      return res
+        .status(400)
+        .json({ message: "bucket must be total, pending, or closed" });
+    }
+
+    const matchesBucket = (covered) =>
+      bucket === "total" ? true : bucket === "closed" ? covered : !covered;
+    const pointNoFilter =
+      body.pointNo !== undefined && body.pointNo !== null && body.pointNo !== ""
+        ? Number(body.pointNo)
+        : null;
+    const fmtDate = (d) => (d ? new Date(d).toISOString().slice(0, 10) : null);
+
+    if (section === "rc") {
+      const isUnrestricted =
+        user.isAdmin || user.isProcurementManager || !user.isBuyer;
+      const rcWhere = { status: "Not Verified" };
+      if (!isUnrestricted) {
+        const ownGroup = getPurchaseGroupCode(user.username);
+        rcWhere.purchaseGroups = { has: ownGroup || "__no_group_assigned__" };
+      }
+      const allRcs = await prisma.rcOverlapResult.findMany({
+        where: rcWhere,
+        orderBy: { rcNumber: "asc" },
+      });
+      const rcIds = allRcs.map((r) => r.id);
+      const remarksByRc = new Map();
+      if (rcIds.length) {
+        const remarks = await prisma.poRcRemark.findMany({
+          where: { rcOverlapResultId: { in: rcIds } },
+          orderBy: { submittedAt: "desc" },
+        });
+        for (const r of remarks) {
+          if (!remarksByRc.has(r.rcOverlapResultId))
+            remarksByRc.set(r.rcOverlapResultId, r);
+        }
+      }
+
+      let filtered = allRcs.filter((rc) => matchesBucket(!!rc.remarksLocked));
+      if (bucket === "closed" && body.isPoCorrected) {
+        filtered = filtered.filter((rc) => {
+          const latest = remarksByRc.get(rc.id);
+          const corrected = !!latest?.isSystemResultWrong;
+          return body.isPoCorrected === "corrected" ? corrected : !corrected;
+        });
+      }
+
+      const total = filtered.length;
+      const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
+      const rows = paged.map((rc) => {
+        const latest = remarksByRc.get(rc.id);
+        const vendor = getVendorInfo(rc.vendorCode);
+        return {
+          key: `rc-${rc.id}`,
+          rcNumber: rc.rcNumber,
+          vendorCode: rc.vendorCode,
+          vendorName: vendor?.name || getVendorName(rc.vendorCode),
+          materialCode: rc.rcMaterialCode,
+          validFrom: fmtDate(rc.validFrom),
+          validTo: fmtDate(rc.validTo),
+          purchaseGroups: (rc.purchaseGroups || []).join(", "),
+          status: rc.remarksLocked ? "Closed" : "Pending",
+          latestRemark: latest?.remark || "",
+          isPoCorrected: latest
+            ? latest.isSystemResultWrong
+              ? "PO Corrected"
+              : "System Altercation"
+            : "",
+        };
+      });
+      // RC has no "point number" concept - one check per RC - so
+      // availablePoints is always empty here; the frontend hides the
+      // point filter for this section accordingly.
+      return res.status(200).json({
+        rows,
+        total,
+        page,
+        pageSize,
+        section,
+        bucket,
+        availablePoints: [],
+      });
+    }
+
+    // ---- header/line share the same shape ----------------------------
+    const lineWhere = buildWhere(body, user);
+    const lineRows = await prisma.auditResult.findMany({
+      where: lineWhere,
+      select: {
+        id: true,
+        po_number: true,
+        po_line_item: true,
+        results: true,
+        checkedPoints: true,
+        vendor_code: true,
+        nameOfVendor: true,
+        po_created_date: true,
+        plant: true,
+        po_type: true,
+        purchase_group: true,
+      },
+    });
+    const poNumbers = [...new Set(lineRows.map((r) => r.po_number))];
+
+    if (section === "line") {
+      const remarks = lineRows.length
+        ? await prisma.poRemark.findMany({
+            where: { auditResultId: { in: lineRows.map((r) => r.id) } },
+            orderBy: { submittedAt: "desc" },
+          })
+        : [];
+      const remarksByRow = new Map(); // auditResultId -> pointNo -> latest remark
+      for (const r of remarks) {
+        if (!remarksByRow.has(r.auditResultId))
+          remarksByRow.set(r.auditResultId, new Map());
+        const byPoint = remarksByRow.get(r.auditResultId);
+        if (!byPoint.has(Number(r.pointNo))) byPoint.set(Number(r.pointNo), r);
+      }
+
+      const out = [];
+      const availablePointsSet = new Set();
+      for (const row of lineRows) {
+        const mandatory = getMandatoryPoints(row.results);
+        const byPoint = remarksByRow.get(row.id) || new Map();
+        const remarkedNos = [...byPoint.keys()];
+        for (const p of mandatory) {
+          const covered = isPointCovered(
+            p.pointNo,
+            row.checkedPoints,
+            remarkedNos,
+          );
+          if (!matchesBucket(covered)) continue;
+          availablePointsSet.add(Number(p.pointNo));
+          if (pointNoFilter !== null && Number(p.pointNo) !== pointNoFilter)
+            continue;
+          const latest = byPoint.get(Number(p.pointNo));
+          if (bucket === "closed" && body.isPoCorrected) {
+            const corrected = !!latest?.isSystemResultWrong;
+            if (body.isPoCorrected === "corrected" ? !corrected : corrected)
+              continue;
+          }
+          out.push({
+            key: `line-${row.id}-${p.pointNo}`,
+            poNumber: row.po_number,
+            lineItem: row.po_line_item,
+            poDate: fmtDate(row.po_created_date),
+            poType: row.po_type,
+            plant: row.plant,
+            purchaseGroup: row.purchase_group,
+            pointNo: Number(p.pointNo),
+            pointTitle: getPointDefinition(p.pointNo)?.title || "",
+            vendorCode: row.vendor_code,
+            vendorName: row.nameOfVendor || getVendorName(row.vendor_code),
+            status: covered ? "Closed" : "Pending",
+            latestRemark: latest?.remark || "",
+            isPoCorrected: latest
+              ? latest.isSystemResultWrong
+                ? "PO Corrected"
+                : "System Altercation"
+              : "",
+          });
+        }
+      }
+      const total = out.length;
+      const paged = out.slice((page - 1) * pageSize, page * pageSize);
+      const availablePoints = [...availablePointsSet]
+        .sort((a, b) => a - b)
+        .map((no) => ({
+          pointNo: no,
+          title: getPointDefinition(no)?.title || "",
+        }));
+      return res.status(200).json({
+        rows: paged,
+        total,
+        page,
+        pageSize,
+        section,
+        bucket,
+        availablePoints,
+      });
+    }
+
+    // section === "header"
+    // PoHeaderResult has no PO date/plant/type of its own — borrow it
+    // from any one of that PO's already-fetched line rows (same PO-level
+    // metadata is duplicated onto every line at import time).
+    const repLineByPo = new Map();
+    for (const r of lineRows) {
+      if (!repLineByPo.has(r.po_number)) repLineByPo.set(r.po_number, r);
+    }
+
+    const headerRows = poNumbers.length
+      ? await prisma.poHeaderResult.findMany({
+          where: { po_number: { in: poNumbers } },
+          select: {
+            id: true,
+            po_number: true,
+            results: true,
+            checkedPoints: true,
+            vendor_code: true,
+            purchase_group: true,
+            po_type: true,
+          },
+        })
+      : [];
+    const headerRemarks = headerRows.length
+      ? await prisma.poHeaderRemark.findMany({
+          where: { po_number: { in: headerRows.map((r) => r.po_number) } },
+          orderBy: { submittedAt: "desc" },
+        })
+      : [];
+    const headerRemarksByPo = new Map(); // po_number -> pointNo -> latest remark
+    for (const r of headerRemarks) {
+      if (!headerRemarksByPo.has(r.po_number))
+        headerRemarksByPo.set(r.po_number, new Map());
+      const byPoint = headerRemarksByPo.get(r.po_number);
+      if (!byPoint.has(Number(r.pointNo))) byPoint.set(Number(r.pointNo), r);
+    }
+
+    const out = [];
+    const availablePointsSet = new Set();
+    for (const row of headerRows) {
+      const mandatory = getMandatoryPoints(row.results);
+      const byPoint = headerRemarksByPo.get(row.po_number) || new Map();
+      const remarkedNos = [...byPoint.keys()];
+      const repLine = repLineByPo.get(row.po_number);
+      for (const p of mandatory) {
+        const covered = isPointCovered(
+          p.pointNo,
+          row.checkedPoints,
+          remarkedNos,
+        );
+        if (!matchesBucket(covered)) continue;
+        availablePointsSet.add(Number(p.pointNo));
+        if (pointNoFilter !== null && Number(p.pointNo) !== pointNoFilter)
+          continue;
+        const latest = byPoint.get(Number(p.pointNo));
+        if (bucket === "closed" && body.isPoCorrected) {
+          const corrected = !!latest?.isSystemResultWrong;
+          if (body.isPoCorrected === "corrected" ? !corrected : corrected)
+            continue;
+        }
+        out.push({
+          key: `header-${row.po_number}-${p.pointNo}`,
+          poNumber: row.po_number,
+          poDate: fmtDate(repLine?.po_created_date),
+          poType: row.po_type || repLine?.po_type,
+          plant: repLine?.plant,
+          purchaseGroup: row.purchase_group,
+          pointNo: Number(p.pointNo),
+          pointTitle: getPointDefinition(p.pointNo)?.title || "",
+          vendorCode: row.vendor_code,
+          vendorName: getVendorName(row.vendor_code),
+          status: covered ? "Closed" : "Pending",
+          latestRemark: latest?.remark || "",
+          isPoCorrected: latest
+            ? latest.isSystemResultWrong
+              ? "PO Corrected"
+              : "System Altercation"
+            : "",
+        });
+      }
+    }
+    const total = out.length;
+    const paged = out.slice((page - 1) * pageSize, page * pageSize);
+    const availablePoints = [...availablePointsSet]
+      .sort((a, b) => a - b)
+      .map((no) => ({
+        pointNo: no,
+        title: getPointDefinition(no)?.title || "",
+      }));
+    return res.status(200).json({
+      rows: paged,
+      total,
+      page,
+      pageSize,
+      section,
+      bucket,
+      availablePoints,
+    });
+  } catch (error) {
+    console.error("Error in getRemarksImpactList:", error);
+    return res
+      .status(500)
+      .json({ message: "Failed to load remarks impact list" });
   }
 };

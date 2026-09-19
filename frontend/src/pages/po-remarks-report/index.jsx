@@ -17,7 +17,6 @@ import {
   TablePagination,
   Typography,
   Autocomplete,
-  Divider,
   Tabs,
   Tab,
 } from "@mui/material";
@@ -39,6 +38,7 @@ const STATUS_COLOR = {
   "Manual Review Required": "warning",
 };
 
+// Removed isPoCorrected from the specific empty filters since it's global now
 const EMPTY_LINE_FILTERS = {
   poNumber: "",
   search: "",
@@ -48,13 +48,11 @@ const EMPTY_LINE_FILTERS = {
   purchaseGroup: "",
   poType: "",
   systemResult: "",
-  isPoCorrected: "",
   submittedBy: "",
   dateFrom: "",
   dateTo: "",
 };
 
-// Same shape minus plant, since PoHeaderResult has no plant field.
 const EMPTY_HEADER_FILTERS = {
   poNumber: "",
   search: "",
@@ -63,16 +61,11 @@ const EMPTY_HEADER_FILTERS = {
   purchaseGroup: "",
   poType: "",
   systemResult: "",
-  isPoCorrected: "",
   submittedBy: "",
   dateFrom: "",
   dateTo: "",
 };
 
-// RC-level shape: no poNumber/lineItem/pointNo (an RC only has ONE check,
-// Rule 19 — there's no family of numbered points), but rcNumber and
-// rcMaterialCode instead, and rcStatus in place of systemResult (RC status
-// is just "Verified"/"Not Verified", not the shared point-result enum).
 const EMPTY_RC_FILTERS = {
   rcNumber: "",
   search: "",
@@ -80,7 +73,6 @@ const EMPTY_RC_FILTERS = {
   rcMaterialCode: "",
   purchaseGroup: "",
   rcStatus: "",
-  isPoCorrected: "",
   submittedBy: "",
   dateFrom: "",
   dateTo: "",
@@ -126,7 +118,7 @@ function RemarksTable({ rows, loading, showPlantColumn }) {
         <TableBody>
           {loading ? (
             <TableRow>
-              <TableCell colSpan={colSpan} align="center">
+               <TableCell colSpan={colSpan} align="center">
                 <CircularProgress size={24} />
               </TableCell>
             </TableRow>
@@ -184,11 +176,6 @@ function RemarksTable({ rows, loading, showPlantColumn }) {
   );
 }
 
-// RC-level rows have a different shape than line/header rows (no PO/line
-// item/point, but rcNumber/rcMaterialCode/validFrom/validTo instead), so
-// this gets its own table rather than trying to force it into
-// <RemarksTable>. "System Result" here is the RC's Verified/Not Verified
-// status (see systemResult on the backend's buildRcReportRow).
 function RcRemarksTable({ rows, loading }) {
   const colSpan = 10;
 
@@ -270,10 +257,10 @@ export default function PoRemarksReportPage() {
   const [downloading, setDownloading] = useState(false);
   const [downloadingIssueTracker, setDownloadingIssueTracker] = useState(false);
 
-  // Which section is visible. Tabs instead of stacking all three sections
-  // means you never scroll past a 1000-row section just to reach another
-  // — only the active tab's filters + table + pagination render at a time.
   const [activeTab, setActiveTab] = useState("header");
+
+  // === GLOBAL FILTER STATE ===
+  const [isPoCorrected, setIsPoCorrected] = useState("");
 
   const [options, setOptions] = useState({
     points: [],
@@ -313,8 +300,7 @@ export default function PoRemarksReportPage() {
   }, []);
 
   // ==========================================================================
-  // HEADER-LEVEL section — fully self-contained: own filters, fetch,
-  // pagination. Reads data.header from the combined report response.
+  // HEADER-LEVEL section
   // ==========================================================================
   const [headerFilters, setHeaderFilters] = useState(EMPTY_HEADER_FILTERS);
   const [headerRows, setHeaderRows] = useState([]);
@@ -324,11 +310,12 @@ export default function PoRemarksReportPage() {
   const [headerLoading, setHeaderLoading] = useState(false);
 
   const fetchHeaderRows = useCallback(
-    async (filtersOverride, pageOverride) => {
+    async (filtersOverride, pageOverride, globalPoCorrectedOverride) => {
       setHeaderLoading(true);
       try {
         const { data } = await getPoRemarksReport({
           ...(filtersOverride ?? headerFilters),
+          isPoCorrected: globalPoCorrectedOverride ?? isPoCorrected,
           headerPage: (pageOverride ?? headerPage) + 1,
           headerPageSize,
         });
@@ -340,7 +327,7 @@ export default function PoRemarksReportPage() {
         setHeaderLoading(false);
       }
     },
-    [headerFilters, headerPage, headerPageSize],
+    [headerFilters, headerPage, headerPageSize, isPoCorrected],
   );
 
   useEffect(() => {
@@ -363,7 +350,7 @@ export default function PoRemarksReportPage() {
   };
 
   // ==========================================================================
-  // LINE-LEVEL section — fully self-contained, mirrors header section.
+  // LINE-LEVEL section
   // ==========================================================================
   const [lineFilters, setLineFilters] = useState(EMPTY_LINE_FILTERS);
   const [lineRows, setLineRows] = useState([]);
@@ -373,11 +360,12 @@ export default function PoRemarksReportPage() {
   const [lineLoading, setLineLoading] = useState(false);
 
   const fetchLineRows = useCallback(
-    async (filtersOverride, pageOverride) => {
+    async (filtersOverride, pageOverride, globalPoCorrectedOverride) => {
       setLineLoading(true);
       try {
         const { data } = await getPoRemarksReport({
           ...(filtersOverride ?? lineFilters),
+          isPoCorrected: globalPoCorrectedOverride ?? isPoCorrected,
           page: (pageOverride ?? linePage) + 1,
           pageSize: linePageSize,
         });
@@ -389,7 +377,7 @@ export default function PoRemarksReportPage() {
         setLineLoading(false);
       }
     },
-    [lineFilters, linePage, linePageSize],
+    [lineFilters, linePage, linePageSize, isPoCorrected],
   );
 
   useEffect(() => {
@@ -412,9 +400,7 @@ export default function PoRemarksReportPage() {
   };
 
   // ==========================================================================
-  // RC-LEVEL section — NEW. Fully self-contained, mirrors header/line
-  // sections. Reads data.rc from the combined report response
-  // (getPoRemarksReport now returns { line, header, rc }).
+  // RC-LEVEL section
   // ==========================================================================
   const [rcFilters, setRcFilters] = useState(EMPTY_RC_FILTERS);
   const [rcRows, setRcRows] = useState([]);
@@ -424,11 +410,12 @@ export default function PoRemarksReportPage() {
   const [rcLoading, setRcLoading] = useState(false);
 
   const fetchRcRows = useCallback(
-    async (filtersOverride, pageOverride) => {
+    async (filtersOverride, pageOverride, globalPoCorrectedOverride) => {
       setRcLoading(true);
       try {
         const { data } = await getPoRemarksReport({
           ...(filtersOverride ?? rcFilters),
+          isPoCorrected: globalPoCorrectedOverride ?? isPoCorrected,
           rcPage: (pageOverride ?? rcPage) + 1,
           rcPageSize,
         });
@@ -440,7 +427,7 @@ export default function PoRemarksReportPage() {
         setRcLoading(false);
       }
     },
-    [rcFilters, rcPage, rcPageSize],
+    [rcFilters, rcPage, rcPageSize, isPoCorrected],
   );
 
   useEffect(() => {
@@ -463,19 +450,30 @@ export default function PoRemarksReportPage() {
   };
 
   // ==========================================================================
-  // Downloads — export all three sections in one workbook. Line filters are
-  // sent as-is; header/RC filters are prefixed so a backend that wants to
-  // apply each section's own filters to its own sheet can do so (matches
-  // the existing header_ prefixing convention already used here).
+  // Global Actions
   // ==========================================================================
+  
+  const handleGlobalPoCorrectedChange = (val) => {
+    setIsPoCorrected(val);
+    
+    // Reset all tabs to page 0
+    setHeaderPage(0);
+    setLinePage(0);
+    setRcPage(0);
+    
+    // Trigger fresh fetches for all 3 views based on the new global value
+    fetchHeaderRows(headerFilters, 0, val);
+    fetchLineRows(lineFilters, 0, val);
+    fetchRcRows(rcFilters, 0, val);
+  };
+
   const buildDownloadPayload = () => ({
+    isPoCorrected, // Line tab backend check
+    header_isPoCorrected: isPoCorrected, // Header tab backend check
+    rc_isPoCorrected: isPoCorrected, // RC tab backend check
     ...lineFilters,
-    ...Object.fromEntries(
-      Object.entries(headerFilters).map(([k, v]) => [`header_${k}`, v]),
-    ),
-    ...Object.fromEntries(
-      Object.entries(rcFilters).map(([k, v]) => [`rc_${k}`, v]),
-    ),
+    ...Object.fromEntries(Object.entries(headerFilters).map(([k, v]) => [`header_${k}`, v])),
+    ...Object.fromEntries(Object.entries(rcFilters).map(([k, v]) => [`rc_${k}`, v])),
     sort: "po",
   });
 
@@ -483,9 +481,7 @@ export default function PoRemarksReportPage() {
     setDownloading(true);
     try {
       const res = await downloadPoRemarksReport(buildDownloadPayload());
-      const blob = new Blob([res.data], {
-        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      });
+      const blob = new Blob([res.data], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -505,9 +501,7 @@ export default function PoRemarksReportPage() {
     setDownloadingIssueTracker(true);
     try {
       const res = await downloadIssueTrackerReport(buildDownloadPayload());
-      const blob = new Blob([res.data], {
-        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      });
+      const blob = new Blob([res.data], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -559,19 +553,23 @@ export default function PoRemarksReportPage() {
         onChange={(_, val) => setActiveTab(val)}
         sx={{ mb: 2 }}
       >
-        <Tab
-          value="header"
-          label={`Header-Level Remarks${headerTotal ? ` (${headerTotal})` : ""}`}
-        />
-        <Tab
-          value="line"
-          label={`Line-Level Remarks${lineTotal ? ` (${lineTotal})` : ""}`}
-        />
-        <Tab
-          value="rc"
-          label={`RC-Level Remarks${rcTotal ? ` (${rcTotal})` : ""}`}
-        />
+        <Tab value="header" label={`Header-Level Remarks${headerTotal ? ` (${headerTotal})` : ""}`} />
+        <Tab value="line" label={`Line-Level Remarks${lineTotal ? ` (${lineTotal})` : ""}`} />
+        <Tab value="rc" label={`RC-Level Remarks${rcTotal ? ` (${rcTotal})` : ""}`} />
       </Tabs>
+
+      {/* ======================= GLOBAL EXTERNAL FILTER ======================= */}
+      <Box sx={{ mb: 3, maxWidth: 300 }}>
+        <Autocomplete
+          size="small"
+          options={PO_CORRECTED_OPTIONS}
+          getOptionLabel={(o) => o.label || ""}
+          isOptionEqualToValue={(o, v) => o.code === v.code}
+          value={findOption(PO_CORRECTED_OPTIONS, isPoCorrected)}
+          onChange={(_, val) => handleGlobalPoCorrectedChange(val?.code || "")}
+          renderInput={(params) => <TextField {...params} label="PO Corrected / Altercation ?" />}
+        />
+      </Box>
 
       {/* ============================= HEADER-LEVEL SECTION ============================= */}
       <Box sx={{ display: activeTab === "header" ? "block" : "none" }}>
@@ -617,19 +615,13 @@ export default function PoRemarksReportPage() {
               getOptionLabel={(o) => o.label || ""}
               isOptionEqualToValue={(o, v) => o.code === v.code}
               value={findOption(options.systemResults, headerFilters.systemResult)}
-              onChange={(_, val) => setHeaderField("systemResult")(val?.code || "")}
+              onChange={(_, val) => {
+                const next = val?.code || "";
+                setHeaderField("systemResult")(next);
+                setHeaderPage(0);
+                fetchHeaderRows({ ...headerFilters, systemResult: next }, 0);
+              }}
               renderInput={(params) => <TextField {...params} label="System Result" />}
-            />
-          </Grid>
-          <Grid item xs={12} sm={4} md={2}>
-            <Autocomplete
-              size="small"
-              options={PO_CORRECTED_OPTIONS}
-              getOptionLabel={(o) => o.label || ""}
-              isOptionEqualToValue={(o, v) => o.code === v.code}
-              value={findOption(PO_CORRECTED_OPTIONS, headerFilters.isPoCorrected)}
-              onChange={(_, val) => setHeaderField("isPoCorrected")(val?.code || "")}
-              renderInput={(params) => <TextField {...params} label="Is PO Corrected?" />}
             />
           </Grid>
           <Grid item xs={12} sm={4} md={2}>
@@ -777,19 +769,13 @@ export default function PoRemarksReportPage() {
               getOptionLabel={(o) => o.label || ""}
               isOptionEqualToValue={(o, v) => o.code === v.code}
               value={findOption(options.systemResults, lineFilters.systemResult)}
-              onChange={(_, val) => setLineField("systemResult")(val?.code || "")}
+              onChange={(_, val) => {
+                const next = val?.code || "";
+                setLineField("systemResult")(next);
+                setLinePage(0);
+                fetchLineRows({ ...lineFilters, systemResult: next }, 0);
+              }}
               renderInput={(params) => <TextField {...params} label="System Result" />}
-            />
-          </Grid>
-          <Grid item xs={12} sm={4} md={2}>
-            <Autocomplete
-              size="small"
-              options={PO_CORRECTED_OPTIONS}
-              getOptionLabel={(o) => o.label || ""}
-              isOptionEqualToValue={(o, v) => o.code === v.code}
-              value={findOption(PO_CORRECTED_OPTIONS, lineFilters.isPoCorrected)}
-              onChange={(_, val) => setLineField("isPoCorrected")(val?.code || "")}
-              renderInput={(params) => <TextField {...params} label="Is PO Corrected?" />}
             />
           </Grid>
           <Grid item xs={12} sm={4} md={2}>
@@ -946,19 +932,13 @@ export default function PoRemarksReportPage() {
               getOptionLabel={(o) => o.label || ""}
               isOptionEqualToValue={(o, v) => o.code === v.code}
               value={findOption(options.rcStatuses, rcFilters.rcStatus)}
-              onChange={(_, val) => setRcField("rcStatus")(val?.code || "")}
+              onChange={(_, val) => {
+                const next = val?.code || "";
+                setRcField("rcStatus")(next);
+                setRcPage(0);
+                fetchRcRows({ ...rcFilters, rcStatus: next }, 0);
+              }}
               renderInput={(params) => <TextField {...params} label="RC Status" />}
-            />
-          </Grid>
-          <Grid item xs={12} sm={4} md={2}>
-            <Autocomplete
-              size="small"
-              options={PO_CORRECTED_OPTIONS}
-              getOptionLabel={(o) => o.label || ""}
-              isOptionEqualToValue={(o, v) => o.code === v.code}
-              value={findOption(PO_CORRECTED_OPTIONS, rcFilters.isPoCorrected)}
-              onChange={(_, val) => setRcField("isPoCorrected")(val?.code || "")}
-              renderInput={(params) => <TextField {...params} label="Is PO Corrected?" />}
             />
           </Grid>
           <Grid item xs={12} sm={4} md={2}>

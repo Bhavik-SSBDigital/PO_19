@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import PoDetailsPreviewDialog from "./components/PoDetailsPreviewDialog";
+import RemarksImpactListDialog from "./components/RemarksImpactListDialog";
 import PoWiseExceptionsTable from "./components/PoWiseExceptionsTable";
 import { buildSearchUrl, getFirstLineItem } from "utils/po-link-utils";
 import {
@@ -259,8 +260,33 @@ const KpiCard = ({
 };
 
 // Body of a "Remarks Impact" card (see the dashboard's REMARKS IMPACT
-// section). Split out so both the clickable (CardActionArea) and
-// non-clickable render paths share one implementation.
+// section). Each of the 3 numbers (Total / Pending / Closed) is its own
+// clickable target — opens RemarksImpactListDialog scoped to that exact
+// bucket, so "409 = 402 + 7" always has three real lists behind it, not
+// one generic "pending" link for the whole card.
+const RemarksImpactNumber = ({ value, label, color, onClick }) => (
+  <Box
+    onClick={onClick}
+    sx={{
+      cursor: onClick ? "pointer" : "default",
+      borderRadius: 2,
+      px: 1,
+      py: 0.5,
+      mx: -1,
+      transition: "background-color 0.15s",
+      "&:hover": onClick ? { bgcolor: alpha(color, 0.08) } : undefined,
+    }}
+  >
+    <Typography variant="h4" sx={{ fontWeight: 800, color, textDecoration: onClick ? "underline" : "none", textDecorationColor: alpha(color, 0.3), textUnderlineOffset: 4 }}>
+      {value}
+    </Typography>
+    <Typography variant="caption" color="text.secondary" sx={{ display: "flex", alignItems: "center", gap: 0.3 }}>
+      {label}
+      {onClick && <span style={{ fontSize: "0.85em" }}>↗</span>}
+    </Typography>
+  </Box>
+);
+
 const RemarksImpactCardBody = ({
   title,
   closedLabel,
@@ -269,18 +295,39 @@ const RemarksImpactCardBody = ({
   totalNotVerified,
   loading,
   nothingPending,
-  clickable,
+  onBucketClick,
 }) => (
   <CardContent sx={{ p: 3 }}>
     <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
       <Typography variant="overline" color="text.secondary" sx={{ fontWeight: 700, letterSpacing: 1 }}>
         {title} — Not Verified
       </Typography>
-      {clickable && (
-        <Typography variant="caption" sx={{ color: "#4f46e5", fontWeight: 700 }}>
-          View list →
-        </Typography>
-      )}
+      <MuiTooltip
+        arrow
+        placement="top"
+        title={
+          <Box sx={{ p: 0.5, maxWidth: 280 }}>
+            <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.5 }}>
+              What these 3 numbers mean
+            </Typography>
+            <Typography variant="caption" component="div" sx={{ mb: 0.5 }}>
+              <b>Total Not Verified</b>: how many {title.toLowerCase()} points the system
+              originally flagged "Not Verified", when the data was first audited. This
+              number is frozen — it never changes, no matter what buyers do afterward.
+            </Typography>
+            <Typography variant="caption" component="div" sx={{ mb: 0.5 }}>
+              <b>Pending</b>: of that total, how many still have no remark or check from a
+              buyer yet — i.e. still need action.
+            </Typography>
+            <Typography variant="caption" component="div">
+              <b>{closedLabel}</b>: of that total, how many now have a remark or check —
+              done, regardless of whether the buyer agreed with the system or corrected it.
+            </Typography>
+          </Box>
+        }
+      >
+        <InfoOutlinedIcon sx={{ fontSize: 18, color: "text.disabled", cursor: "help" }} />
+      </MuiTooltip>
     </Box>
     {loading ? (
       <Skeleton width="80%" height={40} sx={{ borderRadius: 2, my: 1 }} />
@@ -292,31 +339,25 @@ const RemarksImpactCardBody = ({
         </Typography>
       </Box>
     ) : (
-      <Box sx={{ display: "flex", alignItems: "baseline", gap: 2, my: 1 }}>
-        <Box>
-          <Typography variant="h4" sx={{ fontWeight: 800, color: "#dc2626" }}>
-            {pending}
-          </Typography>
-          <Typography variant="caption" color="text.secondary">
-            Pending
-          </Typography>
-        </Box>
-        <Box>
-          <Typography variant="h4" sx={{ fontWeight: 800, color: "#059669" }}>
-            {closed}
-          </Typography>
-          <Typography variant="caption" color="text.secondary">
-            {closedLabel}
-          </Typography>
-        </Box>
-        <Box>
-          <Typography variant="h4" sx={{ fontWeight: 800, color: "text.secondary" }}>
-            {totalNotVerified}
-          </Typography>
-          <Typography variant="caption" color="text.secondary">
-            Total Not Verified
-          </Typography>
-        </Box>
+      <Box sx={{ display: "flex", alignItems: "baseline", gap: 1, my: 1 }}>
+        <RemarksImpactNumber
+          value={pending}
+          label="Pending"
+          color="#dc2626"
+          onClick={pending > 0 ? () => onBucketClick("pending") : undefined}
+        />
+        <RemarksImpactNumber
+          value={closed}
+          label={closedLabel}
+          color="#059669"
+          onClick={closed > 0 ? () => onBucketClick("closed") : undefined}
+        />
+        <RemarksImpactNumber
+          value={totalNotVerified}
+          label="Total Not Verified"
+          color="#475569"
+          onClick={totalNotVerified > 0 ? () => onBucketClick("total") : undefined}
+        />
       </Box>
     )}
     {!loading && !nothingPending && (
@@ -328,8 +369,7 @@ const RemarksImpactCardBody = ({
         {pending} pending + {closed} {closedLabel.toLowerCase()} = {totalNotVerified} total flagged
         Not Verified by the system. This "Total Not Verified" number never changes — only
         how much of it is still pending vs. already closed moves, the instant a remark or
-        check is added.
-        {clickable ? " Click this card to see the pending list." : ""}
+        check is added. Click any number above to see its exact list.
       </Typography>
     )}
   </CardContent>
@@ -657,6 +697,9 @@ const ExecutiveDashboard = () => {
   // these numbers move the instant a remark is added/edited/deleted -
   // never by editing the underlying system result.
   const [remarksImpact, setRemarksImpact] = useState(null);
+  // Which "Remarks Impact" number was clicked - { section, title, bucket,
+  // closedLabel } or null. Drives RemarksImpactListDialog below.
+  const [remarksImpactDialog, setRemarksImpactDialog] = useState(null);
   const [remarksImpactLoading, setRemarksImpactLoading] = useState(true);
 
   const fetchRemarksImpact = useCallback(async (activeFilters) => {
@@ -1153,40 +1196,15 @@ const ExecutiveDashboard = () => {
       </Typography>
       <Grid container spacing={3} sx={{ mb: 5 }}>
         {[
-          {
-            key: "header",
-            title: "Header",
-            closedLabel: "Points Closed",
-            onClick: () =>
-              openHeaderKpiDrilldown(
-                "notVerifiedAny",
-                "Header Points Pending (Not Verified)",
-              ),
-          },
-          {
-            key: "line",
-            title: "Line Item",
-            closedLabel: "Points Closed",
-            onClick: () =>
-              openDrilldown(
-                "anyException",
-                true,
-                "Line Points Pending (Not Verified)",
-              ),
-          },
-          {
-            key: "rc",
-            title: "RC Overlap",
-            closedLabel: "RCs Closed",
-            onClick: () => window.location.assign("/rc-overlap"),
-          },
-        ].map(({ key, title, closedLabel, onClick }) => {
+          { key: "header", title: "Header", closedLabel: "Points Closed" },
+          { key: "line", title: "Line Item", closedLabel: "Points Closed" },
+          { key: "rc", title: "RC Overlap", closedLabel: "RCs Closed" },
+        ].map(({ key, title, closedLabel }) => {
           const section = remarksImpact?.[key] || {};
           const totalNotVerified = section.systemGenerated ?? 0;
           const pending = section.pending ?? 0;
           const closed = section.closed ?? 0;
           const nothingPending = !remarksImpactLoading && totalNotVerified === 0;
-          const canClick = !remarksImpactLoading && pending > 0;
           return (
             <Grid item xs={12} md={4} key={key}>
               <Card
@@ -1199,30 +1217,18 @@ const ExecutiveDashboard = () => {
                   boxShadow: "0 10px 30px -5px rgba(0,0,0,0.04)",
                 }}
               >
-                {canClick ? (
-                  <CardActionArea onClick={onClick} sx={{ height: "100%" }}>
-                    <RemarksImpactCardBody
-                      title={title}
-                      closedLabel={closedLabel}
-                      pending={pending}
-                      closed={closed}
-                      totalNotVerified={totalNotVerified}
-                      loading={remarksImpactLoading}
-                      nothingPending={nothingPending}
-                      clickable
-                    />
-                  </CardActionArea>
-                ) : (
-                  <RemarksImpactCardBody
-                    title={title}
-                    closedLabel={closedLabel}
-                    pending={pending}
-                    closed={closed}
-                    totalNotVerified={totalNotVerified}
-                    loading={remarksImpactLoading}
-                    nothingPending={nothingPending}
-                  />
-                )}
+                <RemarksImpactCardBody
+                  title={title}
+                  closedLabel={closedLabel}
+                  pending={pending}
+                  closed={closed}
+                  totalNotVerified={totalNotVerified}
+                  loading={remarksImpactLoading}
+                  nothingPending={nothingPending}
+                  onBucketClick={(bucket) =>
+                    setRemarksImpactDialog({ section: key, title, bucket, closedLabel })
+                  }
+                />
               </Card>
             </Grid>
           );
@@ -2286,6 +2292,10 @@ const ExecutiveDashboard = () => {
           fetchSummary(filters);
           fetchRemarksImpact(filters);
         }}
+      />
+      <RemarksImpactListDialog
+        trigger={remarksImpactDialog}
+        onClose={() => setRemarksImpactDialog(null)}
       />
     </Box>
   );

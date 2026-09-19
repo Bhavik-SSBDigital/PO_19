@@ -25,17 +25,15 @@ import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
 import VisibilityRoundedIcon from "@mui/icons-material/VisibilityRounded";
 import ArrowForwardRoundedIcon from "@mui/icons-material/ArrowForwardRounded";
 import FactCheckRoundedIcon from "@mui/icons-material/FactCheckRounded";
-import { useNavigate } from "react-router-dom";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
+import { useNavigate } from "react-router-dom";
+import moment from "moment";
 
-const ROW_HEIGHT = 64; // fixed row height, shared by BOTH tables so rows line up exactly
-const HEADER_HEIGHT = 48; // fixed header height, shared by both tables
+const ROW_HEIGHT = 64; 
+const HEADER_HEIGHT = 48; 
 const FROZEN_COL_WIDTH = 130;
 const BODY_MAX_HEIGHT = 500;
 
-// Columns that should be right-aligned + get numeric styling, regardless
-// of whether they're present (only shown when showTotals is on, except
-// exceptionLineCount/valueExposure which are always shown).
 const RIGHT_ALIGN_KEYS = new Set([
   "totalLineCount",
   "exceptionLineCount",
@@ -71,10 +69,6 @@ const joinLineItems = (r) => {
   return r.distinctLineItems ? `${r.distinctLineItems} item(s)` : "—";
 };
 
-// Single-line value with ellipsis + tooltip for anything that might overflow
-// its column (long vendor names, purchasing-group descriptions, etc).
-// `mono` renders in a monospace face, useful for codes like GSTIN/Tax Code
-// where consistent character width makes scanning easier.
 const TruncatedCell = ({
   value,
   maxWidth = 160,
@@ -101,10 +95,6 @@ const TruncatedCell = ({
   </MuiTooltip>
 );
 
-// "20/40 closed" progress bar + label, used by the Review Progress column
-// (showProgress). Distinct from the Compliance % chip — this is workflow
-// closure progress (per-line VerificationWorkflow.currentStatus), not audit
-// point verification.
 const ProgressCell = ({ closedCount = 0, total = 0 }) => {
   const pct = total > 0 ? Math.round((closedCount / total) * 100) : 0;
   const barColor = pct === 100 ? "#059669" : pct > 0 ? "#4f46e5" : "#cbd5e1";
@@ -139,27 +129,6 @@ const ProgressCell = ({ closedCount = 0, total = 0 }) => {
   );
 };
 
-/**
- * Shared PO-Wise table, used in two places:
- *  - Executive Dashboard (embedded, exceptions-only data from
- *    getExecutiveSummary): rendered exactly as before — no new prop is
- *    passed there, so this component's default output is unchanged.
- *  - Standalone PO Data page (/po-data): passes `showTotals` so every PO
- *    (compliant or not) gets a "Total Lines" and "Compliance %" column
- *    alongside the existing "Exceptions" count, and `showProgress` for the
- *    Open/Closed tabs so each PO shows its closed-vs-total line-item
- *    progress ("20/40 closed").
- *
- * FROZEN COLUMN IMPLEMENTATION NOTE:
- * Earlier versions used CSS `position: sticky` on a <td>, which triggers a
- * known Chromium repaint bug (stale-frame "ghosting" + jitter) when combined
- * with a horizontally-scrolling table. This version avoids that entirely by
- * rendering the PO Number column as its own small, non-scrolling-horizontally
- * table sitting next to a normal scrollable table for the rest of the
- * columns. The two tables share an identical ROW_HEIGHT/HEADER_HEIGHT so
- * rows always line up, and their vertical scroll position is kept in sync
- * in JS.
- */
 const PoWiseExceptionsTable = ({
   rows = [],
   loading = false,
@@ -168,12 +137,7 @@ const PoWiseExceptionsTable = ({
   infoText = "Click ANY row to open its PO Data & Results — in a new tab or right here in a preview.",
   viewAllHref,
   restrictedNotice,
-  // NEW — opt-in only. Leave false (default) for the dashboard's embedded
-  // table so its columns/behavior stay exactly as they were.
   showTotals = false,
-  // NEW — opt-in. Adds the "Review Progress" column (closedLineCount /
-  // totalLineCount, from the backend's per-PO workflow-closure rollup).
-  // Used by the Open/Closed tabs on the standalone PO Data page.
   showProgress = false,
 }) => {
   const navigate = useNavigate();
@@ -187,8 +151,6 @@ const PoWiseExceptionsTable = ({
   const mainScrollRef = useRef(null);
   const isSyncingRef = useRef(false);
 
-  // Keep the two tables' vertical scroll positions in sync, regardless of
-  // which one the user's cursor/wheel is actually over.
   const handleFrozenScroll = useCallback(() => {
     if (isSyncingRef.current) {
       isSyncingRef.current = false;
@@ -265,14 +227,9 @@ const PoWiseExceptionsTable = ({
     setMenuRow(null);
   };
 
-  // Columns rendered in the SCROLLABLE (right-hand) table only.
-  // PO Number lives in its own frozen table below, not in this list.
-  // "Total Lines" and "Compliance %" only appear when showTotals is true;
-  // "Review Progress" only appears when showProgress is true — the
-  // dashboard's call site never passes either, so its column set is
-  // exactly what it was before.
   const scrollColumns = useMemo(() => {
     const cols = [
+      { key: "poDate", label: "PO Date", minWidth: 120 },
       {
         key: "lineItemsDisplay",
         label: "Line Item(s)",
@@ -311,17 +268,19 @@ const PoWiseExceptionsTable = ({
     return cols;
   }, [showTotals, showProgress]);
 
-  // Sum of column widths drives the scrollable table's min-width, so it
-  // stays correct whichever combination of showTotals/showProgress is on.
   const tableMinWidth = useMemo(
     () => scrollColumns.reduce((sum, c) => sum + c.minWidth, 0),
     [scrollColumns],
   );
 
-  // Data-driven cell renderer so the body always matches scrollColumns,
-  // whether or not the extra showTotals/showProgress columns are present.
   const renderCell = (col, r) => {
     switch (col.key) {
+      case "poDate":
+        return (
+          <Typography variant="body2" sx={{ fontWeight: 500, color: "#475569" }}>
+            {r.poDate ? moment(r.poDate).format("DD-MMM-YYYY") : "—"}
+          </Typography>
+        );
       case "lineItemsDisplay":
         return (
           <MuiTooltip title={(r.lineItems || []).join(", ") || "—"}>
@@ -591,7 +550,7 @@ const PoWiseExceptionsTable = ({
         </Box>
       ) : (
         <Box sx={{ display: "flex", position: "relative" }}>
-          {/* ---- FROZEN COLUMN: PO Number, its own tiny non-scrolling-horizontally table ---- */}
+          {/* ---- FROZEN COLUMN: PO Number ---- */}
           <Box
             sx={{
               flexShrink: 0,
@@ -659,7 +618,7 @@ const PoWiseExceptionsTable = ({
             </Box>
           </Box>
 
-          {/* ---- SCROLLABLE REGION: everything else ---- */}
+          {/* ---- SCROLLABLE REGION ---- */}
           <Box
             ref={mainScrollRef}
             onScroll={handleMainScroll}

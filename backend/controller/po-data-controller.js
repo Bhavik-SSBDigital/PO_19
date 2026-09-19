@@ -98,9 +98,6 @@ function buildBaseWhere(body = {}) {
   if (body.poNumberSearch) {
     where.po_number = { contains: body.poNumberSearch, mode: "insensitive" };
   }
-  // Note: vendorSearch has been removed from Prisma's buildBaseWhere.
-  // It is now handled cleanly as a post-filter once vendor names are mapped
-  // from the master data.
 
   return where;
 }
@@ -142,6 +139,7 @@ function newBucket() {
     plant: null,
     purchaseGroup: null,
     paymentTerm: null,
+    poDate: null,
   };
 }
 
@@ -256,12 +254,14 @@ export const getPoWiseExceptions = async (req, res) => {
       b.plant = b.plant || row.plant || null;
       b.purchaseGroup = b.purchaseGroup || row.purchase_group || null;
       b.paymentTerm = b.paymentTerm || row.payment_term || null;
+      b.poDate = b.poDate || row.po_created_date || null;
     }
 
     let finalResults = Object.entries(byPo)
       .sort((a, b) => b[1].exceptionLines - a[1].exceptionLines)
       .map(([poNumber, v]) => ({
         poNumber,
+        poDate: v.poDate,
         vendorCode: v.vendorCode,
         vendorName: v.vendorName || getVendorName(v.vendorCode),
         poType: v.poType,
@@ -293,7 +293,7 @@ export const getPoWiseExceptions = async (req, res) => {
         valueExposure: Number(v.valueExposure.toFixed(2)),
       }));
 
-    // Post-filter logic for Vendor Search (handles dynamic master data lookups)
+    // Post-filter logic for Vendor Search
     if (body.vendorSearch) {
       const vSearchLower = body.vendorSearch.toLowerCase();
       finalResults = finalResults.filter(
@@ -301,6 +301,70 @@ export const getPoWiseExceptions = async (req, res) => {
           (r.vendorCode && r.vendorCode.toLowerCase().includes(vSearchLower)) ||
           (r.vendorName && r.vendorName.toLowerCase().includes(vSearchLower)),
       );
+    }
+
+    // Attach Remarks if specifically requested (used by Export to CSV)
+    // Structure: Maps header remarks to the PO object, and line remarks to the specific line object.
+    if (body.includeRemarks) {
+      const poNumbers = finalResults.map((r) => r.poNumber);
+
+      const lineRemarks = await prisma.poRemark.findMany({
+        where: { po_number: { in: poNumbers } },
+        include: {
+          submitter: {
+            select: { firstName: true, lastName: true, username: true },
+          },
+        },
+      });
+      const headerRemarks = await prisma.poHeaderRemark.findMany({
+        where: { po_number: { in: poNumbers } },
+        include: {
+          submitter: {
+            select: { firstName: true, lastName: true, username: true },
+          },
+        },
+      });
+
+      const headerRemarksMap = {};
+      const lineRemarksMap = {};
+
+      const formatName = (s) =>
+        s
+          ? [s.firstName, s.lastName].filter(Boolean).join(" ") || s.username
+          : "Unknown";
+
+      headerRemarks.forEach((r) => {
+        if (!headerRemarksMap[r.po_number]) headerRemarksMap[r.po_number] = [];
+        headerRemarksMap[r.po_number].push(
+          `[Pt ${r.pointNo}]: ${r.remark} (by ${formatName(r.submitter)})`,
+        );
+      });
+
+      lineRemarks.forEach((r) => {
+        const key = `${r.po_number}_${r.po_line_item || "Unknown"}`;
+        if (!lineRemarksMap[key]) lineRemarksMap[key] = [];
+        lineRemarksMap[key].push(
+          `[Pt ${r.pointNo}]: ${r.remark} (by ${formatName(r.submitter)})`,
+        );
+      });
+
+      finalResults = finalResults.map((r) => {
+        r.headerRemarksText = headerRemarksMap[r.poNumber]
+          ? headerRemarksMap[r.poNumber].join(" | ")
+          : "";
+
+        r.lineItemDetails = r.lineItemDetails.map((li) => {
+          const key = `${r.poNumber}_${li.poLineItem || "Unknown"}`;
+          return {
+            ...li,
+            lineRemarksText: lineRemarksMap[key]
+              ? lineRemarksMap[key].join(" | ")
+              : "",
+          };
+        });
+
+        return r;
+      });
     }
 
     return res.status(200).json({
@@ -398,7 +462,6 @@ export const getPoHeaderWiseDetails = async (req, res) => {
       };
     });
 
-    // Post-filter logic added here as well, to keep both endpoints aligned
     if (body.vendorSearch) {
       const vSearchLower = body.vendorSearch.toLowerCase();
       results = results.filter(

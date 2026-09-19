@@ -37,6 +37,7 @@ import {
   getExecutiveHeaderDrilldown,
   getExecutiveHeaderKpiDrilldown,
   getRemarksImpactSummary,
+  getRemarksImpactList,
 } from "./controller/dashboard-controller.js";
 
 import {
@@ -108,6 +109,7 @@ router.post(
   requireAuth,
   getRemarksImpactSummary,
 );
+router.post("/reports/remarks-impact-list", requireAuth, getRemarksImpactList);
 router.post("/reports/filter-options", requireAuth, getFilterOptions);
 router.post("/reports/executive-drilldown", requireAuth, getExecutiveDrilldown);
 router.post(
