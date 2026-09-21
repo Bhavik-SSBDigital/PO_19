@@ -13,6 +13,14 @@
 // after that, admins edit severity via the Risk Categorization Master page
 // and this script will NOT overwrite an admin's chosen severity on re-run
 // (see upsert below - severity is only set on create).
+//
+// THIS REVISION:
+//   - Point 4: allowed MSME payment terms now also include Z107, Z112,
+//     Z147, Z154 (full set: Z100, Z101, Z102, Z105, Z107, Z112, Z126,
+//     Z146, Z147, Z148, Z154). The old text (only Z102) was stale.
+//   - Point 9: now CUMULATIVE - current batch is checked against the
+//     current batch PLUS every PO processed in earlier runs (engine.py's
+//     --po9-history file).
 
 import { prisma } from "../lib/prisma.js";
 import dotenv from "dotenv";
@@ -60,9 +68,9 @@ const DEFINITIONS = [
     severity: "Critical",
     title: "MSME Vendor Payment Term",
     summary:
-      "Confirms MSME-registered vendors are on the mandated MSME payment term (Z102, ≤45 days), per the MSMED Act payment-timeline requirement.",
+      "Confirms MSME-registered vendors are on a permitted MSME payment term (Z100, Z101, Z102, Z105, Z107, Z112, Z126, Z146, Z147, Z148, Z154), per the MSMED Act payment-timeline requirement.",
     logic:
-      "Not Applicable if the vendor has no MSME certificate on file. Verified only if Payment Term = Z102, else Not Verified.",
+      "Not Applicable if the vendor has no MSME certificate on file. Verified if Payment Term is a credit term (Z100 = 15 days, Z101 = 30 days, Z102 = 45 days, Z146 = 10 days, Z148 = 21 days) or one of Z105 (100% against proforma invoice), Z107 (100% after satisfactory commissioning), Z112 (quarterly advance), Z126 (as per note), Z147 (half yearly advance), Z154 (on receipt of periodical bills). Otherwise Not Verified.",
     dataPoints: "Vendor MSME Status, Payment Term",
   },
   {
@@ -118,11 +126,11 @@ const DEFINITIONS = [
     severity: "Critical",
     title: "Multiple POs to Same Vendor, Same Day",
     summary:
-      "Flags possible order-splitting: the same vendor, purchasing group, plant, and purchasing date were used on more than one PO, unless a differing RFQ number on both sides explains it.",
+      "Flags possible order-splitting: the same vendor, purchasing group, plant, and purchasing date were used on more than one PO (checked across the current batch AND all previously processed POs), unless a differing RFQ number on both sides explains it.",
     logic:
-      "Compares Vendor Code + Purchase Group + Plant + Purchasing Date ('PO Date(Doc date)', not 'PO Created date') across POs. If another PO shares all four, it counts as a match UNLESS both POs have a non-blank RFQ no. (sourced from the 'order acknowledgement' column) and those RFQ numbers differ - a blank RFQ on either side is not treated as a differentiator. Not Verified if any other PO matches; the remark states whether the match was on the 4 core parameters (RFQ blank on one side) or all 5 (RFQ also equal). Verified if no other PO shares even the 4 core parameters, or if every PO that does share them was excluded solely because of a non-blank, differing RFQ.",
+      "Compares Vendor Code + Purchase Group + Plant + Purchasing Date ('PO Date(Doc date)', not 'PO Created date') across POs. The comparison is CUMULATIVE: each PO in the current batch is checked against the other POs in the current batch AND against every PO processed in earlier runs (kept in the cumulative history file data/po9_history.csv), not only against POs in the same file. If another PO shares all four, it counts as a match UNLESS both POs have a non-blank RFQ no. (sourced from the 'order acknowledgement' column) and those RFQ numbers differ - a blank RFQ on either side is not treated as a differentiator. Not Verified if any other PO matches; the remark states whether the match was on the 4 core parameters (RFQ blank on one side) or all 5 (RFQ also equal). Verified if no other PO shares even the 4 core parameters, or if every PO that does share them was excluded solely because of a non-blank, differing RFQ. An earlier PO's stored result is not retroactively changed when a later PO duplicates it - only the later PO is flagged, and its remark names the earlier PO.",
     dataPoints:
-      "Vendor Code, Purchase Group, Plant, PO Date(Doc date), order acknowledgement (RFQ no.), PO number",
+      "Vendor Code, Purchase Group, Plant, PO Date(Doc date), order acknowledgement (RFQ no.), PO number (current batch + cumulative PO history)",
   },
 
   // ---------------- LINE-LEVEL (10-19) ----------------

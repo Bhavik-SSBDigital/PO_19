@@ -13,6 +13,27 @@ import pandas as pd
 # change, kept here so future edits know why a check does what it does)
 #
 # THIS REVISION:
+#   - Point 4 (MSME payment term): the allowed payment-term set now ALSO
+#     includes Z107 (100% after satisfactory commissioning), Z112 (quarterly
+#     advance), Z147 (half yearly advance) and Z154 (on receipt of periodical
+#     bills), in addition to Z100, Z101, Z102, Z105, Z126, Z146, Z148.
+#   - Point 9 (multiple POs, same Vendor/Purchasing Group/Plant/Purchasing
+#     Date) is now CUMULATIVE: the current batch is checked against the
+#     current batch PLUS every PO processed in earlier runs, not only the POs
+#     inside a single file. engine.py has no DB access, so - exactly like the
+#     cumulative RC master - the history lives in a small file
+#     (data/po9_history.csv, see --po9-history). Each run:
+#         * checks the current batch against (current batch + history),
+#         * replaces the history rows of any PO present in the current batch
+#           (re-running a file never creates duplicates),
+#         * removes history rows of POs that are now fully deleted
+#           (every line Deletion indicator 'L'),
+#         * writes the updated history back at the end of the run.
+#     Vendor Code is compared with leading zeros stripped, because the same
+#     vendor can be exported as "0000208190" in one file and "208190" in
+#     another.
+#
+# PREVIOUS REVISION:
 #   - Point 15 replaced/confirmed: now (and going forward) an RC-material-
 #     -validity check (PO Type ZLRM/ZLCP only), not the old "PO Qty vs PR
 #     Qty" logic - the DB text in seed-point-definitions.js had drifted and
@@ -38,14 +59,6 @@ import pandas as pd
 #     (_is_excluded_line / JOB_WORK_PO_TYPES / ZSTO_PO_TYPE) and apply to
 #     every point automatically via evaluate_rule() - reconfirmed, no
 #     change needed.
-#   - STILL OUTSTANDING (not done in this revision): "Cumulative Daily PO
-#     Dataset for Point 9" - point #9's same-day duplicate-PO detection
-#     (rule_19_multiple_po_same_day) currently only compares POs within a
-#     single engine.py run's po_rows, so if a day's POs arrive across
-#     multiple separate files/runs, duplicates across those files won't be
-#     caught. This needs the same kind of cumulative-merge treatment as the
-#     RC master (a "day's cumulative PO dataset" merged across every file
-#     received that calendar day, reset at day boundary) - not yet built.
 # ============================================================================
 
 VERIFIED = "Verified"
@@ -75,6 +88,8 @@ NON_FREIGHT_REFERENCE_CONDITION_TYPES = {
 }
 DWS_APPROVERS = {"KKB", "SRS", "PJP", "DAULAT", "NHV", "CVS"}
 
+# Point 4 - payment terms allowed for MSME vendors.
+# THIS REVISION: added Z107, Z112, Z147, Z154.
 MSME_PAYMENT_TERMS = {
     "Z100": {"days": 15, "desc": "15 DAYS CREDIT"},
     "Z101": {"days": 30, "desc": "30 DAYS CREDIT"},
@@ -83,6 +98,10 @@ MSME_PAYMENT_TERMS = {
     "Z148": {"days": 21, "desc": "21 DAYS CREDIT"},
     "Z105": {"days": None, "desc": "100% ADVANCE AGAINST PI"},
     "Z126": {"days": None, "desc": "PAYMENT AS PER NOTE"},
+    "Z107": {"days": None, "desc": "100% AFTER SATISFACTORY COMMISSIONING"},
+    "Z112": {"days": None, "desc": "QUARTERLY ADVANCE"},
+    "Z147": {"days": None, "desc": "HALF YEARLY ADVANCE"},
+    "Z154": {"days": None, "desc": "ON RECEIPT OF PERIODICAL BILLS"},
 }
 
 GENERAL_TERM_EXCLUDED_PURCHASE_GROUPS = {"P46", "P02", "P43"}
@@ -133,6 +152,19 @@ GST_STATE_CODE_MAP = {
 
 PURCHASING_DATE_COLUMN = "PO Date(Doc date)"
 RFQ_NO_COLUMN = "order acknowledgement"
+
+# Point 9 cumulative history: the compact per-PO fields that are enough to
+# re-run the "multiple POs, same vendor/group/plant/date" comparison later.
+PO9_HISTORY_COLUMNS = [
+    "PO number",
+    "Vendor Code",
+    "Purchase Group",
+    "Plant",
+    PURCHASING_DATE_COLUMN,
+    "PO Type",
+    RFQ_NO_COLUMN,
+]
+DEFAULT_PO9_HISTORY_PATH = "data/po9_history.csv"
 
 
 def _state_from_gstin(gstin_raw):
@@ -496,9 +528,20 @@ def evaluate_rule(rule_no, fn, row, ctx):
     return fn(row, ctx)
 
 
+# ---------------------------------------------------------------------------
+# Point 9 helpers (multiple POs, same Vendor/Purchasing Group/Plant/Date)
+# ---------------------------------------------------------------------------
+def _po9_vendor(row):
+    """Vendor Code with leading zeros stripped, so '0000208190' (one export)
+    and '208190' (another export) are treated as the same vendor when the
+    current batch is compared against history."""
+    v = s(row, "Vendor Code")
+    return v.lstrip("0") or v
+
+
 def _po9_four_key(row):
     return (
-        s(row, "Vendor Code"),
+        _po9_vendor(row),
         s(row, "Purchase Group"),
         s(row, "Plant"),
         s(row, PURCHASING_DATE_COLUMN),
@@ -507,10 +550,40 @@ def _po9_four_key(row):
 
 def _po9_core_key(row):
     return (
-        s(row, "Vendor Code"),
+        _po9_vendor(row),
         s(row, "Purchase Group"),
         s(row, "Plant"),
     )
+
+
+def load_po9_history(path):
+    """Reads the cumulative point-9 history file (empty list if none yet)."""
+    if not path or not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8", newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def po9_rows_from_batch(po_rows):
+    """One compact history row per (PO number, Vendor/Group/Plant/Date)
+    combination present in the current batch. Plant etc. can differ by line,
+    so a PO can legitimately produce more than one row."""
+    seen = {}
+    for row in po_rows:
+        key = (s(row, "PO number"), _po9_four_key(row))
+        if key not in seen:
+            seen[key] = {col: s(row, col) for col in PO9_HISTORY_COLUMNS}
+    return list(seen.values())
+
+
+def save_po9_history(path, rows):
+    folder = os.path.dirname(path)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=PO9_HISTORY_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def _format_po_list(pos, limit=5):
@@ -690,7 +763,8 @@ def rule_11_msme_payment_term(row, ctx):
         return VERIFIED, f"MSME vendor with payment term {payment_term} ({detail})"
     return NOT_VERIFIED, (
         f"MSME vendor with payment term '{payment_term}', expected one of "
-        f"{sorted(MSME_PAYMENT_TERMS)} (<=45 days credit / advance / as-per-note)"
+        f"{sorted(MSME_PAYMENT_TERMS)} (<=45 days credit / advance / commissioning / "
+        f"quarterly-half-yearly advance / periodical bills / as-per-note)"
     )
 
 
@@ -902,8 +976,8 @@ def rule_15c_rc_material_validity(row, ctx):
     """
     Point #15 - RC validity by Material Code.
 
-    UPDATED PER CLIENT FLOWCHART (THIS REVISION). The flowchart changes
-    point #15 in three ways versus the prior revision:
+    UPDATED PER CLIENT FLOWCHART (PRIOR REVISION). The flowchart changes
+    point #15 in three ways versus the revision before that:
 
       1. SCOPE NARROWED TO ZLRM/ZLCP. The point now applies ONLY to PO Type
          ZLRM or ZLCP - every other PO Type is Not Applicable. (Previously
@@ -1095,6 +1169,12 @@ def rule_18_lrm_no_l_category(row, ctx):
 
 
 def rule_19_multiple_po_same_day(row, ctx):
+    """
+    Point #9 - multiple POs to the same Vendor / Purchasing Group / Plant /
+    Purchasing Date. CUMULATIVE: ctx["po9_*"] is built from the current
+    batch PLUS every PO stored in the cumulative history file, so a
+    duplicate is caught even when the other PO arrived in an earlier file.
+    """
     po_number = s(row, "PO number")
     four_key = _po9_four_key(row)
     rep_key = (four_key, po_number)
@@ -1171,12 +1251,12 @@ PO_LINE_RULES = [
     (1, "RC released", rule_07_rc_released),
     (2, "RC assigned consistently across same-material lines", rule_08_rc_consistency),
     (3, "IGST only for non-Gujarat vendors", rule_09_tax_logic),
-    (4, "MSME payment term (Z100/Z101/Z102/Z146/Z148/Z105/Z126)", rule_11_msme_payment_term),
+    (4, "MSME payment term (Z100/Z101/Z102/Z105/Z107/Z112/Z126/Z146/Z147/Z148/Z154)", rule_11_msme_payment_term),
     (5, "General payment term >=21 days", rule_12_general_payment_term),
     (6, "EYW inco-term requires freight condition", rule_13_eyw_freight_required),
     (7, "EXW/FCA must not have freight condition", rule_14_exw_fca_no_freight),
     (8, "Rate approval by authorised approver (DWS, joined by PO number)", rule_15_rate_approval),
-    (9, "Multiple POs to same Vendor/Purchasing Group/Plant/Purchasing Date - PO Type is the primary differentiator, RFQ secondary; always Verified/Not Verified", rule_19_multiple_po_same_day),
+    (9, "Multiple POs to same Vendor/Purchasing Group/Plant/Purchasing Date (CUMULATIVE: current batch + all previously processed POs) - PO Type is the primary differentiator, RFQ secondary; always Verified/Not Verified", rule_19_multiple_po_same_day),
     (10, "Release Verification (PR released before PO)", rule_01_release_verification),
     (11, "PR assigned to each PO line", rule_02_pr_assigned),
     (12, "PR Creation date within 6 months (180 days) of PO", rule_03_pr_within_6_months),
@@ -1303,7 +1383,13 @@ def build_rc_overlap_records(rc_rows, po_rows):
     return records
 
 
-def build_context(po_rows, cnd_by_po, rc_rows, dws_by_po=None):
+def build_context(po_rows, cnd_by_po, rc_rows, dws_by_po=None, po9_extra_rows=None):
+    """
+    po9_extra_rows: rows (same column names as PO9_HISTORY_COLUMNS) for POs
+    processed in EARLIER runs and not present in the current batch. They are
+    folded into the point-#9 lookups only (never into any other point), which
+    is what makes point #9 cumulative.
+    """
     po_material_groups = defaultdict(list)
     vendor_material_tax = defaultdict(set)
     po9_four_groups = defaultdict(set)
@@ -1345,6 +1431,7 @@ def build_context(po_rows, cnd_by_po, rc_rows, dws_by_po=None):
             if overlaps:
                 rc_overlaps[(vendor, material, rc_a["rc_no"])] = overlaps
 
+    # ---- Current-batch-only aggregates (all points except #9) ----
     for row in po_rows:
         po_number = s(row, "PO number")
         material = s(row, "Material Code")
@@ -1355,6 +1442,11 @@ def build_context(po_rows, cnd_by_po, rc_rows, dws_by_po=None):
         if vendor and material and tax_code:
             vendor_material_tax[(vendor, material)].add(tax_code)
 
+    # ---- Point #9: CUMULATIVE. Current batch FIRST (so its own values are
+    # the representative RFQ/PO Type for its POs), then every earlier PO from
+    # the history file. ----
+    for row in list(po_rows) + list(po9_extra_rows or []):
+        po_number = s(row, "PO number")
         four_key = _po9_four_key(row)
         po9_four_groups[four_key].add(po_number)
         rep_key = (four_key, po_number)
@@ -1386,11 +1478,15 @@ def build_context(po_rows, cnd_by_po, rc_rows, dws_by_po=None):
 
     log_assumption(
         9,
-        f"Point #9 slices on Vendor + Purchasing Group + Plant + Purchasing Date "
-        f"('{PURCHASING_DATE_COLUMN}'), then decides Verified/Not Verified using PO "
-        f"Type as the PRIMARY differentiator and, only when PO Type matches, RFQ "
-        f"(sourced from '{RFQ_NO_COLUMN}') as the SECONDARY differentiator. This "
-        f"point never produces a Manual Verify / Data Missing result.",
+        f"Point #9 is CUMULATIVE: it compares each PO in the current batch against the "
+        f"current batch PLUS {len(po9_extra_rows or [])} history row(s) from earlier runs "
+        f"(--po9-history). It slices on Vendor (leading zeros ignored) + Purchasing Group "
+        f"+ Plant + Purchasing Date ('{PURCHASING_DATE_COLUMN}'), then decides Verified/"
+        f"Not Verified using PO Type as the PRIMARY differentiator and, only when PO Type "
+        f"matches, RFQ (sourced from '{RFQ_NO_COLUMN}') as the SECONDARY differentiator. "
+        f"This point never produces a Manual Verify / Data Missing result. NOTE: an "
+        f"earlier PO's stored result is not retroactively changed when a later PO "
+        f"duplicates it - only the later PO is flagged (its remark names the earlier PO).",
     )
 
     return {
@@ -1522,12 +1618,29 @@ def build_po_header_records(po_rows, ctx):
         })
     return records
 
-def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None, header_json_path=None, rc_json_path=None, dws_path=None):
+def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None, header_json_path=None, rc_json_path=None, dws_path=None, po9_history_path=None):
     po_rows, cnd_rows, rc_rows, cnd_by_po = load_all(poaudit_path, cnd_path, rc_path)
     dws_by_po = load_dws_rate_approvals(dws_path)
 
     po_rows = filter_to_scope(po_rows)
+
+    # Remember which POs exist BEFORE line-level deletion, so a PO whose every
+    # line is now 'L' can be purged from the cumulative point-9 history.
+    scoped_pos = {s(r, "PO number") for r in po_rows}
     po_rows = drop_lines_with_deletion_indicator(po_rows)
+    fully_deleted_pos = scoped_pos - {s(r, "PO number") for r in po_rows}
+
+    # ---- Point #9 cumulative history ----
+    batch_po9_rows = po9_rows_from_batch(po_rows)
+    batch_pos = {r["PO number"] for r in batch_po9_rows}
+    history_rows = load_po9_history(po9_history_path)
+    # Earlier POs = history minus (POs re-sent in this batch) minus (POs now fully deleted).
+    # POs re-sent in this batch are REPLACED by their fresh rows, never duplicated.
+    history_extra = [
+        r for r in history_rows
+        if s(r, "PO number") not in batch_pos
+        and s(r, "PO number") not in fully_deleted_pos
+    ]
 
     returns_count = sum(1 for r in po_rows if _is_return_item(r) and not _is_deleted_line(r))
     if returns_count:
@@ -1541,7 +1654,7 @@ def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None, header_
     zsto_count = sum(1 for r in po_rows if _is_zsto_po(r))
     if zsto_count:
         log_assumption(
-            "Global Exclusion - PO Type ZSTO (THIS REVISION)",
+            "Global Exclusion - PO Type ZSTO",
             f"{zsto_count} of {len(po_rows)} remaining in-scope PO line(s) were excluded "
             f"from ALL 19 audit points (marked Not Applicable on every point, line-level "
             f"and header-level alike) because PO Type = 'ZSTO', per client instruction "
@@ -1553,14 +1666,14 @@ def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None, header_
     job_work_count = sum(1 for r in po_rows if _is_low_value_job_work_po(r))
     if job_work_count:
         log_assumption(
-            "Global Exclusion - Low-value Job Work ZJVW/ZVJW (THIS REVISION)",
+            "Global Exclusion - Low-value Job Work ZJVW/ZVJW",
             f"{job_work_count} of {len(po_rows)} remaining in-scope PO line(s) were "
             f"excluded from ALL 19 audit points (marked Not Applicable on every point) "
             f"because PO Type is ZJVW or ZVJW AND the Net Price ('{NET_PRICE_COLUMN}') "
             f"is 0, 0.01, or 1, per client instruction.",
         )
 
-    ctx = build_context(po_rows, cnd_by_po, rc_rows, dws_by_po)
+    ctx = build_context(po_rows, cnd_by_po, rc_rows, dws_by_po, po9_extra_rows=history_extra)
 
     base_folder = os.path.dirname(os.path.abspath(poaudit_path))
     ctx["tax_master"] = load_tax_master(base_folder)
@@ -1613,6 +1726,18 @@ def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None, header_
             json.dump(rc_records, f, indent=2)
         print(f"Wrote {len(rc_records)} RC Overlap records (point 20, with derived purchaseGroups) to {rc_json_path} - insert with: node addrc.js {rc_json_path}")
 
+    # Save the cumulative point-#9 history LAST, so a run that crashed above
+    # never leaves the history half-updated.
+    if po9_history_path:
+        save_po9_history(po9_history_path, history_extra + batch_po9_rows)
+        print(
+            f"Point #9 history: {len(batch_po9_rows)} row(s) from this batch + "
+            f"{len(history_extra)} earlier row(s) saved to {po9_history_path}"
+            + (f" ({len(fully_deleted_pos)} fully-deleted PO(s) purged)" if fully_deleted_pos else "")
+        )
+    else:
+        print("Point #9 history DISABLED (--po9-history ''): point #9 only compared POs within this single file.")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the P2P PO audit rule engine")
@@ -1633,9 +1758,24 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument("--dws", default=None, help="Path to dws_rate_approval_for_po.csv (from dws_rate_approval_extract.js) - powers point #8")
+    parser.add_argument(
+        "--po9-history",
+        default=DEFAULT_PO9_HISTORY_PATH,
+        help=(
+            "Path to the CUMULATIVE point-#9 history file (created/updated "
+            "automatically on every run; default: %(default)s, relative to the "
+            "folder you run engine.py from). Point #9 checks the current batch "
+            "against this history PLUS the current batch. Pass an empty string "
+            "('') to disable and compare only within the current file."
+        ),
+    )
     parser.add_argument("--out", default="audit_results.xlsx", help="Output xlsx path (for humans/client review)")
     parser.add_argument("--addpo-json", default=None, help="JSON for `node addpo.js <file>` (line-level, audit_results table)")
     parser.add_argument("--header-json", default=None, help="JSON for `node addheader.js <file>` (header-level, po_header_results table)")
     parser.add_argument("--rc-json", default=None, help="JSON for `node addrc.js <file>` (RC Overlap / point 20, rc_overlap_results table)")
     args = parser.parse_args()
-    run(args.poaudit, args.cnd, args.rc, args.out, args.addpo_json, args.header_json, args.rc_json, args.dws)
+    run(
+        args.poaudit, args.cnd, args.rc, args.out,
+        args.addpo_json, args.header_json, args.rc_json,
+        args.dws, args.po9_history,
+    )
