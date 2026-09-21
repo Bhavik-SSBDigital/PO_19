@@ -15,6 +15,11 @@
 // (see upsert below - severity is only set on create).
 //
 // THIS REVISION:
+//   - Point 15: the Logic text is now SHORT (one compact paragraph) instead
+//     of the long multi-sentence version. The rule itself is unchanged and
+//     still matches engine.py's rule_15c_rc_material_validity().
+//
+// PREVIOUS REVISION:
 //   - Point 4: allowed MSME payment terms now also include Z107, Z112,
 //     Z147, Z154 (full set: Z100, Z101, Z102, Z105, Z107, Z112, Z126,
 //     Z146, Z147, Z148, Z154). The old text (only Z102) was stale.
@@ -196,7 +201,7 @@ const DEFINITIONS = [
     summary:
       "For PO Types ZLRM/ZLCP only: if the PO's material has an active/valid Rate Contract as of the PO date, confirms the PO actually references that RC number rather than some other/no reference.",
     logic:
-      "Not Applicable if PO Type isn't ZLRM/ZLCP, OR if the PO's Material Code has no RC master record at all, OR the Material Code has RC record(s) but none is valid as of the PO's Purchasing Date (RC validity is looked up in the CUMULATIVE RC master - every RC file received is merged into history, never overwritten, so a PO is checked against every RC ever received for that material, not just the most recent file). When an applicable/valid RC DOES exist for the material as of that date: Verified if the PO's RC no. matches one of the valid RC numbers (if more than one RC is valid for that material on that date, the other valid RC number(s) are listed as additional information in the remark); Not Verified if the PO's RC no. is blank when an applicable RC was available, or if it's present but doesn't match any valid RC number for that material. Verified if the PO's RC no. is blank AND no applicable RC exists for that material either (nothing to reference).",
+      "Applies to ZLRM/ZLCP only. Not Applicable if the material has no RC in the cumulative RC master, or none valid on the PO's Purchasing Date (or the PO date is missing). Otherwise Verified if the PO's RC no. is one of the valid RCs (other valid RCs are listed in the remark); Not Verified if it is blank or not a valid RC.",
     dataPoints:
       "PO Type, PO number, Material Code, RC no. (PO), Purchasing Date, RC Master: Material Code / RC Number / Valid From / Valid To",
   },
