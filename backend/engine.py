@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import argparse
 import csv
 import json
@@ -13,6 +14,31 @@ import pandas as pd
 # change, kept here so future edits know why a check does what it does)
 #
 # THIS REVISION:
+#   - RC Overlap `purchaseGroups` is now read DIRECTLY from the RC master's
+#     own "Purchase group" column instead of being derived by cross-
+#     referencing the current batch's POAUDIT PO lines. The old approach
+#     (build_rc_purchase_groups(po_rows), now REMOVED) had two bugs stacked
+#     on top of each other:
+#       1. NOT CUMULATIVE - it only looked at whichever PO lines happened
+#          to be in the CURRENT POAUDIT batch. An RC not referenced by any
+#          PO line in this run's extract got purchaseGroups=[] even if it
+#          had a group before, and addrc.js does a wholesale field replace
+#          on every re-import, so that emptiness stuck permanently.
+#       2. VENDOR CODE FORMAT MISMATCH - the join matched on raw Vendor
+#          Code strings with no normalization, so a merged/cumulative RC
+#          master containing both zero-padded ("0000200683") and bare
+#          ("200683") vendor codes from different source extracts would
+#          silently fail to match whichever format the current POAUDIT
+#          batch happened to use, producing purchaseGroups=[] even when a
+#          perfectly good Purchase group value existed.
+#     CONFIRMED against a real POAUDITRC sample (2026-09-22): the file
+#     already carries a "Purchase group" column directly on every RC line
+#     (one value per RC number + material + vendor combination), making
+#     the PO cross-reference unnecessary. This is deterministic per RC
+#     row, immune to the vendor-code padding issue, and inherits the RC
+#     master's own cumulative nature (see merge-rc-master.js) automatically.
+#
+# PREVIOUS REVISION:
 #   - Point 4 (MSME payment term): the allowed payment-term set now ALSO
 #     includes Z107 (100% after satisfactory commissioning), Z112 (quarterly
 #     advance), Z147 (half yearly advance) and Z154 (on receipt of periodical
@@ -33,7 +59,6 @@ import pandas as pd
 #     vendor can be exported as "0000208190" in one file and "208190" in
 #     another.
 #
-# PREVIOUS REVISION:
 #   - Point 15 replaced/confirmed: now (and going forward) an RC-material-
 #     -validity check (PO Type ZLRM/ZLCP only), not the old "PO Qty vs PR
 #     Qty" logic - the DB text in seed-point-definitions.js had drifted and
@@ -89,7 +114,6 @@ NON_FREIGHT_REFERENCE_CONDITION_TYPES = {
 DWS_APPROVERS = {"KKB", "SRS", "PJP", "DAULAT", "NHV", "CVS"}
 
 # Point 4 - payment terms allowed for MSME vendors.
-# THIS REVISION: added Z107, Z112, Z147, Z154.
 MSME_PAYMENT_TERMS = {
     "Z100": {"days": 15, "desc": "15 DAYS CREDIT"},
     "Z101": {"days": 30, "desc": "30 DAYS CREDIT"},
@@ -165,6 +189,11 @@ PO9_HISTORY_COLUMNS = [
     RFQ_NO_COLUMN,
 ]
 DEFAULT_PO9_HISTORY_PATH = "data/po9_history.csv"
+
+# RC master column carrying the RC's assigned purchasing group directly.
+# CONFIRMED against a real POAUDITRC sample (2026-09-22): the header is
+# literally "Purchase group" (lowercase g).
+RC_PURCHASE_GROUP_COLUMN = "Purchase group"
 
 
 def _state_from_gstin(gstin_raw):
@@ -859,23 +888,6 @@ def _freight_condition_value_match(po_number, item_no, cnd_by_po):
 
 
 def rule_13_eyw_freight_required(row, ctx):
-    """
-    LATEST UPDATE: per the client's revised Point 6 spec, an EYW PO line
-    needs a freight condition (ZBF1/ZBF2/ZRA3/ZRB3/ZRE3, plus ZFB5 kept
-    from the prior revision - see FREIGHT_CONDITION_TYPES) that ALSO has a
-    value > INR 0.00 - the type being present is no longer sufficient by
-    itself, matching the flowchart's 3 EYW branches:
-      - applicable freight condition present with value > 0  -> VERIFIED
-      - no applicable freight condition present at all       -> NOT VERIFIED
-      - applicable freight condition present but value <= 0  -> NOT VERIFIED
-      - Inco Term != EYW                                     -> NA
-    See _freight_condition_value_match()/_condition_value() - the value
-    column is confirmed as "Condition value" against a real POAUDITCND
-    sample (2026-09-18); a couple of alternate-casing fallbacks are kept
-    in FREIGHT_CONDITION_VALUE_COLUMNS in case a future export differs,
-    and if NONE of those names are found this still returns Manual Check
-    rather than a silent Not Verified.
-    """
     po_type = s(row, "PO Type")
     if po_type in MANUAL_CHECK_PO_TYPES:
         return MANUAL_CHECK, (
@@ -973,54 +985,6 @@ RULE_15_APPLICABLE_PO_TYPES = {"ZLRM", "ZLCP"}
 
 
 def rule_15c_rc_material_validity(row, ctx):
-    """
-    Point #15 - RC validity by Material Code.
-
-    UPDATED PER CLIENT FLOWCHART (PRIOR REVISION). The flowchart changes
-    point #15 in three ways versus the revision before that:
-
-      1. SCOPE NARROWED TO ZLRM/ZLCP. The point now applies ONLY to PO Type
-         ZLRM or ZLCP - every other PO Type is Not Applicable. (Previously
-         this point ran for every PO line regardless of PO Type.)
-
-      2. "Material not found in RC master" -> Not Applicable. (Unchanged
-         from the immediately prior fix - kept as-is because the flowchart's
-         "Material found? NO -> NA" branch matches it exactly.)
-
-      3. "PO Date NOT within any RC's validity window for this material"
-         is now Not Applicable, NOT Not Verified. (CHANGED from the prior
-         revision, where this case was Not Verified - the flowchart's
-         "PO Date within RC validity? NO -> NA" branch is explicit that a
-         material with RC record(s) that don't happen to cover the PO's
-         date is Not Applicable, not a finding.)
-
-      Once a valid RC IS found for the material as of the PO's date, the
-      flowchart's remaining branches (Verified/Not Verified) are unchanged
-      in effect from the prior revision:
-        - PO's "RC no." is blank -> Not Verified (an applicable RC was
-          available and should have been referenced).
-        - PO's "RC no." matches the valid RC -> Verified.
-        - PO's "RC no." is present but does NOT match the valid RC ->
-          Not Verified.
-
-    LATEST UPDATE (Net Price exclusion for Job Work PO Types): a PO line
-    with PO Type ZJVW or ZVJW and a nominal Net Price of INR 0.00, INR
-    0.01, or INR 1 is excluded from the AI Audit entirely - this point
-    (like every other point) never even reaches the branches above for
-    such a line; evaluate_rule() short-circuits it to Not Applicable
-    before calling this function at all (see _is_low_value_job_work_po() /
-    _is_excluded_line() / JOB_WORK_PO_TYPES / JOB_WORK_LOW_VALUE_NET_PRICES
-    near the top of this file - this was already a GLOBAL exclusion
-    covering all 19 points, so no separate check is needed here; this note
-    just documents, at point #15 itself, that the exclusion applies here
-    too). In practice this is also moot for point #15 specifically: ZJVW/
-    ZVJW are not in RULE_15_APPLICABLE_PO_TYPES ({ZLRM, ZLCP}) either, so
-    the PO-type gate two lines below would already return Not Applicable
-    for them regardless of Net Price.
-
-    Only Not Applicable / Verified / Not Verified are produced - no Manual/
-    Data Missing outcome, matching the flowchart exactly.
-    """
     log_assumption(
         15,
         f"Point #15 (RC validity by Material Code) now applies ONLY to PO Type "
@@ -1070,11 +1034,6 @@ def rule_15c_rc_material_validity(row, ctx):
     valid_rc_numbers = sorted({c["rc_no"] for c in valid_rcs})
 
     if not po_rc_no:
-        # Flowchart's "RC No. in PO? NO -> RC available for same material?"
-        # branch. Having reached here, a valid RC for this material IS
-        # available (valid_rc_numbers is non-empty), so this always lands
-        # on Not Verified in practice; the VERIFIED path is kept only for
-        # literal parity with the flowchart's "NO -> VERIFIED" leaf.
         if valid_rc_numbers:
             return NOT_VERIFIED, (
                 f"PO's RC no. is blank, but RC {valid_rc_numbers} is available and "
@@ -1169,12 +1128,6 @@ def rule_18_lrm_no_l_category(row, ctx):
 
 
 def rule_19_multiple_po_same_day(row, ctx):
-    """
-    Point #9 - multiple POs to the same Vendor / Purchasing Group / Plant /
-    Purchasing Date. CUMULATIVE: ctx["po9_*"] is built from the current
-    batch PLUS every PO stored in the cumulative history file, so a
-    duplicate is caught even when the other PO arrived in an earlier file.
-    """
     po_number = s(row, "PO number")
     four_key = _po9_four_key(row)
     rep_key = (four_key, po_number)
@@ -1274,6 +1227,9 @@ LINE_ONLY_RULES = [r for r in PO_LINE_RULES if r[0] not in HEADER_LEVEL_RULE_NOS
 
 
 def run_rc_overlap(rc_rows):
+    """Excel-sheet ('RC Overlap' tab) version - now also surfaces the RC
+    master's own Purchase Group column directly, for parity with
+    build_rc_overlap_records()."""
     results = []
     by_vendor_material = defaultdict(list)
     for r in rc_rows:
@@ -1281,8 +1237,15 @@ def run_rc_overlap(rc_rows):
         material = s(r, "RC Material Code")
         valid_from = parse_sap_date(s(r, "RC valid from"))
         valid_to = parse_sap_date(s(r, "RC valid to"))
+        purchase_group = s(r, RC_PURCHASE_GROUP_COLUMN).upper()
         by_vendor_material[(vendor, material)].append(
-            {"RC number": s(r, "RC number"), "from": valid_from, "to": valid_to, "raw": r}
+            {
+                "RC number": s(r, "RC number"),
+                "from": valid_from,
+                "to": valid_to,
+                "purchase_group": purchase_group,
+                "raw": r,
+            }
         )
 
     for (vendor, material), rcs in by_vendor_material.items():
@@ -1302,6 +1265,7 @@ def run_rc_overlap(rc_rows):
                     "Vendor Code": vendor,
                     "RC Material Code": material,
                     "RC number": rc_a["RC number"],
+                    "Purchase Group": rc_a["purchase_group"],
                     "Valid From": rc_a["from"].date() if rc_a["from"] else None,
                     "Valid To": rc_a["to"].date() if rc_a["to"] else None,
                     "RC Overlap Status": status,
@@ -1311,23 +1275,21 @@ def run_rc_overlap(rc_rows):
     return pd.DataFrame(results)
 
 
-def build_rc_purchase_groups(po_rows):
-    groups = defaultdict(set)
-    for row in po_rows:
-        rc_no = s(row, "RC no.")
-        if not rc_no:
-            continue
-        vendor = s(row, "Vendor Code")
-        material = s(row, "Material Code")
-        purchase_group = s(row, "Purchase Group")
-        if purchase_group:
-            groups[(vendor, material, rc_no)].add(purchase_group)
-    return groups
+def build_rc_overlap_records(rc_rows):
+    """
+    Point 20 - RC Overlap, for storage via addrc.js -> rc_overlap_results.
 
+    UPDATED (THIS REVISION): `purchaseGroups` is now read DIRECTLY from the
+    RC master's own "Purchase group" column (RC_PURCHASE_GROUP_COLUMN),
+    one value per (vendor, material, RC number) row - NOT derived by
+    cross-referencing PO lines from a separate POAUDIT batch anymore. See
+    the top-of-file changelog entry for why the old approach
+    (build_rc_purchase_groups(po_rows), now removed) was unreliable.
 
-def build_rc_overlap_records(rc_rows, po_rows):
-    rc_purchase_groups = build_rc_purchase_groups(po_rows)
-
+    NOTE: this function no longer takes `po_rows` as a parameter - the RC
+    master alone is now sufficient to build the full RC Overlap output,
+    purchaseGroups included.
+    """
     records = []
     by_vendor_material = defaultdict(list)
     skipped_incomplete = 0
@@ -1337,13 +1299,18 @@ def build_rc_overlap_records(rc_rows, po_rows):
         valid_from = parse_sap_date(s(r, "RC valid from"))
         valid_to = parse_sap_date(s(r, "RC valid to"))
         rc_no = s(r, "RC number")
+        # Normalized (trimmed + uppercased) so it matches whatever casing
+        # convention the Purchasing Group Master / master-data.js uses when
+        # a Buyer's own group is looked up for the `purchaseGroups.has(...)`
+        # scoping check in rc-overlap-controller.js.
+        purchase_group = s(r, RC_PURCHASE_GROUP_COLUMN).upper()
 
         if not (vendor and material and rc_no):
             skipped_incomplete += 1
             continue
 
         by_vendor_material[(vendor, material)].append(
-            {"rc_no": rc_no, "from": valid_from, "to": valid_to}
+            {"rc_no": rc_no, "from": valid_from, "to": valid_to, "purchase_group": purchase_group}
         )
 
     if skipped_incomplete:
@@ -1352,6 +1319,22 @@ def build_rc_overlap_records(rc_rows, po_rows):
             f"{skipped_incomplete} row(s) in the RC master (POAUDITRC) were excluded from the "
             f"RC Overlap output because Vendor Code and/or RC Material Code and/or RC number "
             f"was blank."
+        )
+
+    missing_pg_count = sum(
+        1
+        for rcs in by_vendor_material.values()
+        for c in rcs
+        if not c["purchase_group"]
+    )
+    if missing_pg_count:
+        log_assumption(
+            "RC Overlap - Purchase Group",
+            f"{missing_pg_count} RC master row(s) had a blank '{RC_PURCHASE_GROUP_COLUMN}' "
+            f"value - those specific RC Overlap records will have purchaseGroups=[] and "
+            f"will not be visible to any Buyer (only Admin/Procurement Manager). This is a "
+            f"data-quality gap in the RC master itself, not a derivation bug - check the "
+            f"source POAUDITRC extract for these rows.",
         )
 
     for (vendor, material), rcs in by_vendor_material.items():
@@ -1365,9 +1348,7 @@ def build_rc_overlap_records(rc_rows, po_rows):
                 if rc_a["from"] <= rc_b["to"] and rc_b["from"] <= rc_a["to"]:
                     overlaps.append(rc_b["rc_no"])
 
-            purchase_groups = sorted(
-                rc_purchase_groups.get((vendor, material, rc_a["rc_no"]), set())
-            )
+            purchase_groups = [rc_a["purchase_group"]] if rc_a["purchase_group"] else []
 
             records.append({
                 "vendorCode": vendor,
@@ -1721,10 +1702,10 @@ def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None, header_
         print(f"Wrote {len(header_records)} PO-header records (header-level: points 1-9) to {header_json_path} - insert with: node addheader.js {header_json_path}")
 
     if rc_json_path:
-        rc_records = build_rc_overlap_records(rc_rows, po_rows)
+        rc_records = build_rc_overlap_records(rc_rows)
         with open(rc_json_path, "w") as f:
             json.dump(rc_records, f, indent=2)
-        print(f"Wrote {len(rc_records)} RC Overlap records (point 20, with derived purchaseGroups) to {rc_json_path} - insert with: node addrc.js {rc_json_path}")
+        print(f"Wrote {len(rc_records)} RC Overlap records (point 20, purchaseGroups read directly from RC master) to {rc_json_path} - insert with: node addrc.js {rc_json_path}")
 
     # Save the cumulative point-#9 history LAST, so a run that crashed above
     # never leaves the history half-updated.

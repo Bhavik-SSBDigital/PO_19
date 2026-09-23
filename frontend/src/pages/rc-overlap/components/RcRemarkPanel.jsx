@@ -8,12 +8,8 @@ import {
   Button,
   alpha,
   TextField,
-  FormControlLabel,
-  Checkbox,
-  Select,
-  MenuItem,
-  FormControl,
-  InputLabel,
+  ToggleButton,
+  ToggleButtonGroup,
   Stack,
   IconButton,
 } from "@mui/material";
@@ -25,6 +21,17 @@ import DeleteRoundedIcon from "@mui/icons-material/DeleteRounded";
 
 import { toast } from "react-toastify";
 import { post } from "utils/axiosApi";
+
+// Changed `bg` to standard MUI `bgcolor` to ensure it applies consistently
+const CORRECTION_STYLES = {
+  altercation: { bgcolor: "grey.200", color: "#334155" },
+  corrected: { bgcolor: alpha("#dc2626", 0.15), color: "#dc2626" },
+};
+
+const RESULT_STYLES = {
+  Verified: { bgcolor: alpha("#059669", 0.15), color: "#059669" },
+  "Not Verified": { bgcolor: alpha("#dc2626", 0.15), color: "#dc2626" },
+};
 
 const submitterName = (submitter) => {
   if (!submitter) return "Unknown";
@@ -298,17 +305,11 @@ const RcRemarkPanel = ({
     <Box
       sx={{
         mt: compact ? 0 : 3,
-
-        // CRITICAL:
-        // The compact version must never establish
-        // a width larger than the Popover.
         width: "100%",
         maxWidth: "100%",
         minWidth: 0,
-
         boxSizing: "border-box",
         overflow: "hidden",
-
         "& *": {
           boxSizing: "border-box",
           maxWidth: "100%",
@@ -422,7 +423,7 @@ const RcRemarkPanel = ({
           </Typography>
         )}
 
-      {!compact && (
+      {remarks.length > 0 && (
         <Stack
           spacing={1.25}
           sx={{
@@ -520,17 +521,9 @@ const RcRemarkPanel = ({
                         fontSize:
                           "0.7rem",
                         fontWeight: 700,
-                        bgcolor:
-                          remark.isSystemResultWrong
-                            ? alpha(
-                                "#dc2626",
-                                0.1
-                              )
-                            : "grey.200",
-                        color:
-                          remark.isSystemResultWrong
-                            ? "#dc2626"
-                            : "#334155",
+                        ...(remark.isSystemResultWrong
+                          ? CORRECTION_STYLES.corrected
+                          : CORRECTION_STYLES.altercation),
                       }}
                     />
 
@@ -543,19 +536,25 @@ const RcRemarkPanel = ({
                           fontSize:
                             "0.7rem",
                           fontWeight: 700,
-                          bgcolor:
-                            "grey.200",
-                          color:
-                            "#334155",
                           maxWidth:
                             "100%",
+                          ...(RESULT_STYLES[
+                            remark
+                              .buyerResult
+                          ] || {
+                            bgcolor:
+                              "grey.200",
+                            color:
+                              "#334155",
+                          }),
                         }}
                       />
                     )}
                   </Box>
                 </Box>
 
-                {isBuyer &&
+                {!compact &&
+                  isBuyer &&
                   remark.submittedBy ===
                     currentUserId &&
                   !remarksLocked && (
@@ -595,7 +594,6 @@ const RcRemarkPanel = ({
         </Stack>
       )}
 
-      {/* ADD REMARK BUTTON */}
       {canWrite &&
         !remarksLocked &&
         !ownRemark &&
@@ -615,7 +613,7 @@ const RcRemarkPanel = ({
         )}
 
       {/* CLOSED MESSAGE */}
-      {remarksLocked && (
+      {remarksLocked && remarks.length === 0 && (
         <Typography
           variant="caption"
           color="text.secondary"
@@ -625,9 +623,6 @@ const RcRemarkPanel = ({
         </Typography>
       )}
 
-      {/* ============================================================
-          REMARK FORM
-          ============================================================ */}
       {formOpen &&
         canWrite &&
         !remarksLocked &&
@@ -644,11 +639,9 @@ const RcRemarkPanel = ({
                 : "1px solid",
               borderColor:
                 "grey.200",
-
               width: "100%",
               maxWidth: "100%",
               minWidth: 0,
-
               overflow: "hidden",
             }}
           >
@@ -669,101 +662,151 @@ const RcRemarkPanel = ({
                 width: "100%",
                 maxWidth: "100%",
                 mb: 1.5,
-
                 "& .MuiInputBase-root": {
                   width: "100%",
                   maxWidth: "100%",
                 },
-
                 "& textarea": {
                   width: "100%",
                   maxWidth: "100%",
-                  overflowWrap:
-                    "anywhere",
-                  wordBreak:
-                    "break-word",
+                  overflowWrap: "anywhere",
+                  wordBreak: "break-word",
                 },
               }}
             />
 
-            {/* CORRECTION + BUYER RESULT */}
-            <Stack
-              direction="column"
-              spacing={1.25}
+            {/* IS PO CORRECTED? */}
+            <Typography
+              variant="caption"
               sx={{
-                width: "100%",
-                minWidth: 0,
-                mb: 1.5,
+                fontWeight: 700,
+                color: "text.secondary",
+                display: "block",
+                mb: 0.5,
               }}
             >
-              <FormControlLabel
-                sx={{
-                  m: 0,
-                  width: "100%",
-                  minWidth: 0,
+              Is PO corrected?
+            </Typography>
 
-                  "& .MuiFormControlLabel-label":
-                    {
-                      fontSize:
-                        "0.875rem",
-                      lineHeight: 1.3,
-                    },
-                }}
-                control={
-                  <Checkbox
-                    checked={isWrong}
-                    onChange={(event) =>
-                      setIsWrong(
-                        event.target
-                          .checked
-                      )
-                    }
-                  />
-                }
-                label="Is PO corrected?"
-              />
-
-              <FormControl
-                size="small"
-                fullWidth
-                sx={{
-                  width: "100%",
-                  minWidth: 0,
-                }}
-              >
-                <InputLabel>
-                  Buyer's result
-                </InputLabel>
-
-                <Select
-                  label="Buyer's result"
-                  value={buyerResult}
-                  onChange={(event) =>
-                    setBuyerResult(
-                      event.target.value
-                    )
+            <ToggleButtonGroup
+              exclusive
+              fullWidth
+              size="small"
+              value={isWrong ? "corrected" : "altercation"}
+              onChange={(_, val) => {
+                if (val) setIsWrong(val === "corrected");
+              }}
+              sx={{
+                width: "100%",
+                mb: 1.5,
+                "& .MuiToggleButton-root": {
+                  textTransform: "none",
+                  fontWeight: 500, // Softer weight when not selected
+                  fontSize: "0.8rem",
+                  color: "text.secondary", // clearly unselected grey
+                },
+                "& .MuiToggleButton-root.Mui-selected": {
+                  ...CORRECTION_STYLES.altercation, // Default selected style
+                  fontWeight: 700, // Bold when selected
+                  borderColor: "grey.400", // Clearly visible border
+                  zIndex: 1, // Fix border overlap
+                  "&:hover": {
+                    ...CORRECTION_STYLES.altercation,
+                    opacity: 0.9,
                   }
-                  fullWidth
-                  sx={{
-                    width: "100%",
-                  }}
-                >
-                  <MenuItem value="">
-                    <em>
-                      Same as system
-                    </em>
-                  </MenuItem>
+                },
+                "& .MuiToggleButton-root[value='corrected'].Mui-selected": {
+                  ...CORRECTION_STYLES.corrected,
+                  fontWeight: 700,
+                  borderColor: alpha("#dc2626", 0.4),
+                  zIndex: 1,
+                  "&:hover": {
+                    ...CORRECTION_STYLES.corrected,
+                    opacity: 0.9,
+                  }
+                },
+              }}
+            >
+              <ToggleButton value="altercation">
+                System Altercation
+              </ToggleButton>
+              <ToggleButton value="corrected">
+                PO Corrected
+              </ToggleButton>
+            </ToggleButtonGroup>
 
-                  <MenuItem value="Verified">
-                    Verified
-                  </MenuItem>
+            {/* BUYER'S RESULT */}
+            <Typography
+              variant="caption"
+              sx={{
+                fontWeight: 700,
+                color: "text.secondary",
+                display: "block",
+                mb: 0.5,
+              }}
+            >
+              Buyer's result
+            </Typography>
 
-                  <MenuItem value="Not Verified">
-                    Not Verified
-                  </MenuItem>
-                </Select>
-              </FormControl>
-            </Stack>
+            <ToggleButtonGroup
+              exclusive
+              fullWidth
+              size="small"
+              value={buyerResult}
+              onChange={(_, val) => {
+                setBuyerResult(val ?? "");
+              }}
+              sx={{
+                width: "100%",
+                mb: 1.5,
+                "& .MuiToggleButton-root": {
+                  textTransform: "none",
+                  fontWeight: 500, // Softer unselected state
+                  fontSize: "0.8rem",
+                  color: "text.secondary",
+                },
+                "& .MuiToggleButton-root[value='Verified'].Mui-selected": {
+                  ...RESULT_STYLES.Verified,
+                  fontWeight: 700,
+                  borderColor: alpha("#059669", 0.4),
+                  zIndex: 1,
+                  "&:hover": {
+                    ...RESULT_STYLES.Verified,
+                    opacity: 0.9,
+                  }
+                },
+                "& .MuiToggleButton-root[value='Not Verified'].Mui-selected": {
+                  ...RESULT_STYLES["Not Verified"],
+                  fontWeight: 700,
+                  borderColor: alpha("#dc2626", 0.4),
+                  zIndex: 1,
+                  "&:hover": {
+                    ...RESULT_STYLES["Not Verified"],
+                    opacity: 0.9,
+                  }
+                },
+                "& .MuiToggleButton-root[value=''].Mui-selected": {
+                  bgcolor: "grey.200",
+                  color: "#334155",
+                  fontWeight: 700,
+                  borderColor: "grey.400",
+                  zIndex: 1,
+                  "&:hover": {
+                    bgcolor: "grey.300",
+                  }
+                },
+              }}
+            >
+              <ToggleButton value="Verified">
+                Verified
+              </ToggleButton>
+              <ToggleButton value="Not Verified">
+                Not Verified
+              </ToggleButton>
+              <ToggleButton value="">
+                Not Applicable
+              </ToggleButton>
+            </ToggleButtonGroup>
 
             {/* ACTIONS */}
             <Stack
@@ -772,6 +815,11 @@ const RcRemarkPanel = ({
               sx={{
                 width: "100%",
                 minWidth: 0,
+                position: "sticky",
+                bottom: 0,
+                bgcolor: "background.paper",
+                pt: 1,
+                pb: compact ? 0 : 0.5,
               }}
             >
               <Button
@@ -801,9 +849,7 @@ const RcRemarkPanel = ({
                 editingId) && (
                 <Button
                   size="small"
-                  onClick={
-                    cancelForm
-                  }
+                  onClick={cancelForm}
                   disabled={
                     submitting
                   }

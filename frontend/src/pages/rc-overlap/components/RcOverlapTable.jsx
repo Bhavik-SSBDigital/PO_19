@@ -20,7 +20,9 @@ import {
   Pagination,
   Tooltip as MuiTooltip,
   IconButton,
-  Popover,
+  Dialog,
+  DialogTitle,
+  DialogContent,
 } from "@mui/material";
 
 import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
@@ -28,6 +30,7 @@ import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import LockRoundedIcon from "@mui/icons-material/LockRounded";
 import LockOpenRoundedIcon from "@mui/icons-material/LockOpenRounded";
 import ChatBubbleOutlineRoundedIcon from "@mui/icons-material/ChatBubbleOutlineRounded";
+import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 
 import RcRemarkPanel from "pages/rc-overlap/components/RcRemarkPanel";
 
@@ -101,18 +104,17 @@ const RcOverlapTable = ({
   const [orderBy, setOrderBy] = useState("rcNumber");
   const [order, setOrder] = useState("asc");
 
-  const [quickRemarkAnchor, setQuickRemarkAnchor] = useState(null);
+  // Quick-remark dialog target row. A centered Dialog (rather than an
+  // anchor-positioned Popover) so it can never render off-screen — see
+  // the note in RcRemarkPanel/earlier revision for why the Popover broke.
   const [quickRemarkRow, setQuickRemarkRow] = useState(null);
 
   const openQuickRemark = (event, row) => {
     event.stopPropagation();
-
-    setQuickRemarkAnchor(event.currentTarget);
     setQuickRemarkRow(row);
   };
 
   const closeQuickRemark = () => {
-    setQuickRemarkAnchor(null);
     setQuickRemarkRow(null);
   };
 
@@ -435,27 +437,37 @@ const RcOverlapTable = ({
               />
             )}
 
-            {!row.remarksLocked &&
-              roleFlags?.isBuyer && (
-                <MuiTooltip
-                  title="Add a quick remark"
-                  placement="top"
-                  arrow
+            {/* Previously gated on `!row.remarksLocked`, so the icon
+                (and therefore any way to see the remark) disappeared
+                the moment the RC auto-closed on submit. Now it's
+                always available — the dialog itself shows the remark
+                history read-only once closed, so there's still no
+                way to add a second remark, just a way to see the
+                one that's there. */}
+            {roleFlags?.isBuyer && (
+              <MuiTooltip
+                title={
+                  row.remarksLocked
+                    ? "View remark"
+                    : "Add a quick remark"
+                }
+                placement="top"
+                arrow
+              >
+                <IconButton
+                  size="small"
+                  onClick={(event) =>
+                    openQuickRemark(event, row)
+                  }
+                  sx={{
+                    color: "#4f46e5",
+                    flexShrink: 0,
+                  }}
                 >
-                  <IconButton
-                    size="small"
-                    onClick={(event) =>
-                      openQuickRemark(event, row)
-                    }
-                    sx={{
-                      color: "#4f46e5",
-                      flexShrink: 0,
-                    }}
-                  >
-                    <ChatBubbleOutlineRoundedIcon fontSize="small" />
-                  </IconButton>
-                </MuiTooltip>
-              )}
+                  <ChatBubbleOutlineRoundedIcon fontSize="small" />
+                </IconButton>
+              </MuiTooltip>
+            )}
           </Box>
         );
 
@@ -785,67 +797,45 @@ const RcOverlapTable = ({
       )}
 
       {/* ============================================================
-          QUICK REMARK POPOVER
+          QUICK REMARK DIALOG
+          Centered Dialog rather than an anchored Popover, so it can
+          never render off-screen. Always openable (see the icon above)
+          — shows the full remark history read-only, plus the add form
+          if the current buyer hasn't submitted one yet and the RC
+          isn't closed.
           ============================================================ */}
-      <Popover
-        open={Boolean(quickRemarkAnchor)}
-        anchorEl={quickRemarkAnchor}
+      <Dialog
+        open={Boolean(quickRemarkRow)}
         onClose={closeQuickRemark}
-        onClick={(event) => event.stopPropagation()}
-        marginThreshold={12}
-        anchorOrigin={{
-          vertical: "bottom",
-          horizontal: "right",
-        }}
-        transformOrigin={{
-          vertical: "top",
-          horizontal: "right",
-        }}
+        fullWidth
+        maxWidth="xs"
         PaperProps={{
-          elevation: 8,
           sx: {
-            // HARD WIDTH — this is important.
-            width: {
-              xs: "calc(100vw - 24px)",
-              sm: "360px",
-            },
-
-            // Never allow it to exceed the viewport.
-            maxWidth: "calc(100vw - 24px)",
-
-            // Never allow the popup to become taller than
-            // the visible screen.
-            maxHeight: "calc(100vh - 24px)",
-
-            // If content becomes tall, scroll INSIDE popup.
-            overflowX: "hidden",
-            overflowY: "auto",
-
-            borderRadius: 2.5,
-            boxSizing: "border-box",
-
-            // Prevent any child from visually stretching it.
-            "& > *": {
-              maxWidth: "100%",
-              minWidth: 0,
-              boxSizing: "border-box",
-            },
+            borderRadius: 3,
+            m: 2,
+            maxHeight: "calc(100% - 32px)",
           },
         }}
       >
-        <Box
+        <DialogTitle
           sx={{
-            width: "100%",
-            maxWidth: "100%",
-            minWidth: 0,
-            boxSizing: "border-box",
-            p: {
-              xs: 1.5,
-              sm: 2,
-            },
-            overflow: "hidden",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 1,
+            pr: 1.5,
           }}
         >
+          <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+            Remark{quickRemarkRow?.rcNumber ? ` — RC ${quickRemarkRow.rcNumber}` : ""}
+          </Typography>
+
+          <IconButton size="small" onClick={closeQuickRemark}>
+            <CloseRoundedIcon fontSize="small" />
+          </IconButton>
+        </DialogTitle>
+
+        <DialogContent dividers sx={{ pt: 2 }}>
           {quickRemarkRow && (
             <RcRemarkPanel
               compact
@@ -857,8 +847,8 @@ const RcOverlapTable = ({
               }}
             />
           )}
-        </Box>
-      </Popover>
+        </DialogContent>
+      </Dialog>
     </Paper>
   );
 };
