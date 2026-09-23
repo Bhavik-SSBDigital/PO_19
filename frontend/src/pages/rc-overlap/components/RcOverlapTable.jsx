@@ -109,6 +109,16 @@ const RcOverlapTable = ({
   // the note in RcRemarkPanel/earlier revision for why the Popover broke.
   const [quickRemarkRow, setQuickRemarkRow] = useState(null);
 
+  // Who can open the quick-remark dialog at all. Buyers can add/edit
+  // remarks (RcRemarkPanel itself still gates that on roleFlags.isBuyer);
+  // admin and procurement manager could only ever see "Closed"/"Open"
+  // with no way to actually see what the buyer wrote, so they get the
+  // same view affordance, just read-only once inside the panel.
+  const canOpenQuickRemark =
+    roleFlags?.isBuyer ||
+    roleFlags?.isAdmin ||
+    roleFlags?.isProcurementManager;
+
   const openQuickRemark = (event, row) => {
     event.stopPropagation();
     setQuickRemarkRow(row);
@@ -437,19 +447,21 @@ const RcOverlapTable = ({
               />
             )}
 
-            {/* Previously gated on `!row.remarksLocked`, so the icon
-                (and therefore any way to see the remark) disappeared
-                the moment the RC auto-closed on submit. Now it's
-                always available — the dialog itself shows the remark
-                history read-only once closed, so there's still no
-                way to add a second remark, just a way to see the
-                one that's there. */}
-            {roleFlags?.isBuyer && (
+            {/* Previously gated on `roleFlags?.isBuyer`, so admin and PM
+                could see "Closed"/"Open" but never the remark itself —
+                only the buyer who wrote it had a way in. Now anyone who
+                can meaningfully act on or review the remark (buyer,
+                admin, PM) gets the icon; RcRemarkPanel still restricts
+                actually adding/editing a remark to the buyer, so admin/PM
+                land on a read-only view of the remark history. */}
+            {canOpenQuickRemark && (
               <MuiTooltip
                 title={
                   row.remarksLocked
                     ? "View remark"
-                    : "Add a quick remark"
+                    : roleFlags?.isBuyer
+                    ? "Add a quick remark"
+                    : "View remark"
                 }
                 placement="top"
                 arrow
@@ -799,10 +811,10 @@ const RcOverlapTable = ({
       {/* ============================================================
           QUICK REMARK DIALOG
           Centered Dialog rather than an anchored Popover, so it can
-          never render off-screen. Always openable (see the icon above)
-          — shows the full remark history read-only, plus the add form
+          never render off-screen. Openable by buyer, admin and PM —
+          shows the full remark history read-only, plus the add form
           if the current buyer hasn't submitted one yet and the RC
-          isn't closed.
+          isn't closed (RcRemarkPanel enforces that via roleFlags).
           ============================================================ */}
       <Dialog
         open={Boolean(quickRemarkRow)}
