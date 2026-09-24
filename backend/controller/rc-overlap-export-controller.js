@@ -88,7 +88,14 @@ function rowsToSheetData(rows) {
 export const downloadRcOverlapReport = async (req, res) => {
   try {
     const user = req.user || {};
-    if (!(user.isAdmin || user.isProcurementManager || user.isBuyer)) {
+    if (
+      !(
+        user.isAdmin ||
+        user.isProcurementManager ||
+        user.isBuyer ||
+        user.isSsbDigital
+      )
+    ) {
       return res.status(403).json({ message: "Not authorized" });
     }
 

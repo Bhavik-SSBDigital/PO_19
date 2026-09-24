@@ -83,6 +83,17 @@ import {
   setRcCheckedStatus,
 } from "./controller/rc-remarks-controller.js";
 
+// "Accumulated" exports (full-table, unscoped) — see item 3 of the build
+// spec / the file header comment in accumulated-export-controller.js.
+import {
+  downloadAccumulatedPoLineExport,
+  downloadAccumulatedPoHeaderExport,
+  downloadAccumulatedRcExport,
+} from "./controller/accumulated-export-controller.js";
+
+// Processing History (item 1) — read-only list of completed sync batches.
+import { getProcessingHistory } from "./controller/processing-history-controller.js";
+
 const router = express.Router();
 
 // --- Auth ---
@@ -138,34 +149,34 @@ router.delete("/deleteUser/:id", deleteUser);
 router.post(
   "/reports/po-data",
   requireAuth,
-  requireAnyOf("isAdmin", "isBuyer", "isProcurementManager"),
+  requireAnyOf("isAdmin", "isBuyer", "isProcurementManager", "isSsbDigital"),
   getPoWiseExceptions,
 );
 
 router.post(
   "/reports/po-header-data",
   requireAuth,
-  requireAnyOf("isAdmin", "isBuyer", "isProcurementManager"),
+  requireAnyOf("isAdmin", "isBuyer", "isProcurementManager", "isSsbDigital"),
   getPoHeaderWiseDetails,
 );
 
 router.post(
   "/reports/purchase-groups",
   requireAuth,
-  requireAnyOf("isAdmin", "isProcurementManager"),
+  requireAnyOf("isAdmin", "isProcurementManager", "isSsbDigital"),
   getPurchaseGroupsForFilter,
 );
 
 router.post(
   "/reports/po-types",
   requireAuth,
-  requireAnyOf("isAdmin", "isBuyer", "isProcurementManager"),
+  requireAnyOf("isAdmin", "isBuyer", "isProcurementManager", "isSsbDigital"),
   getPoTypesForFilter,
 );
 router.post(
   "/reports/plants",
   requireAuth,
-  requireAnyOf("isAdmin", "isBuyer", "isProcurementManager"),
+  requireAnyOf("isAdmin", "isBuyer", "isProcurementManager", "isSsbDigital"),
   getPlantsForFilter,
 );
 
@@ -181,7 +192,7 @@ router.post("/risk-categorization/reload-point-config", reloadPointConfig);
 router.post(
   "/po-remarks/search",
   requireAuth,
-  requireAnyOf("isBuyer", "isAdmin", "isProcurementManager"),
+  requireAnyOf("isBuyer", "isAdmin", "isProcurementManager", "isSsbDigital"),
   getPoRemarks,
 );
 
@@ -228,7 +239,7 @@ router.post(
 router.post(
   "/reports/po-remarks-report/issue-tracker-download",
   requireAuth,
-  requireAnyOf("isBuyer", "isAdmin", "isProcurementManager"),
+  requireAnyOf("isBuyer", "isAdmin", "isProcurementManager", "isSsbDigital"),
   downloadIssueTrackerReport,
 );
 
@@ -238,7 +249,7 @@ router.post("/getPOHeaderSummary", requireAuth, getPoHeaderSummary);
 router.post(
   "/po-header-remarks/search",
   requireAuth,
-  requireAnyOf("isBuyer", "isAdmin", "isProcurementManager"),
+  requireAnyOf("isBuyer", "isAdmin", "isProcurementManager", "isSsbDigital"),
   getPoHeaderRemarks,
 );
 router.post(
@@ -286,7 +297,7 @@ router.post(
 router.post(
   "/rc-remarks",
   requireAuth,
-  requireAnyOf("isBuyer", "isAdmin", "isProcurementManager"),
+  requireAnyOf("isBuyer", "isAdmin", "isProcurementManager", "isSsbDigital"),
   getRcRemarks,
 );
 router.post(
@@ -317,20 +328,53 @@ router.post(
 router.post(
   "/reports/po-remarks-report",
   requireAuth,
-  requireAnyOf("isBuyer", "isAdmin", "isProcurementManager"),
+  requireAnyOf("isBuyer", "isAdmin", "isProcurementManager", "isSsbDigital"),
   getPoRemarksReport,
 );
 router.post(
   "/reports/po-remarks-report/filters",
   requireAuth,
-  requireAnyOf("isBuyer", "isAdmin", "isProcurementManager"),
+  requireAnyOf("isBuyer", "isAdmin", "isProcurementManager", "isSsbDigital"),
   getPoRemarksReportFilters,
 );
 router.post(
   "/reports/po-remarks-report/download",
   requireAuth,
-  requireAnyOf("isBuyer", "isAdmin", "isProcurementManager"),
+  requireAnyOf("isBuyer", "isAdmin", "isProcurementManager", "isSsbDigital"),
   downloadPoRemarksReport,
+);
+
+// --- Accumulated exports (item 3) ---
+// Decision point from the build spec: Buyer/Procurement Manager are left
+// OUT of these three on purpose (full, unscoped dump of the entire table -
+// not something a purchase-group-restricted role should get). Add
+// "isBuyer"/"isProcurementManager" here if that intent changes.
+router.post(
+  "/reports/accumulated/po-lines/download",
+  requireAuth,
+  requireAnyOf("isAdmin", "isSsbDigital"),
+  downloadAccumulatedPoLineExport,
+);
+router.post(
+  "/reports/accumulated/po-headers/download",
+  requireAuth,
+  requireAnyOf("isAdmin", "isSsbDigital"),
+  downloadAccumulatedPoHeaderExport,
+);
+router.post(
+  "/reports/accumulated/rc/download",
+  requireAuth,
+  requireAnyOf("isAdmin", "isSsbDigital"),
+  downloadAccumulatedRcExport,
+);
+
+// --- Processing History (item 1) ---
+// Read-only; same visibility as the accumulated exports above.
+router.post(
+  "/reports/processing-history",
+  requireAuth,
+  requireAnyOf("isAdmin", "isSsbDigital"),
+  getProcessingHistory,
 );
 
 export default router;

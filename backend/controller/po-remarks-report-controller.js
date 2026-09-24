@@ -90,7 +90,7 @@ function buildScopedRemarkWhere(req, body = {}) {
     and.push({ auditResult: { AND: auditResultAnd } });
   }
 
-  if (user.isAdmin || user.isProcurementManager) {
+  if (user.isAdmin || user.isProcurementManager || user.isSsbDigital) {
     if (body.submittedBy) and.push({ submittedBy: body.submittedBy });
   } else if (user.isBuyer) {
     const userId = user.id || user.userId;
@@ -279,7 +279,7 @@ function buildScopedHeaderRemarkWhere(req, body = {}) {
     and.push({ poHeaderResult: { AND: headerResultAnd } });
   }
 
-  if (user.isAdmin || user.isProcurementManager) {
+  if (user.isAdmin || user.isProcurementManager || user.isSsbDigital) {
     if (body.submittedBy) and.push({ submittedBy: body.submittedBy });
   } else if (user.isBuyer) {
     const userId = user.id || user.userId;
@@ -471,7 +471,7 @@ function buildScopedRcRemarkWhere(req, body = {}) {
     and.push({ rcOverlapResult: { AND: rcResultAnd } });
   }
 
-  if (user.isAdmin || user.isProcurementManager) {
+  if (user.isAdmin || user.isProcurementManager || user.isSsbDigital) {
     if (body.submittedBy) and.push({ submittedBy: body.submittedBy });
   } else if (user.isBuyer) {
     const userId = user.id || user.userId;
@@ -608,11 +608,19 @@ export const getPoRemarksReportFilters = async (req, res) => {
   try {
     await ensurePointDefinitionsLoaded();
     const user = req.user || {};
-    if (!(user.isAdmin || user.isProcurementManager || user.isBuyer)) {
+    if (
+      !(
+        user.isAdmin ||
+        user.isProcurementManager ||
+        user.isBuyer ||
+        user.isSsbDigital
+      )
+    ) {
       return res.status(403).json({ message: "Not authorized" });
     }
 
-    const isAdminOrPM = user.isAdmin || user.isProcurementManager;
+    const isAdminOrPM =
+      user.isAdmin || user.isProcurementManager || user.isSsbDigital;
     const lineScopeWhere = isAdminOrPM
       ? {}
       : { submittedBy: user.id || user.userId };

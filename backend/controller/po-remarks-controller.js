@@ -18,7 +18,8 @@ const SUBMITTER_SELECT = {
 };
 
 function canAccessAuditResult(user, auditResult) {
-  if (user.isAdmin || user.isProcurementManager) return true;
+  if (user.isAdmin || user.isProcurementManager || user.isSsbDigital)
+    return true;
   if (user.isBuyer) {
     const ownGroup = getPurchaseGroupCode(user.username);
     return !!ownGroup && auditResult.purchase_group === ownGroup;
@@ -273,7 +274,14 @@ export const updatePoRemark = async (req, res) => {
 export const getPoRemarks = async (req, res) => {
   try {
     const user = req.user || {};
-    if (!(user.isBuyer || user.isAdmin || user.isProcurementManager)) {
+    if (
+      !(
+        user.isBuyer ||
+        user.isAdmin ||
+        user.isProcurementManager ||
+        user.isSsbDigital
+      )
+    ) {
       return res.status(403).json({ message: "Not authorized" });
     }
 

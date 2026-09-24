@@ -159,7 +159,8 @@ const uniqueKeyOf = (row) =>
 // group" — a remark is private to its author until a manager looks at it.
 function remarkVisibleTo(user, remark) {
   if (!user) return false;
-  if (user.isAdmin || user.isProcurementManager) return true;
+  if (user.isAdmin || user.isProcurementManager || user.isSsbDigital)
+    return true;
   if (user.isBuyer) {
     const userId = user.id || user.userId;
     return userId != null && String(remark.submittedBy) === String(userId);

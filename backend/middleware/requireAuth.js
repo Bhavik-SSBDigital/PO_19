@@ -34,6 +34,7 @@ export const requireAuth = async (req, res, next) => {
       isAdmin: !!u.role?.isAdmin,
       isBuyer: !!u.role?.isBuyer,
       isProcurementManager: !!u.role?.isProcurementManager,
+      isSsbDigital: !!u.role?.isSsbDigital,
     };
 
     next();

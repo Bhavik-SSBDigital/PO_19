@@ -15,20 +15,22 @@ import { element } from "prop-types";
 // one dashboard endpoint that's actually wired up end to end. Swap back to
 // `import("pages/dashboard")` once you've converted the rest of
 // dashboard-analytics-controller.js the same way.
-const ExecutiveDashboard = Loadable(lazy(() => import("pages/executive-dashboard")));
+const ExecutiveDashboard = Loadable(
+  lazy(() => import("pages/executive-dashboard")),
+);
 const SearchAuditData = Loadable(lazy(() => import("pages/search-audit-data")));
 const InvoiceList = Loadable(lazy(() => import("pages/invoice-po-list")));
 const InvoiceListAuditor = Loadable(
-  lazy(() => import("pages/invoice-po-list/auditor-view"))
+  lazy(() => import("pages/invoice-po-list/auditor-view")),
 );
 const ManageUsers = Loadable(lazy(() => import("pages/users")));
 const UserLogs = Loadable(lazy(() => import("pages/user-logs")));
 const IssueTracker = Loadable(lazy(() => import("pages/issue-tracker")));
 const RiskCategorization = Loadable(
-  lazy(() => import("pages/risk-categorization"))
+  lazy(() => import("pages/risk-categorization")),
 );
 const VisibilitySettings = Loadable(
-  lazy(() => import("pages/visibility-settings"))
+  lazy(() => import("pages/visibility-settings")),
 );
 
 // PO audit results (Postgres/Prisma demo page)
@@ -43,7 +45,15 @@ const RcOverlapPage = Loadable(lazy(() => import("pages/rc-overlap")));
 // sees only remarks they personally submitted. Backed by
 // /reports/po-remarks-report (+ /download for the xlsx export).
 const PoRemarksReportPage = Loadable(
-  lazy(() => import("pages/po-remarks-report"))
+  lazy(() => import("pages/po-remarks-report")),
+);
+
+// NEW — item 1 / item 3 (Admin + SSBDigital)
+const ProcessingHistoryPage = Loadable(
+  lazy(() => import("pages/processing-history")),
+);
+const AccumulatedExportsPage = Loadable(
+  lazy(() => import("pages/accumulated-exports")),
 );
 
 const MainRoutes = {
@@ -68,6 +78,8 @@ const MainRoutes = {
     { path: "rc-overlap", element: <RcOverlapPage /> },
     // NEW — Buyer Remarks Report (list + download)
     { path: "po-remarks-report", element: <PoRemarksReportPage /> },
+    { path: "processing-history", element: <ProcessingHistoryPage /> },
+    { path: "accumulated-exports", element: <AccumulatedExportsPage /> },
     { path: "*", element: <NotFound /> },
   ],
 };

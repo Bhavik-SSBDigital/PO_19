@@ -443,6 +443,8 @@ export const get_users = async (req, res) => {
       isBuyer: user.role?.isBuyer || false,
 
       isProcurementManager: user.role?.isProcurementManager || false,
+
+      isSsbDigital: user.role?.isSsbDigital || false,
     }));
 
     return res.status(200).json({
@@ -764,6 +766,8 @@ export const login = async (req, res) => {
       isBuyer: !!user.role?.isBuyer,
 
       isProcurementManager: !!user.role?.isProcurementManager,
+
+      isSsbDigital: !!user.role?.isSsbDigital,
 
       name: `${user.firstName} ${user.lastName}`,
 

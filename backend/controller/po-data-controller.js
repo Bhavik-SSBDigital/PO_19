@@ -170,7 +170,7 @@ export const getPoWiseExceptions = async (req, res) => {
     const where = buildBaseWhere(body);
     const user = req.user || {};
 
-    if (user.isAdmin || user.isProcurementManager) {
+    if (user.isAdmin || user.isProcurementManager || user.isSsbDigital) {
       const groupCodes = new Set();
       if (Array.isArray(body.purchaseGroup) && body.purchaseGroup.length) {
         body.purchaseGroup.forEach((c) =>
@@ -389,7 +389,7 @@ export const getPoHeaderWiseDetails = async (req, res) => {
     const user = req.user || {};
     const where = { po_type: { notIn: RC_PLACEHOLDER_PO_TYPES } };
 
-    if (user.isAdmin || user.isProcurementManager) {
+    if (user.isAdmin || user.isProcurementManager || user.isSsbDigital) {
       const groupCodes = new Set();
       if (Array.isArray(body.purchaseGroup) && body.purchaseGroup.length) {
         body.purchaseGroup.forEach((c) =>
@@ -487,7 +487,7 @@ export const getPoHeaderWiseDetails = async (req, res) => {
 
 export const getPurchaseGroupsForFilter = async (req, res) => {
   const user = req.user || {};
-  if (!(user.isAdmin || user.isProcurementManager)) {
+  if (!(user.isAdmin || user.isProcurementManager || user.isSsbDigital)) {
     return res.status(403).json({ message: "Not authorized" });
   }
   return res.status(200).json({ groups: getPurchaseGroupsList() });

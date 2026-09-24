@@ -86,7 +86,7 @@ function buildScopedWhere(req, body) {
   const and = buildFilterWhere(body);
   const user = req.user || {};
 
-  if (user.isAdmin || user.isProcurementManager) {
+  if (user.isAdmin || user.isProcurementManager || user.isSsbDigital) {
     // Admin/PM can optionally still filter DOWN to a specific group via the
     // advanced filter bar, but are not restricted to one.
     if (body.purchaseGroup) {
@@ -126,7 +126,8 @@ function buildScopedWhere(req, body) {
  * first and then need to check access on that specific row.
  */
 function canAccessRecord(user, record) {
-  if (user.isAdmin || user.isProcurementManager) return true;
+  if (user.isAdmin || user.isProcurementManager || user.isSsbDigital)
+    return true;
   if (user.isBuyer) {
     const ownGroup = getPurchaseGroupCode(user.username);
     return !!ownGroup && (record.purchaseGroups || []).includes(ownGroup);
@@ -219,7 +220,14 @@ export const getRcOverlapResults = async (req, res) => {
 export const getRcOverlapDetail = async (req, res) => {
   try {
     const user = req.user || {};
-    if (!(user.isAdmin || user.isProcurementManager || user.isBuyer)) {
+    if (
+      !(
+        user.isAdmin ||
+        user.isProcurementManager ||
+        user.isBuyer ||
+        user.isSsbDigital
+      )
+    ) {
       return res.status(403).json({ message: "Not authorized" });
     }
 

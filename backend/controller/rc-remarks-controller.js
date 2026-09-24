@@ -57,7 +57,8 @@ const SUBMITTER_SELECT = {
 };
 
 function canAccessRc(user, rc) {
-  if (user.isAdmin || user.isProcurementManager) return true;
+  if (user.isAdmin || user.isProcurementManager || user.isSsbDigital)
+    return true;
   if (user.isBuyer) {
     const ownGroup = getPurchaseGroupCode(user.username);
     return !!ownGroup && (rc.purchaseGroups || []).includes(ownGroup);
@@ -291,7 +292,14 @@ export const updateRcRemark = async (req, res) => {
 export const getRcRemarks = async (req, res) => {
   try {
     const user = req.user || {};
-    if (!(user.isBuyer || user.isAdmin || user.isProcurementManager)) {
+    if (
+      !(
+        user.isBuyer ||
+        user.isAdmin ||
+        user.isProcurementManager ||
+        user.isSsbDigital
+      )
+    ) {
       return res.status(403).json({ message: "Not authorized" });
     }
 

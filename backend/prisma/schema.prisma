@@ -55,6 +55,13 @@ model Role {
   isAdmin              Boolean  @default(false) @map("is_admin")
   isBuyer              Boolean  @default(false) @map("is_buyer")
   isProcurementManager Boolean  @default(false) @map("is_procurement_manager")
+  // SSBDigital: full read visibility across every report/list/detail
+  // endpoint (same unscoped view as Admin - no purchase-group narrowing),
+  // but ZERO write access anywhere (no remarks, no checking/locking, no
+  // user/master-data edits). See middleware/requireAuth.js and routes.js -
+  // every mutating requireAnyOf(...) call must explicitly exclude this
+  // flag even where it shares a route with isAdmin.
+  isSsbDigital         Boolean  @default(false) @map("is_ssb_digital")
 
   users                User[]
   logs                 Log[]
@@ -511,6 +518,31 @@ model AuditResultAnalytics {
   date                        DateTime? @db.Date
 
   @@map("audit_result_analytics")
+}
+
+// ---------------------------------------------------------------------------
+// sync_batch_log (NEW) — Processing History (item 1). One row per
+// completed sync_and_run.py batch, written by
+// scripts/log-sync-batch.js at the end of run_batch() (see
+// sync/sync_and_run.py). This is the actual ground truth for "when did
+// the system last process this data" - unlike grouping AuditResult/
+// PoHeaderResult.auditedOn values, a row is written even when a batch
+// touches zero rows of a given entity type (e.g. no RC file yet), and it
+// survives however AuditResult/PoHeaderResult/RcOverlapResult get pruned
+// or edited afterward.
+// ---------------------------------------------------------------------------
+model SyncBatchLog {
+  id             String   @id @default(uuid())
+  batchId        String   @unique @map("batch_id") // sync_and_run.py's batch_id, e.g. "20260923_071555"
+  processedAt    DateTime @default(now()) @map("processed_at")
+  lineItemCount  Int      @default(0) @map("line_item_count") // rows in that run's addpo-json
+  headerCount    Int      @default(0) @map("header_count")    // rows in that run's header-json
+  rcCount        Int      @default(0) @map("rc_count")        // rows in that run's rc-json
+  rcCached       Boolean  @default(false) @map("rc_cached")   // true if this batch reused the last cached RC file
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([processedAt])
+  @@map("sync_batch_log")
 }
 
 // ---------------------------------------------------------------------------

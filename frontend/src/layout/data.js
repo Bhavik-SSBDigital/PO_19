@@ -280,6 +280,72 @@ const buyerOrProcurementManagerNavItems = [
   },
 ];
 
+// SSBDigital — full-visibility, read-only role (see backend Role.isSsbDigital).
+// Mirrors the Buyer/PM nav bucket for the shared read-only report pages,
+// plus the two SSBDigital/Admin-only additions from item 1 and item 3 of
+// the build spec. No "createUser" or any mutating page - SSBDigital has
+// zero write access anywhere in this app.
+const ssbDigitalNavItems = [
+  {
+    id: "custom-dashboard",
+    title: "Dashboard",
+    type: "item",
+    url: "/",
+    icon: icons.SpeedRoundedIcon,
+    breadcrumbs: false,
+  },
+  {
+    id: "search-buyer-pm",
+    title: "Search-Data",
+    type: "item",
+    url: "/search-data",
+    icon: icons.ManageSearchRoundedIcon,
+    breadcrumbs: false,
+  },
+  {
+    id: "po-data",
+    title: "PO-Data",
+    type: "item",
+    url: "/po-data",
+    icon: icons.PlaylistAddCheckRoundedIcon,
+    breadcrumbs: false,
+  },
+  {
+    id: "rc-overlap",
+    title: "RC Overlap",
+    type: "item",
+    url: "/rc-overlap",
+    icon: icons.AssignmentTurnedInRoundedIcon,
+    breadcrumbs: false,
+  },
+  {
+    id: "po-remarks-report",
+    title: "Buyer Remarks Report",
+    type: "item",
+    url: "/po-remarks-report",
+    icon: icons.AssignmentTurnedInRoundedIcon,
+    breadcrumbs: false,
+  },
+  // NEW — item 1: Processing History (Admin + SSBDigital)
+  {
+    id: "processing-history",
+    title: "Processing History",
+    type: "item",
+    url: "/processing-history",
+    icon: icons.ManageSearchRoundedIcon,
+    breadcrumbs: false,
+  },
+  // NEW — item 3: Accumulated Exports (Admin + SSBDigital)
+  {
+    id: "accumulated-exports",
+    title: "Accumulated Exports",
+    type: "item",
+    url: "/accumulated-exports",
+    icon: icons.AssignmentTurnedInRoundedIcon,
+    breadcrumbs: false,
+  },
+];
+
 // ==============================|| MENU ITEMS ||============================== //
 
 const menuItems = {
@@ -292,6 +358,10 @@ const menuItems = {
   // Buyer + Procurement Manager
   isBuyer: buyerOrProcurementManagerNavItems,
   isProcurementManager: buyerOrProcurementManagerNavItems,
+
+  // NEW — SSBDigital (distinct from the pre-existing, unrelated "ssbdUser"/
+  // "SSBD" legacy bucket above)
+  ssbDigital: ssbDigitalNavItems,
 
   // optional old bucket name
   buyerOrPM: buyerOrProcurementManagerNavItems,

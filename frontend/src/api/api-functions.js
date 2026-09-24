@@ -55,6 +55,36 @@ export const getPoRemarksReportFilterOptions = () =>
   apiClient.post("/reports/po-remarks-report/filters", {});
 
 // ---------------------------------------------------------------------------
+// Accumulated exports (item 3) + Processing History (item 1) — NEW.
+// Admin/SSBDigital-only on the backend (see routes.js); the response is an
+// .xlsx (or .csv for the raw RC master) blob, same download pattern as
+// downloadPoRemarksReport above.
+// ---------------------------------------------------------------------------
+export const downloadAccumulatedPoLineExport = () =>
+  apiClient.post(
+    "/reports/accumulated/po-lines/download",
+    {},
+    { responseType: "blob" },
+  );
+
+export const downloadAccumulatedPoHeaderExport = () =>
+  apiClient.post(
+    "/reports/accumulated/po-headers/download",
+    {},
+    { responseType: "blob" },
+  );
+
+export const downloadAccumulatedRcExport = (raw = false) =>
+  apiClient.post(
+    "/reports/accumulated/rc/download",
+    { raw },
+    { responseType: "blob" },
+  );
+
+export const getProcessingHistory = (payload = {}) =>
+  post("/reports/processing-history", payload);
+
+// ---------------------------------------------------------------------------
 // HEADER-LEVEL (PO-wide) system — NEW
 // Completely separate from the LINE-LEVEL functions above (submitPoRemark,
 // getPoRemarks, updatePoRemark, deletePoRemark, setAuditResultCheckedStatus,

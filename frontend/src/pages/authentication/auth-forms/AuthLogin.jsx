@@ -96,6 +96,8 @@ const AuthLogin = () => {
             ? "isBuyer"
             : response.isAdmin
             ? "isAdmin"
+            : response.isSsbDigital
+            ? "isSsbDigital"
             : response.isExecutor
             ? "isExecutor"
             : response.fromSSBD

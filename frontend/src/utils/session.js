@@ -2,8 +2,9 @@
 // RBAC info in localStorage (confirmed via devtools):
 //
 //   role              -> a single string: "isAdmin" | "isBuyer" |
-//                         "isProcurementManager" | legacy values like
-//                         "isAuditHead" / "isAuditor" / "isExecutor" / "SSBD"
+//                         "isProcurementManager" | "isSsbDigital" | legacy
+//                         values like "isAuditHead" / "isAuditor" /
+//                         "isExecutor" / "SSBD"
 //   canViewDashboard  -> "true" | "false"
 //   username          -> plain string, e.g. "admin"
 //
@@ -16,6 +17,7 @@ const flagsFromRole = (role) => ({
   isAdmin: role === "isAdmin",
   isBuyer: role === "isBuyer",
   isProcurementManager: role === "isProcurementManager",
+  isSsbDigital: role === "isSsbDigital",
 });
 
 export const getRbac = () => {

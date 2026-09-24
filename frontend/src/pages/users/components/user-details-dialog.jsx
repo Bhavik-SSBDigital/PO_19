@@ -25,6 +25,9 @@ import {
 
 const roles = {
   isAdmin: "Admin",
+  isBuyer: "Buyer",
+  isProcurementManager: "Procurement Manager",
+  isSsbDigital: "SSBDigital",
   isAuditHead: "Audit Head",
   isAuditor: "Auditor",
   fromSSBD: "SSBD User",
@@ -33,6 +36,9 @@ const roles = {
 
 const roleName = (user) => {
   if (user.isAdmin) return roles.isAdmin;
+  if (user.isBuyer) return roles.isBuyer;
+  if (user.isProcurementManager) return roles.isProcurementManager;
+  if (user.isSsbDigital) return roles.isSsbDigital;
   if (user.isAuditHead) return roles.isAuditHead;
   if (user.isAuditor) return roles.isAuditor;
   if (user.fromSSBD) return roles.fromSSBD;

@@ -18,6 +18,7 @@ const Navigation = () => {
     isAdmin: "admin",
     isBuyer: "buyerOrPM",
     isProcurementManager: "buyerOrPM",
+    isSsbDigital: "ssbDigital",
     isAuditHead: "head",
     isAuditor: "auditor",
     isExecutor: "executor",
