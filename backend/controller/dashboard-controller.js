@@ -1171,18 +1171,53 @@ function rowHasStatus(row, status) {
  * bar cannot narrow the RC section the way they narrow header/line. This
  * is a data-model limitation, not a bug: there is nothing on RcOverlapResult
  * to filter those fields against.
+ *
+ * PER-PURCHASE-GROUP BREAKDOWN ("byPurchaseGroup" below): Admin /
+ * Procurement Manager / SSB Digital only, driven by the same
+ * `isUnrestricted` flag used everywhere else in this controller. A Buyer's
+ * response simply never contains this key — it isn't computed for them at
+ * all, so there's nothing to accidentally leak client-side. Combines
+ * Header + Line + RC into one Total/Closed/Pending per purchasing group,
+ * sorted worst (most pending) first, for the "Purchase Group Compliance"
+ * table on the executive dashboard.
  * ============================================================================
  */
 export const getRemarksImpactSummary = async (req, res) => {
   try {
     const user = req.user || {};
     const body = req.body || {};
+    const isUnrestricted =
+      user.isAdmin || user.isProcurementManager || !user.isBuyer;
+
+    // Per-purchase-group accumulator. Only ever populated when
+    // isUnrestricted — for a Buyer this stays empty and byPurchaseGroup
+    // below becomes undefined, so the key is omitted from the JSON.
+    const byGroup = {};
+    const ensureGroup = (g) => {
+      const key = g || "Unassigned";
+      if (!byGroup[key]) {
+        byGroup[key] = {
+          purchaseGroup: key,
+          purchaseGroupName: getPurchaseGroupName(key),
+          header: { systemGenerated: 0, closed: 0 },
+          line: { systemGenerated: 0, closed: 0 },
+          rc: { systemGenerated: 0, closed: 0 },
+        };
+      }
+      return byGroup[key];
+    };
 
     // ---- LINE-LEVEL ----------------------------------------------------
     const lineWhere = buildWhere(body, user);
     const lineRows = await prisma.auditResult.findMany({
       where: lineWhere,
-      select: { id: true, po_number: true, results: true, checkedPoints: true },
+      select: {
+        id: true,
+        po_number: true,
+        purchase_group: true,
+        results: true,
+        checkedPoints: true,
+      },
     });
     const poNumbers = [...new Set(lineRows.map((r) => r.po_number))];
 
@@ -1207,10 +1242,17 @@ export const getRemarksImpactSummary = async (req, res) => {
       const mandatory = getMandatoryPoints(row.results);
       lineSystemGenerated += mandatory.length;
       const remarkedSet = lineRemarksByRow.get(row.id) || new Set();
+      let rowClosed = 0;
       for (const p of mandatory) {
         if (isPointCovered(p.pointNo, row.checkedPoints, [...remarkedSet])) {
           lineClosed++;
+          rowClosed++;
         }
+      }
+      if (isUnrestricted) {
+        const g = ensureGroup(row.purchase_group);
+        g.line.systemGenerated += mandatory.length;
+        g.line.closed += rowClosed;
       }
     }
 
@@ -1224,6 +1266,7 @@ export const getRemarksImpactSummary = async (req, res) => {
           select: {
             id: true,
             po_number: true,
+            purchase_group: true,
             results: true,
             checkedPoints: true,
           },
@@ -1250,16 +1293,21 @@ export const getRemarksImpactSummary = async (req, res) => {
       const mandatory = getMandatoryPoints(row.results);
       headerSystemGenerated += mandatory.length;
       const remarkedSet = headerRemarksByPo.get(row.po_number) || new Set();
+      let rowClosed = 0;
       for (const p of mandatory) {
         if (isPointCovered(p.pointNo, row.checkedPoints, [...remarkedSet])) {
           headerClosed++;
+          rowClosed++;
         }
+      }
+      if (isUnrestricted) {
+        const g = ensureGroup(row.purchase_group);
+        g.header.systemGenerated += mandatory.length;
+        g.header.closed += rowClosed;
       }
     }
 
     // ---- RC-LEVEL ---------------------------------------------------
-    const isUnrestricted =
-      user.isAdmin || user.isProcurementManager || !user.isBuyer;
     const rcWhere = { status: "Not Verified" };
     if (!isUnrestricted) {
       const ownGroup = getPurchaseGroupCode(user.username);
@@ -1267,10 +1315,27 @@ export const getRemarksImpactSummary = async (req, res) => {
     }
     const rcRows = await prisma.rcOverlapResult.findMany({
       where: rcWhere,
-      select: { id: true, remarksLocked: true },
+      select: { id: true, remarksLocked: true, purchaseGroups: true },
     });
     const rcSystemGenerated = rcRows.length;
     const rcClosed = rcRows.filter((r) => r.remarksLocked).length;
+
+    // An RC can list several purchase groups (RcOverlapResult.purchaseGroups
+    // is an array), so — for the unrestricted breakdown only — it counts
+    // once toward each group it lists, same as the scoping filter above
+    // treats "belongs to my group" as `purchaseGroups.has(ownGroup)`.
+    if (isUnrestricted) {
+      for (const rc of rcRows) {
+        const groups = rc.purchaseGroups?.length
+          ? rc.purchaseGroups
+          : ["Unassigned"];
+        for (const g of groups) {
+          const bucket = ensureGroup(g);
+          bucket.rc.systemGenerated += 1;
+          if (rc.remarksLocked) bucket.rc.closed += 1;
+        }
+      }
+    }
 
     const shape = (systemGenerated, closed) => ({
       systemGenerated,
@@ -1278,10 +1343,33 @@ export const getRemarksImpactSummary = async (req, res) => {
       pending: Math.max(systemGenerated - closed, 0),
     });
 
+    // Combine Header + Line + RC per group into the totals the "Purchase
+    // Group Compliance" table shows, worst (most pending) first.
+    const byPurchaseGroup = isUnrestricted
+      ? Object.values(byGroup)
+          .map((g) => {
+            const totalSystemGenerated =
+              g.header.systemGenerated +
+              g.line.systemGenerated +
+              g.rc.systemGenerated;
+            const totalClosed = g.header.closed + g.line.closed + g.rc.closed;
+            return {
+              purchaseGroup: g.purchaseGroup,
+              purchaseGroupName: g.purchaseGroupName,
+              header: shape(g.header.systemGenerated, g.header.closed),
+              line: shape(g.line.systemGenerated, g.line.closed),
+              rc: shape(g.rc.systemGenerated, g.rc.closed),
+              total: shape(totalSystemGenerated, totalClosed),
+            };
+          })
+          .sort((a, b) => b.total.pending - a.total.pending)
+      : undefined;
+
     return res.status(200).json({
       header: shape(headerSystemGenerated, headerClosed),
       line: shape(lineSystemGenerated, lineClosed),
       rc: shape(rcSystemGenerated, rcClosed),
+      byPurchaseGroup,
       scope: scopeOf(user),
     });
   } catch (error) {
@@ -1304,6 +1392,10 @@ export const getRemarksImpactSummary = async (req, res) => {
  *
  * body: { section: "header"|"line"|"rc", bucket: "total"|"pending"|"closed",
  *         isPoCorrected?: "corrected"|"altercation" (bucket="closed" only),
+ *         purchaseGroup?: string[] (optional single-group drilldown, e.g.
+ *         from the "Purchase Group Compliance" table — for unrestricted
+ *         roles only; a Buyer is already scoped to their own group by
+ *         buildWhere()/the rcWhere branch below regardless of this field),
  *         page, pageSize, ...same scoping filters as getRemarksImpactSummary }
  * ============================================================================
  */
@@ -1342,6 +1434,15 @@ export const getRemarksImpactList = async (req, res) => {
       if (!isUnrestricted) {
         const ownGroup = getPurchaseGroupCode(user.username);
         rcWhere.purchaseGroups = { has: ownGroup || "__no_group_assigned__" };
+      } else if (
+        Array.isArray(body.purchaseGroup) &&
+        body.purchaseGroup.length === 1
+      ) {
+        // Drilling into one specific purchase group's RC bucket (e.g. from
+        // the "Purchase Group Compliance" table). Only reachable for
+        // unrestricted roles — a Buyer already hits the branch above and
+        // is scoped to their own group regardless of what's in the body.
+        rcWhere.purchaseGroups = { has: body.purchaseGroup[0] };
       }
       const allRcs = await prisma.rcOverlapResult.findMany({
         where: rcWhere,

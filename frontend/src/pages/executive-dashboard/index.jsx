@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import PoDetailsPreviewDialog from "./components/PoDetailsPreviewDialog";
 import RemarksImpactListDialog from "./components/RemarksImpactListDialog";
+import PurchaseGroupRemarksImpactTable from "./components/PurchaseGroupRemarksImpactTable";
 import PoWiseExceptionsTable from "./components/PoWiseExceptionsTable";
 import { buildSearchUrl, getFirstLineItem } from "utils/po-link-utils";
 import {
@@ -1234,6 +1235,21 @@ const ExecutiveDashboard = () => {
           );
         })}
       </Grid>
+
+      {/* PURCHASE GROUP COMPLIANCE — Admin / Procurement Manager / SSB
+          Digital only. No client-side role check needed: the backend
+          (getRemarksImpactSummary) only ever populates
+          remarksImpact.byPurchaseGroup for those roles, so for a Buyer
+          this key is simply absent and the whole block renders nothing. */}
+      {remarksImpact?.byPurchaseGroup && (
+        <Box sx={{ mb: 5 }}>
+          <PurchaseGroupRemarksImpactTable
+            groups={remarksImpact.byPurchaseGroup}
+            loading={remarksImpactLoading}
+            onDrilldown={(trigger) => setRemarksImpactDialog(trigger)}
+          />
+        </Box>
+      )}
 
       {missingHeaderDataCount > 0 && (
         <Paper
