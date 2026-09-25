@@ -130,7 +130,7 @@ export const getPoHeaderSummary = async (req, res) => {
       scopeGroup = firstLine?.purchase_group || null;
     }
     if (
-      !(user.isAdmin || user.isProcurementManager) &&
+      !(user.isAdmin || user.isProcurementManager || user.isSsbDigital) &&
       (!user.isBuyer || getPurchaseGroupCode(user.username) !== scopeGroup)
     ) {
       return res
