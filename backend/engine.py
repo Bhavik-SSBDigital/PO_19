@@ -14,6 +14,24 @@ import pandas as pd
 # change, kept here so future edits know why a check does what it does)
 #
 # THIS REVISION:
+#   - Points #6 (EYW freight required) and #7 (EXW/FCA must not have
+#     freight) now return Data Missing ("Manual"/"MANUAL") instead of a
+#     false Not Verified (#6) or false Verified (#7) when the PO has ZERO
+#     matching rows at all in that batch's POAUDITCND file. Previously an
+#     empty cnd_by_po.get(po_number, []) list was indistinguishable from
+#     "CND has rows for this PO but none are freight-type", so a PO that
+#     was simply never captured in the condition extract silently got a
+#     confident-looking wrong verdict instead of a flag to check manually.
+#     See _po_missing_from_cnd(). Confirmed against real data (2026-09):
+#     24 POs / 58 lines across multiple batches were affected before this
+#     fix; backfilled retroactively via scripts/fix-point6-7-data-missing.js.
+#   - build_po_header_records()'s multi-line verdict aggregation now also
+#     prioritizes MANUAL/MANUAL_CHECK above NA (previously only
+#     NOT_VERIFIED > VERIFIED > NA was considered, so a genuinely
+#     Data-Missing line could be hidden behind an NA line from another
+#     line item on the same PO for a header-level point).
+#
+# PREVIOUS REVISION:
 #   - RC Overlap `purchaseGroups` is now read DIRECTLY from the RC master's
 #     own "Purchase group" column instead of being derived by cross-
 #     referencing the current batch's POAUDIT PO lines. The old approach
@@ -38,7 +56,7 @@ import pandas as pd
 #     row, immune to the vendor-code padding issue, and inherits the RC
 #     master's own cumulative nature (see merge-rc-master.js) automatically.
 #
-# PREVIOUS REVISION:
+# EARLIER REVISION:
 #   - Point 4 (MSME payment term): the allowed payment-term set now ALSO
 #     includes Z107 (100% after satisfactory commissioning), Z112 (quarterly
 #     advance), Z147 (half yearly advance) and Z154 (on receipt of periodical
@@ -279,6 +297,8 @@ def parse_sap_date(value):
     v = str(value).strip()
     if not v or v == "00000000":
         return None
+    if v.isdigit() and len(v) < 8:
+        return datetime(1899, 12, 30) + timedelta(days=int(v))
     try:
         return datetime.strptime(v, "%Y%m%d")
     except ValueError:
@@ -555,6 +575,28 @@ def evaluate_rule(rule_no, fn, row, ctx):
     if _is_excluded_line(row):
         return NA, _exclusion_remark(row)
     return fn(row, ctx)
+
+
+# ---------------------------------------------------------------------------
+# Points #6/#7 CND-presence guard (THIS REVISION)
+# ---------------------------------------------------------------------------
+def _po_missing_from_cnd(po_number, cnd_by_po):
+    """
+    True only if POAUDITCND has ZERO rows at all for this PO number in the
+    current batch - distinct from "CND has rows for this PO, but none of
+    them are freight-type condition rows".
+
+    Before this guard existed, rule_13_eyw_freight_required (point #6) and
+    rule_14_exw_fca_no_freight (point #7) both called
+    ctx["cnd_by_po"].get(po_number, []), and an empty list meant EITHER of
+    those two very different situations - a PO the condition extract
+    simply never captured looked identical to a PO whose freight condition
+    was genuinely absent. That produced a confident but WRONG verdict
+    (Not Verified for point #6, Verified for point #7) instead of a
+    Data Missing flag. Confirmed against real data (2026-09): 24 POs / 58
+    lines were affected before this fix.
+    """
+    return not cnd_by_po.get(po_number)
 
 
 # ---------------------------------------------------------------------------
@@ -898,7 +940,20 @@ def rule_13_eyw_freight_required(row, ctx):
     inco_term = s(row, "Inco term")
     if inco_term != "EYW":
         return NA, f"Inco term is {inco_term}, not EYW"
+
     po_number = s(row, "PO number")
+
+    # THIS REVISION: if POAUDITCND has ZERO rows at all for this PO, we
+    # cannot tell "no freight condition" apart from "condition extract
+    # never captured this PO" - flag Data Missing instead of guessing
+    # Not Verified. See _po_missing_from_cnd().
+    if _po_missing_from_cnd(po_number, ctx["cnd_by_po"]):
+        return MANUAL, (
+            f"PO {po_number} has no matching row(s) at all in the POAUDITCND file "
+            f"for this batch - freight condition presence/value cannot be confirmed "
+            f"for this EYW PO line (Data Missing)"
+        )
+
     item_no = s(row, "PO Line item")
     verified_type, found, any_value_readable = _freight_condition_value_match(
         po_number, item_no, ctx["cnd_by_po"]
@@ -943,7 +998,20 @@ def rule_14_exw_fca_no_freight(row, ctx):
     inco_term = s(row, "Inco term")
     if inco_term not in {"EXW", "FCA"}:
         return NA, f"Inco term is {inco_term}, not EXW/FCA"
+
     po_number = s(row, "PO number")
+
+    # THIS REVISION: same CND-presence guard as point #6 - see
+    # _po_missing_from_cnd(). Without this, a PO absent from CND entirely
+    # was silently treated as "no freight condition -> Verified", which is
+    # a false-positive verdict, not a real one.
+    if _po_missing_from_cnd(po_number, ctx["cnd_by_po"]):
+        return MANUAL, (
+            f"PO {po_number} has no matching row(s) at all in the POAUDITCND file "
+            f"for this batch - absence of freight condition cannot be confirmed for "
+            f"this EXW/FCA PO line (Data Missing)"
+        )
+
     item_no = s(row, "PO Line item")
     matched_type, all_types = _freight_condition_match(po_number, item_no, ctx["cnd_by_po"])
     if matched_type:
@@ -1279,15 +1347,15 @@ def build_rc_overlap_records(rc_rows):
     """
     Point 20 - RC Overlap, for storage via addrc.js -> rc_overlap_results.
 
-    UPDATED (THIS REVISION): `purchaseGroups` is now read DIRECTLY from the
-    RC master's own "Purchase group" column (RC_PURCHASE_GROUP_COLUMN),
-    one value per (vendor, material, RC number) row - NOT derived by
-    cross-referencing PO lines from a separate POAUDIT batch anymore. See
-    the top-of-file changelog entry for why the old approach
-    (build_rc_purchase_groups(po_rows), now removed) was unreliable.
+    `purchaseGroups` is read DIRECTLY from the RC master's own "Purchase
+    group" column (RC_PURCHASE_GROUP_COLUMN), one value per (vendor,
+    material, RC number) row - NOT derived by cross-referencing PO lines
+    from a separate POAUDIT batch. See the top-of-file changelog entry for
+    why the old approach (build_rc_purchase_groups(po_rows), now removed)
+    was unreliable.
 
-    NOTE: this function no longer takes `po_rows` as a parameter - the RC
-    master alone is now sufficient to build the full RC Overlap output,
+    NOTE: this function does not take `po_rows` as a parameter - the RC
+    master alone is sufficient to build the full RC Overlap output,
     purchaseGroups included.
     """
     records = []
@@ -1543,6 +1611,14 @@ def build_addpo_records(po_rows, ctx):
     return records
 
 
+# THIS REVISION: priority order used when a PO's line items disagree on a
+# header-level point's verdict. MANUAL/MANUAL_CHECK (Data Missing) now
+# ranks above NA - previously only NOT_VERIFIED > VERIFIED > NA was
+# considered, so a genuinely Data-Missing line could be hidden behind an
+# NA line from another line item on the same PO.
+_HEADER_STATUS_PRIORITY = [NOT_VERIFIED, VERIFIED, MANUAL, MANUAL_CHECK, NA]
+
+
 def build_po_header_records(po_rows, ctx):
     by_po = defaultdict(list)
     for row in po_rows:
@@ -1572,18 +1648,17 @@ def build_po_header_records(po_rows, ctx):
                 if len(statuses) == 1:
                     status, remark = per_line[0][1]
                 else:
-                    if NOT_VERIFIED in statuses:
-                        status = NOT_VERIFIED
-                        remark = next(r for _li, (st, r) in per_line if st == NOT_VERIFIED)
-                    elif VERIFIED in statuses:
-                        status = VERIFIED
-                        remark = next(r for _li, (st, r) in per_line if st == VERIFIED)
-                    elif NA in statuses:
-                        status = NA
-                        remark = next(r for _li, (st, r) in per_line if st == NA)
-                    else:
-                        status = per_line[0][1][0]
-                        remark = per_line[0][1][1]
+                    status = None
+                    for candidate in _HEADER_STATUS_PRIORITY:
+                        if candidate in statuses:
+                            status = candidate
+                            remark = next(r for _li, (st, r) in per_line if st == candidate)
+                            break
+                    if status is None:
+                        # Should not happen - every status value is in
+                        # _HEADER_STATUS_PRIORITY - but fall back safely
+                        # to the first line's verdict rather than crash.
+                        status, remark = per_line[0][1]
 
             flags = STATUS_TO_RESULT_FLAGS[status]
             results.append({"pointNo": str(rule_no), "remarks": [remark], **flags})
