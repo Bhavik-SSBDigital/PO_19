@@ -13,6 +13,34 @@ import { post } from "utils/axiosApi";
 
 const PAGE_SIZE = 25;
 
+// FIX: previously this only checked not_applicable / manual_verification /
+// verified, with no branch for missing_data at all - so a Data Missing row
+// (which ALSO has manual_verification=true - see engine.py's
+// STATUS_TO_RESULT_FLAGS[MANUAL]) rendered as "Manual Verify" and, worse,
+// with the SAME red "Not Verified" styling as a genuine failure (the old
+// ternary's color fallback was just "not verified/red" for anything that
+// wasn't verified or NA). missing_data is now checked before
+// manual_verification, matching the fix applied across every other chip
+// component in this codebase (PoHeaderChecksPanel, results-table,
+// PoDetailsPreviewDialog).
+const headerResultLabel = (result) => {
+  if (!result) return "Not Verified";
+  if (result.not_applicable) return "Not Applicable";
+  if (result.missing_data) return "Data Missing";
+  if (result.manual_verification) return "Manual Verify";
+  if (result.verified) return "Verified";
+  return "Not Verified";
+};
+
+const headerResultColors = (result) => {
+  if (!result) return { bgcolor: alpha("#dc2626", 0.1), color: "#dc2626" };
+  if (result.not_applicable) return { bgcolor: "grey.100", color: "text.secondary" };
+  if (result.missing_data) return { bgcolor: alpha("#d97706", 0.1), color: "#d97706" };
+  if (result.manual_verification) return { bgcolor: alpha("#d97706", 0.1), color: "#d97706" };
+  if (result.verified) return { bgcolor: alpha("#059669", 0.1), color: "#059669" };
+  return { bgcolor: alpha("#dc2626", 0.1), color: "#dc2626" };
+};
+
 /**
  * The HEADER-LEVEL counterpart to DrilldownDialog. Rendered when a bar on
  * the "PO Header-Level Compliance" chart is clicked. Rows here are PO
@@ -110,16 +138,8 @@ const HeaderDrilldownDialog = ({ drilldown, appliedFilters, onClose }) => {
                     <TableCell>
                       <Chip
                         size="small"
-                        label={
-                          r.result?.not_applicable ? "Not Applicable" :
-                          r.result?.manual_verification ? "Manual Verify" :
-                          r.result?.verified ? "Verified" : "Not Verified"
-                        }
-                        sx={{
-                          fontWeight: 700,
-                          bgcolor: r.result?.verified ? alpha("#059669", 0.1) : r.result?.not_applicable ? "grey.100" : alpha("#dc2626", 0.1),
-                          color: r.result?.verified ? "#059669" : r.result?.not_applicable ? "text.secondary" : "#dc2626",
-                        }}
+                        label={headerResultLabel(r.result)}
+                        sx={{ fontWeight: 700, ...headerResultColors(r.result) }}
                       />
                     </TableCell>
                     <TableCell>

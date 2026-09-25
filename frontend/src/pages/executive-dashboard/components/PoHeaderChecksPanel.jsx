@@ -24,26 +24,84 @@ import moment from "moment";
 import { setPoHeaderCheckedStatus } from "../../../api/api-functions";
 import PoHeaderRemarkPanel from "./PoHeaderRemarkPanel";
 
-const SEVERITY_COLORS = { Critical: "#c0392b", High: "#e67e22", Medium: "#f1c40f", Low: "#95a5a6" };
+const SEVERITY_COLORS = {
+  Critical: "#c0392b",
+  High: "#e67e22",
+  Medium: "#f1c40f",
+  Low: "#95a5a6",
+};
 
+// FIX: this component previously had NO branch for missing_data at all -
+// point.manual_verification was checked first and, because Data Missing
+// rows (engine.py's MANUAL status) set BOTH missing_data=true AND
+// manual_verification=true (see STATUS_TO_RESULT_FLAGS[MANUAL] in
+// engine.py), every Data Missing header point rendered as "Manual Verify"
+// with no way to tell it apart from a genuine Manual Check row
+// (MANUAL_CHECK status - manual_verification=true, missing_data=false).
+// missing_data is now checked BEFORE manual_verification.
 const HeaderVerificationChip = ({ point }) => {
-  if (point.manual_verification) {
+  if (point.not_applicable) {
     return (
       <Chip
-        icon={<PanToolAltRoundedIcon style={{ fontSize: "13px", color: "#b45309" }} />}
+        icon={<TaskAltRoundedIcon style={{ fontSize: "13px" }} />}
         size="small"
-        label="Manual Verify"
-        sx={{ borderRadius: "20px", fontSize: "12px", fontWeight: 700, bgcolor: "#fef9c3", color: "#854d0e", border: "1px solid #fde047" }}
+        label="Not Applicable"
+        sx={{ borderRadius: "20px", fontSize: "12px", fontWeight: 700 }}
       />
     );
   }
-  if (point.not_applicable) {
-    return <Chip icon={<TaskAltRoundedIcon style={{ fontSize: "13px" }} />} size="small" label="Not Applicable" sx={{ borderRadius: "20px", fontSize: "12px", fontWeight: 700 }} />;
+  if (point.missing_data) {
+    return (
+      <Chip
+        icon={<TaskAltRoundedIcon style={{ fontSize: "13px" }} />}
+        size="small"
+        label="Data Missing"
+        color="warning"
+        sx={{ borderRadius: "20px", fontSize: "12px", fontWeight: 700 }}
+      />
+    );
+  }
+  if (point.manual_verification) {
+    return (
+      <Chip
+        icon={
+          <PanToolAltRoundedIcon
+            style={{ fontSize: "13px", color: "#b45309" }}
+          />
+        }
+        size="small"
+        label="Manual Verify"
+        sx={{
+          borderRadius: "20px",
+          fontSize: "12px",
+          fontWeight: 700,
+          bgcolor: "#fef9c3",
+          color: "#854d0e",
+          border: "1px solid #fde047",
+        }}
+      />
+    );
   }
   if (point.verified) {
-    return <Chip icon={<TaskAltRoundedIcon style={{ fontSize: "13px" }} />} size="small" label="Verified" color="success" sx={{ borderRadius: "20px", fontSize: "12px", fontWeight: 700 }} />;
+    return (
+      <Chip
+        icon={<TaskAltRoundedIcon style={{ fontSize: "13px" }} />}
+        size="small"
+        label="Verified"
+        color="success"
+        sx={{ borderRadius: "20px", fontSize: "12px", fontWeight: 700 }}
+      />
+    );
   }
-  return <Chip icon={<TaskAltRoundedIcon style={{ fontSize: "13px" }} />} size="small" label="Not Verified" color="error" sx={{ borderRadius: "20px", fontSize: "12px", fontWeight: 700 }} />;
+  return (
+    <Chip
+      icon={<TaskAltRoundedIcon style={{ fontSize: "13px" }} />}
+      size="small"
+      label="Not Verified"
+      color="error"
+      sx={{ borderRadius: "20px", fontSize: "12px", fontWeight: 700 }}
+    />
+  );
 };
 
 /**
@@ -75,9 +133,9 @@ const PoHeaderChecksPanel = ({
   const [busy, setBusy] = useState(false);
   // Default view = only the system's "Not Verified" points (the ones a
   // buyer actually needs to look at). Everything else (Verified / N-A /
-  // Manual Review) is hidden until the buyer explicitly asks to see it —
-  // this is a display filter only, it never changes what's fetched or
-  // how the tally/auto-close is computed.
+  // genuine Manual Review) is hidden until the buyer explicitly asks to
+  // see it — this is a display filter only, it never changes what's
+  // fetched or how the tally/auto-close is computed.
   const [showAllPoints, setShowAllPoints] = useState(false);
 
   const {
@@ -131,7 +189,10 @@ const PoHeaderChecksPanel = ({
   const toggleLock = async () => {
     setBusy(true);
     try {
-      const res = await setPoHeaderCheckedStatus({ po_number: poNumber, checked: !localLocked });
+      const res = await setPoHeaderCheckedStatus({
+        po_number: poNumber,
+        checked: !localLocked,
+      });
       toast.success(
         res?.remarksLocked
           ? "PO header marked as checked — this applies to the whole PO"
@@ -142,7 +203,11 @@ const PoHeaderChecksPanel = ({
       setLocalLocked(Boolean(res?.remarksLocked));
       onChanged?.();
     } catch (error) {
-      toast.error(error?.response?.data?.message || error?.message || "Failed to update header status");
+      toast.error(
+        error?.response?.data?.message ||
+          error?.message ||
+          "Failed to update header status",
+      );
     } finally {
       setBusy(false);
     }
@@ -181,25 +246,51 @@ const PoHeaderChecksPanel = ({
           border: "1px solid #c7d2fe",
         }}
       >
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 1.5,
+            flexWrap: "wrap",
+          }}
+        >
           <LayersRoundedIcon fontSize="small" sx={{ color: "#4f46e5" }} />
-          <Typography variant="body2" sx={{ fontWeight: 700, color: "#3730a3" }}>
+          <Typography
+            variant="body2"
+            sx={{ fontWeight: 700, color: "#3730a3" }}
+          >
             PO Header Checks (applies to whole PO)
           </Typography>
           {statusChip}
           <Typography variant="caption" color="text.secondary">
-            {verifiedCount} verified / {notVerifiedCount} not verified of {totalPoints}
+            {verifiedCount} verified / {notVerifiedCount} not verified of{" "}
+            {totalPoints}
           </Typography>
         </Box>
-        <Button size="small" onClick={() => setExpanded(true)} sx={{ textTransform: "none", fontWeight: 700 }}>
+        <Button
+          size="small"
+          onClick={() => setExpanded(true)}
+          sx={{ textTransform: "none", fontWeight: 700 }}
+        >
           View Header Checks
         </Button>
       </Box>
     );
   }
 
-  const isNotVerified = (p) => !p.verified && !p.not_applicable && !p.manual_verification;
-  const visiblePoints = showAllPoints ? localPoints : localPoints.filter(isNotVerified);
+  // FIX: previously `!p.manual_verification` alone hid every Data Missing
+  // row from the default "Not Verified" view too, since Data Missing rows
+  // also carry manual_verification=true. Data Missing is now treated as
+  // "needs attention" (visible by default), same as Not Verified - only a
+  // GENUINE Manual Check row (manual_verification=true, missing_data=false,
+  // e.g. ZIRM/ZICP import POs) stays hidden by default.
+  const isNotVerified = (p) =>
+    !p.verified &&
+    !p.not_applicable &&
+    !(p.manual_verification && !p.missing_data);
+  const visiblePoints = showAllPoints
+    ? localPoints
+    : localPoints.filter(isNotVerified);
   const hiddenCount = localPoints.length - visiblePoints.length;
 
   return (
@@ -219,10 +310,23 @@ const PoHeaderChecksPanel = ({
           <Typography variant="h6" sx={{ fontWeight: 700 }}>
             PO Header Checks
           </Typography>
-          <Chip size="small" label={`${totalPoints} point${totalPoints === 1 ? "" : "s"}`} sx={{ height: 22, fontWeight: 700, bgcolor: "#eef2ff", color: "#4338ca" }} />
+          <Chip
+            size="small"
+            label={`${totalPoints} point${totalPoints === 1 ? "" : "s"}`}
+            sx={{
+              height: 22,
+              fontWeight: 700,
+              bgcolor: "#eef2ff",
+              color: "#4338ca",
+            }}
+          />
           {statusChip}
           {variant === "compact" && (
-            <Button size="small" onClick={() => setExpanded(false)} sx={{ textTransform: "none", fontWeight: 600 }}>
+            <Button
+              size="small"
+              onClick={() => setExpanded(false)}
+              sx={{ textTransform: "none", fontWeight: 600 }}
+            >
               Collapse
             </Button>
           )}
@@ -235,24 +339,46 @@ const PoHeaderChecksPanel = ({
             onClick={toggleLock}
             sx={{ textTransform: "none", fontWeight: 700 }}
           >
-            {busy ? "…" : localLocked ? "Reopen Header" : "Mark Header as Checked"}
+            {busy
+              ? "…"
+              : localLocked
+                ? "Reopen Header"
+                : "Mark Header as Checked"}
           </Button>
         )}
       </Box>
 
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-        These checks apply to <strong>PO {poNumber}</strong> as a whole, not any one line item.
+        These checks apply to <strong>PO {poNumber}</strong> as a whole, not any
+        one line item.
         {localLocked
           ? " This PO's header has been closed — every line item of this PO shows it as checked, and no further header remarks can be added."
           : " Closing this applies to every line item of this PO at once."}
       </Typography>
 
       {/* Reads `localPoints`, not `points` — this is what makes it live */}
-      <SectionTallyBar points={localPoints} locked={localLocked} label="Header points reviewed" />
+      <SectionTallyBar
+        points={localPoints}
+        locked={localLocked}
+        label="Header points reviewed"
+      />
 
-      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1, flexWrap: "wrap", gap: 1 }}>
-        <Typography variant="caption" sx={{ fontWeight: 700, color: "text.secondary" }}>
-          Showing {showAllPoints ? "all" : "Not Verified"} points ({visiblePoints.length} of {totalPoints})
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          mb: 1,
+          flexWrap: "wrap",
+          gap: 1,
+        }}
+      >
+        <Typography
+          variant="caption"
+          sx={{ fontWeight: 700, color: "text.secondary" }}
+        >
+          Showing {showAllPoints ? "all" : "Not Verified"} points (
+          {visiblePoints.length} of {totalPoints})
         </Typography>
         {hiddenCount > 0 || showAllPoints ? (
           <Button
@@ -267,43 +393,80 @@ const PoHeaderChecksPanel = ({
         ) : null}
       </Box>
 
-      <TableContainer component={Paper} variant="outlined" sx={{ borderColor: "#c7d2fe" }}>
+      <TableContainer
+        component={Paper}
+        variant="outlined"
+        sx={{ borderColor: "#c7d2fe" }}
+      >
         <Table size="small">
           <TableHead sx={{ bgcolor: "#eef2ff" }}>
             <TableRow>
               <TableCell sx={{ fontWeight: 700, width: "5%" }}>Pt #</TableCell>
-              <TableCell sx={{ fontWeight: 700, width: "22%" }}>Title & Summary</TableCell>
-              <TableCell sx={{ fontWeight: 700, width: "23%" }}>Logic</TableCell>
-              <TableCell sx={{ fontWeight: 700, width: "7%" }}>Severity</TableCell>
-              <TableCell sx={{ fontWeight: 700, width: "11%" }}>Status</TableCell>
-              <TableCell sx={{ fontWeight: 700, width: "13%" }}>System Remarks</TableCell>
-              <TableCell sx={{ fontWeight: 700, width: "19%" }}>Buyer Remarks</TableCell>
+              <TableCell sx={{ fontWeight: 700, width: "22%" }}>
+                Title & Summary
+              </TableCell>
+              <TableCell sx={{ fontWeight: 700, width: "23%" }}>
+                Logic
+              </TableCell>
+              <TableCell sx={{ fontWeight: 700, width: "7%" }}>
+                Severity
+              </TableCell>
+              <TableCell sx={{ fontWeight: 700, width: "11%" }}>
+                Status
+              </TableCell>
+              <TableCell sx={{ fontWeight: 700, width: "13%" }}>
+                System Remarks
+              </TableCell>
+              <TableCell sx={{ fontWeight: 700, width: "19%" }}>
+                Buyer Remarks
+              </TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
             {visiblePoints.map((row, index) => (
               <TableRow key={row.pointNo ?? index} hover>
-                <TableCell sx={{ verticalAlign: "top", fontWeight: 700 }}>{row.pointNo}</TableCell>
+                <TableCell sx={{ verticalAlign: "top", fontWeight: 700 }}>
+                  {row.pointNo}
+                </TableCell>
                 <TableCell sx={{ verticalAlign: "top" }}>
                   <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
                     {row.title || `Point ${row.pointNo}`}
                   </Typography>
                   {row.summary && (
-                    <Typography variant="body2" color="textSecondary" sx={{ mt: 0.5 }}>
+                    <Typography
+                      variant="body2"
+                      color="textSecondary"
+                      sx={{ mt: 0.5 }}
+                    >
                       {row.summary}
                     </Typography>
                   )}
                 </TableCell>
                 <TableCell sx={{ verticalAlign: "top" }}>
                   <MuiTooltip title={row.logic || ""}>
-                    <Typography variant="body2" sx={{ display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        display: "-webkit-box",
+                        WebkitLineClamp: 3,
+                        WebkitBoxOrient: "vertical",
+                        overflow: "hidden",
+                      }}
+                    >
                       {row.logic || "N/A"}
                     </Typography>
                   </MuiTooltip>
                 </TableCell>
                 <TableCell sx={{ verticalAlign: "top" }}>
                   {row.severity && (
-                    <Chip label={row.severity} size="small" sx={{ bgcolor: SEVERITY_COLORS[row.severity] || "#999", color: "#fff" }} />
+                    <Chip
+                      label={row.severity}
+                      size="small"
+                      sx={{
+                        bgcolor: SEVERITY_COLORS[row.severity] || "#999",
+                        color: "#fff",
+                      }}
+                    />
                   )}
                 </TableCell>
                 <TableCell sx={{ verticalAlign: "top" }}>
@@ -319,7 +482,9 @@ const PoHeaderChecksPanel = ({
                       ))}
                     </ul>
                   ) : (
-                    <Typography variant="body2" color="textSecondary">None</Typography>
+                    <Typography variant="body2" color="textSecondary">
+                      None
+                    </Typography>
                   )}
                 </TableCell>
                 <TableCell sx={{ verticalAlign: "top" }}>
@@ -331,7 +496,9 @@ const PoHeaderChecksPanel = ({
                     isAdmin={isAdmin}
                     isProcurementManager={isProcurementManager}
                     locked={localLocked}
-                    initialRemarks={headerRemarksByPoint[String(row.pointNo)] || []}
+                    initialRemarks={
+                      headerRemarksByPoint[String(row.pointNo)] || []
+                    }
                     initialChecked={row.checked}
                     systemResult={row.systemResultLabel}
                     onRemarksChanged={handlePointUpdate}
@@ -342,10 +509,18 @@ const PoHeaderChecksPanel = ({
             ))}
             {visiblePoints.length === 0 && localPoints.length > 0 && (
               <TableRow>
-                <TableCell colSpan={7} align="center" sx={{ color: "text.secondary", py: 3 }}>
-                  Nothing "Not Verified" here — every header point is already Verified /
-                  Not Applicable / Manual Review.{" "}
-                  <Button size="small" onClick={() => setShowAllPoints(true)} sx={{ textTransform: "none", fontWeight: 700 }}>
+                <TableCell
+                  colSpan={7}
+                  align="center"
+                  sx={{ color: "text.secondary", py: 3 }}
+                >
+                  Nothing "Not Verified" here — every header point is already
+                  Verified / Not Applicable / Manual Review.{" "}
+                  <Button
+                    size="small"
+                    onClick={() => setShowAllPoints(true)}
+                    sx={{ textTransform: "none", fontWeight: 700 }}
+                  >
                     Show all {totalPoints} points
                   </Button>
                 </TableCell>
@@ -353,7 +528,11 @@ const PoHeaderChecksPanel = ({
             )}
             {localPoints.length === 0 && (
               <TableRow>
-                <TableCell colSpan={7} align="center" sx={{ color: "text.secondary", py: 3 }}>
+                <TableCell
+                  colSpan={7}
+                  align="center"
+                  sx={{ color: "text.secondary", py: 3 }}
+                >
                   No header-level results found for this PO yet.
                 </TableCell>
               </TableRow>

@@ -27,30 +27,15 @@ import {
   setAuditResultCheckedStatus,
 } from "../../../api/api-functions";
 
+// FIX: manual_verification was checked BEFORE missing_data here. Data
+// Missing rows (engine.py's MANUAL status) set BOTH missing_data=true AND
+// manual_verification=true (see STATUS_TO_RESULT_FLAGS[MANUAL] in
+// engine.py) - a genuine Manual Check row (MANUAL_CHECK status, e.g.
+// ZIRM/ZICP import POs) sets ONLY manual_verification=true. Checking
+// manual_verification first meant every Data Missing row was swallowed
+// into "Manual Verify" and never reached the missing_data branch below.
+// missing_data is now checked first.
 export const VerificationChip = ({ result }) => {
-  if (result.manual_verification) {
-    return (
-      <Chip
-        icon={
-          <PanToolAltRoundedIcon
-            style={{ fontSize: "13px", color: "#b45309" }}
-          />
-        }
-        size="small"
-        label="Manual Verify"
-        sx={{
-          borderRadius: "20px",
-          width: "130px",
-          fontSize: "12px",
-          fontWeight: "700",
-          bgcolor: "#fef9c3",
-          color: "#854d0e",
-          border: "1px solid #fde047",
-          "& .MuiChip-icon": { color: "#b45309" },
-        }}
-      />
-    );
-  }
   if (result.not_applicable) {
     return (
       <Chip
@@ -79,6 +64,29 @@ export const VerificationChip = ({ result }) => {
           width: "120px",
           fontSize: "12px",
           fontWeight: "700",
+        }}
+      />
+    );
+  }
+  if (result.manual_verification) {
+    return (
+      <Chip
+        icon={
+          <PanToolAltRoundedIcon
+            style={{ fontSize: "13px", color: "#b45309" }}
+          />
+        }
+        size="small"
+        label="Manual Verify"
+        sx={{
+          borderRadius: "20px",
+          width: "130px",
+          fontSize: "12px",
+          fontWeight: "700",
+          bgcolor: "#fef9c3",
+          color: "#854d0e",
+          border: "1px solid #fde047",
+          "& .MuiChip-icon": { color: "#b45309" },
         }}
       />
     );
@@ -239,8 +247,16 @@ const AuditResults = ({ searchData }) => {
     return null;
   }
 
+  // FIX: previously `!p.manual_verification` alone hid every Data Missing
+  // row from the default "Not Verified" view, since Data Missing rows also
+  // carry manual_verification=true (see STATUS_TO_RESULT_FLAGS[MANUAL] in
+  // engine.py). Data Missing now counts as "needs attention" (visible by
+  // default), same as Not Verified — only a GENUINE Manual Check row
+  // (manual_verification=true, missing_data=false) stays hidden by default.
   const isNotVerified = (p) =>
-    !p.verified && !p.not_applicable && !p.manual_verification;
+    !p.verified &&
+    !p.not_applicable &&
+    !(p.manual_verification && !p.missing_data);
   const visibleRows = showAllPoints ? rows : rows.filter(isNotVerified);
   const hiddenCount = rows.length - visibleRows.length;
 
