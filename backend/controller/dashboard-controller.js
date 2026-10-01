@@ -1475,9 +1475,9 @@ export const getRemarksImpactSummary = async (req, res) => {
         byGroup[key] = {
           purchaseGroup: key,
           purchaseGroupName: getPurchaseGroupName(key),
-          header: { systemGenerated: 0, closed: 0 },
-          line: { systemGenerated: 0, closed: 0 },
-          rc: { systemGenerated: 0, closed: 0 },
+          header: { systemGenerated: 0, closed: 0, poCorrected: 0 },
+          line: { systemGenerated: 0, closed: 0, poCorrected: 0 },
+          rc: { systemGenerated: 0, closed: 0, poCorrected: 0 },
         };
       }
       return byGroup[key];
@@ -1500,16 +1500,25 @@ export const getRemarksImpactSummary = async (req, res) => {
     const lineRemarks = lineRows.length
       ? await prisma.poRemark.findMany({
           where: { auditResultId: { in: lineRows.map((r) => r.id) } },
-          distinct: ["auditResultId", "pointNo"],
-          select: { auditResultId: true, pointNo: true },
+          orderBy: { submittedAt: "desc" },
+          select: {
+            auditResultId: true,
+            pointNo: true,
+            isSystemResultWrong: true,
+          },
         })
       : [];
     const lineRemarksByRow = new Map();
     for (const r of lineRemarks) {
       if (!lineRemarksByRow.has(r.auditResultId)) {
-        lineRemarksByRow.set(r.auditResultId, new Set());
+        lineRemarksByRow.set(r.auditResultId, new Map());
       }
-      lineRemarksByRow.get(r.auditResultId).add(Number(r.pointNo));
+      // Rows arrive newest-first, so the first one seen per point is the
+      // LATEST remark - the same one the drilldown list uses to decide
+      // "PO Corrected" vs "System Altercation".
+      const byPt = lineRemarksByRow.get(r.auditResultId);
+      if (!byPt.has(Number(r.pointNo)))
+        byPt.set(Number(r.pointNo), !!r.isSystemResultWrong);
     }
 
     let lineSystemGenerated = 0;
@@ -1517,18 +1526,22 @@ export const getRemarksImpactSummary = async (req, res) => {
     for (const row of lineRows) {
       const mandatory = getMandatoryPoints(row.results);
       lineSystemGenerated += mandatory.length;
-      const remarkedSet = lineRemarksByRow.get(row.id) || new Set();
+      const remarkedMap = lineRemarksByRow.get(row.id) || new Map();
+      const remarkedNos = [...remarkedMap.keys()];
       let rowClosed = 0;
+      let rowCorrected = 0;
       for (const p of mandatory) {
-        if (isPointCovered(p.pointNo, row.checkedPoints, [...remarkedSet])) {
+        if (isPointCovered(p.pointNo, row.checkedPoints, remarkedNos)) {
           lineClosed++;
           rowClosed++;
+          if (remarkedMap.get(Number(p.pointNo))) rowCorrected++;
         }
       }
       if (isUnrestricted) {
         const g = ensureGroup(row.purchase_group);
         g.line.systemGenerated += mandatory.length;
         g.line.closed += rowClosed;
+        g.line.poCorrected += rowCorrected;
       }
     }
 
@@ -1551,16 +1564,22 @@ export const getRemarksImpactSummary = async (req, res) => {
     const headerRemarks = headerRows.length
       ? await prisma.poHeaderRemark.findMany({
           where: { po_number: { in: headerRows.map((r) => r.po_number) } },
-          distinct: ["po_number", "pointNo"],
-          select: { po_number: true, pointNo: true },
+          orderBy: { submittedAt: "desc" },
+          select: {
+            po_number: true,
+            pointNo: true,
+            isSystemResultWrong: true,
+          },
         })
       : [];
     const headerRemarksByPo = new Map();
     for (const r of headerRemarks) {
       if (!headerRemarksByPo.has(r.po_number)) {
-        headerRemarksByPo.set(r.po_number, new Set());
+        headerRemarksByPo.set(r.po_number, new Map());
       }
-      headerRemarksByPo.get(r.po_number).add(Number(r.pointNo));
+      const byPt = headerRemarksByPo.get(r.po_number);
+      if (!byPt.has(Number(r.pointNo)))
+        byPt.set(Number(r.pointNo), !!r.isSystemResultWrong);
     }
 
     let headerSystemGenerated = 0;
@@ -1568,18 +1587,22 @@ export const getRemarksImpactSummary = async (req, res) => {
     for (const row of headerRows) {
       const mandatory = getMandatoryPoints(row.results);
       headerSystemGenerated += mandatory.length;
-      const remarkedSet = headerRemarksByPo.get(row.po_number) || new Set();
+      const remarkedMap = headerRemarksByPo.get(row.po_number) || new Map();
+      const remarkedNos = [...remarkedMap.keys()];
       let rowClosed = 0;
+      let rowCorrected = 0;
       for (const p of mandatory) {
-        if (isPointCovered(p.pointNo, row.checkedPoints, [...remarkedSet])) {
+        if (isPointCovered(p.pointNo, row.checkedPoints, remarkedNos)) {
           headerClosed++;
           rowClosed++;
+          if (remarkedMap.get(Number(p.pointNo))) rowCorrected++;
         }
       }
       if (isUnrestricted) {
         const g = ensureGroup(row.purchase_group);
         g.header.systemGenerated += mandatory.length;
         g.header.closed += rowClosed;
+        g.header.poCorrected += rowCorrected;
       }
     }
 
@@ -1596,6 +1619,24 @@ export const getRemarksImpactSummary = async (req, res) => {
     const rcSystemGenerated = rcRows.length;
     const rcClosed = rcRows.filter((r) => r.remarksLocked).length;
 
+    // An RC counts as "PO Corrected" when it is Closed AND the latest
+    // remark on it was submitted as "Yes - PO corrected" (same rule as the
+    // drilldown list). Only needed for the unrestricted per-group table.
+    const rcCorrectedIds = new Set();
+    if (isUnrestricted && rcRows.length) {
+      const rcRemarks = await prisma.poRcRemark.findMany({
+        where: { rcOverlapResultId: { in: rcRows.map((r) => r.id) } },
+        orderBy: { submittedAt: "desc" },
+        select: { rcOverlapResultId: true, isSystemResultWrong: true },
+      });
+      const seen = new Set();
+      for (const r of rcRemarks) {
+        if (seen.has(r.rcOverlapResultId)) continue;
+        seen.add(r.rcOverlapResultId);
+        if (r.isSystemResultWrong) rcCorrectedIds.add(r.rcOverlapResultId);
+      }
+    }
+
     // An RC can list several purchase groups (RcOverlapResult.purchaseGroups
     // is an array), so — for the unrestricted breakdown only — it counts
     // once toward each group it lists, same as the scoping filter above
@@ -1608,15 +1649,21 @@ export const getRemarksImpactSummary = async (req, res) => {
         for (const g of groups) {
           const bucket = ensureGroup(g);
           bucket.rc.systemGenerated += 1;
-          if (rc.remarksLocked) bucket.rc.closed += 1;
+          if (rc.remarksLocked) {
+            bucket.rc.closed += 1;
+            if (rcCorrectedIds.has(rc.id)) bucket.rc.poCorrected += 1;
+          }
         }
       }
     }
 
-    const shape = (systemGenerated, closed) => ({
+    const shape = (systemGenerated, closed, poCorrected) => ({
       systemGenerated,
       closed,
       pending: Math.max(systemGenerated - closed, 0),
+      // Of the Closed ones, how many had their latest remark marked
+      // "PO corrected". Only supplied for the per-group breakdown.
+      ...(poCorrected !== undefined && { poCorrected }),
     });
 
     // Combine Header + Line + RC per group into the totals the "Purchase
@@ -1629,13 +1676,23 @@ export const getRemarksImpactSummary = async (req, res) => {
               g.line.systemGenerated +
               g.rc.systemGenerated;
             const totalClosed = g.header.closed + g.line.closed + g.rc.closed;
+            const totalCorrected =
+              g.header.poCorrected + g.line.poCorrected + g.rc.poCorrected;
             return {
               purchaseGroup: g.purchaseGroup,
               purchaseGroupName: g.purchaseGroupName,
-              header: shape(g.header.systemGenerated, g.header.closed),
-              line: shape(g.line.systemGenerated, g.line.closed),
-              rc: shape(g.rc.systemGenerated, g.rc.closed),
-              total: shape(totalSystemGenerated, totalClosed),
+              header: shape(
+                g.header.systemGenerated,
+                g.header.closed,
+                g.header.poCorrected,
+              ),
+              line: shape(
+                g.line.systemGenerated,
+                g.line.closed,
+                g.line.poCorrected,
+              ),
+              rc: shape(g.rc.systemGenerated, g.rc.closed, g.rc.poCorrected),
+              total: shape(totalSystemGenerated, totalClosed, totalCorrected),
             };
           })
           .sort((a, b) => b.total.pending - a.total.pending)

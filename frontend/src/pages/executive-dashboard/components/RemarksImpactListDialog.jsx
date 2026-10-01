@@ -58,25 +58,31 @@ const SECTION_ORDER = ["header", "line", "rc"];
  * Closed bucket. Both combine and both reset the page.
  *
  * `trigger`: { section, title, bucket, closedLabel, purchaseGroup?,
- * sectionCounts? } or null (closed). Two shapes reach this dialog:
+ * sectionCounts?, isPoCorrected? } or null (closed). Two shapes reach this
+ * dialog:
  *   - single-section click (existing 3 top-level cards, and the expanded
  *     Header/Line/RC breakdown rows in the Purchase Group table):
  *     `section` is "header" | "line" | "rc".
- *   - combined row-level click (Total Not Verified / Closed / Pending on
- *     a whole purchase-group row): `section` is null/undefined. Rather
- *     than blending three differently-shaped lists into one loose
+ *   - combined row-level click (Total Not Verified / Closed / PO Corrected
+ *     / Pending on a whole purchase-group row): `section` is null/undefined.
+ *     Rather than blending three differently-shaped lists into one loose
  *     "approximately this many" table, this shows a Header/Line/RC
  *     switcher so every list on screen still matches its number exactly
- *     — defaults to "Line Item" and lets the person flip between them.
- *     The number clicked (say, Closed = 5) is a SUM of three sections,
- *     so each switcher button carries a notification-style badge with
- *     that section's exact contribution (from `sectionCounts`, computed
- *     by the table itself — not re-fetched, so it can never disagree
- *     with the number that was clicked), and a one-line sum underneath
- *     spells out "2 + 2 + 1 = 5" so nobody has to do the math themselves.
+ *     — defaults to the first section that has something in it and lets
+ *     the person flip between them. The number clicked (say, Closed = 5)
+ *     is a SUM of three sections, so each switcher button carries a
+ *     notification-style badge with that section's exact contribution
+ *     (from `sectionCounts`, computed by the table itself — not
+ *     re-fetched, so it can never disagree with the number that was
+ *     clicked), and a one-line sum underneath spells out "2 + 2 + 1 = 5"
+ *     so nobody has to do the math themselves.
  *   `purchaseGroup`, when present, scopes the list to that one group
  *   (forwarded to the API; only meaningful for unrestricted roles, same
  *   as the table it comes from).
+ *   `isPoCorrected` ("corrected" | "altercation"), when present on a
+ *   Closed trigger, opens the dialog with the PO Corrected toggle already
+ *   selected - this is what the "PO Corrected" numbers in the Purchase
+ *   Group table use. The person can still flip it back to "All".
  */
 const RemarksImpactListDialog = ({ trigger, onClose }) => {
   const [loading, setLoading] = useState(false);
@@ -98,6 +104,11 @@ const RemarksImpactListDialog = ({ trigger, onClose }) => {
   const combinedSum = sectionCounts
     ? SECTION_ORDER.reduce((s, k) => s + (sectionCounts[k] || 0), 0)
     : null;
+
+  // The PO Corrected filter value a freshly-opened (or section-switched)
+  // dialog should start with.
+  const initialCorrected =
+    trigger?.bucket === "closed" ? trigger?.isPoCorrected || "" : "";
 
   const load = useCallback(
     async (pageToLoad, corrected, pointNo, sectionOverride) => {
@@ -145,12 +156,14 @@ const RemarksImpactListDialog = ({ trigger, onClose }) => {
         trigger.section ||
         SECTION_ORDER.find((k) => (trigger.sectionCounts?.[k] || 0) > 0) ||
         "line";
+      const startCorrected =
+        trigger.bucket === "closed" ? trigger.isPoCorrected || "" : "";
       setSection(initialSection);
       setPage(1);
-      setCorrectedFilter("");
+      setCorrectedFilter(startCorrected);
       setPointFilter("");
       setAvailablePoints([]);
-      load(1, "", "", initialSection);
+      load(1, startCorrected, "", initialSection);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trigger]);
@@ -159,10 +172,12 @@ const RemarksImpactListDialog = ({ trigger, onClose }) => {
     if (!newSection || newSection === section) return;
     setSection(newSection);
     setPage(1);
-    setCorrectedFilter("");
+    // Keep the trigger's own starting filter (e.g. "corrected") when
+    // flipping between sections, so the badge counts stay accurate.
+    setCorrectedFilter(initialCorrected);
     setPointFilter("");
     setAvailablePoints([]);
-    load(1, "", "", newSection);
+    load(1, initialCorrected, "", newSection);
   };
 
   const sectionClosedLabel =

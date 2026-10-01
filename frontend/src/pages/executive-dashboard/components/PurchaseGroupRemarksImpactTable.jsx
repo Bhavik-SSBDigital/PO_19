@@ -27,6 +27,7 @@ import CheckCircleOutlineRoundedIcon from "@mui/icons-material/CheckCircleOutlin
 // a bolted-on widget.
 const PENDING_COLOR = "#dc2626";
 const CLOSED_COLOR = "#059669";
+const CORRECTED_COLOR = "#7c3aed";
 const ACCENT = "#4f46e5";
 const ACCENT_BG = "#eef2ff";
 
@@ -42,12 +43,21 @@ const progressColor = (pct) => {
 
 // Pulls the exact count for one section + bucket straight out of the
 // group's already-computed header/line/rc shape objects
-// ({ systemGenerated, closed, pending }) — no extra fetch needed, and it
-// can never disagree with what's on screen since it's the same numbers
-// the row itself renders.
+// ({ systemGenerated, closed, pending, poCorrected }) — no extra fetch
+// needed, and it can never disagree with what's on screen since it's the
+// same numbers the row itself renders.
+//
+// bucket: "total" | "pending" | "closed" | "poCorrected"
 const countFor = (group, sectionKey, bucket) => {
-  const s = group[sectionKey] || { systemGenerated: 0, closed: 0, pending: 0 };
-  return bucket === "total" ? s.systemGenerated : (s[bucket] ?? 0);
+  const s = group[sectionKey] || {
+    systemGenerated: 0,
+    closed: 0,
+    pending: 0,
+    poCorrected: 0,
+  };
+  if (bucket === "total") return s.systemGenerated;
+  if (bucket === "poCorrected") return s.poCorrected ?? 0;
+  return s[bucket] ?? 0;
 };
 
 // One clickable stat — mirrors the RemarksImpactNumber pattern already
@@ -82,7 +92,8 @@ const Stat = ({ value, color, onClick, dense }) => (
 );
 
 // Expanded breakdown row: Header / Line / RC, each with its own
-// Total / Pending / Closed, each number independently clickable.
+// Total / Pending / Closed / PO Corrected, each number independently
+// clickable.
 const SectionBreakdown = ({ group, onDrill }) => {
   const sections = [
     { key: "header", label: "Header", closedLabel: "Points Closed" },
@@ -100,7 +111,14 @@ const SectionBreakdown = ({ group, onDrill }) => {
       }}
     >
       {sections.map(({ key, label, closedLabel }) => {
-        const s = group[key] || { systemGenerated: 0, pending: 0, closed: 0 };
+        const s = group[key] || {
+          systemGenerated: 0,
+          pending: 0,
+          closed: 0,
+          poCorrected: 0,
+        };
+        const corrected = s.poCorrected ?? 0;
+        const drillTitle = `${label} — ${group.purchaseGroupName || group.purchaseGroup}`;
         return (
           <Box
             key={key}
@@ -124,7 +142,14 @@ const SectionBreakdown = ({ group, onDrill }) => {
                 Nothing flagged
               </Typography>
             ) : (
-              <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+              <Box
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 2,
+                  flexWrap: "wrap",
+                }}
+              >
                 <Box>
                   <Stat
                     dense
@@ -135,7 +160,7 @@ const SectionBreakdown = ({ group, onDrill }) => {
                         ? () =>
                             onDrill({
                               section: key,
-                              title: `${label} — ${group.purchaseGroupName || group.purchaseGroup}`,
+                              title: drillTitle,
                               bucket: "pending",
                               closedLabel,
                               purchaseGroup: group.purchaseGroup,
@@ -157,7 +182,7 @@ const SectionBreakdown = ({ group, onDrill }) => {
                         ? () =>
                             onDrill({
                               section: key,
-                              title: `${label} — ${group.purchaseGroupName || group.purchaseGroup}`,
+                              title: drillTitle,
                               bucket: "closed",
                               closedLabel,
                               purchaseGroup: group.purchaseGroup,
@@ -172,12 +197,35 @@ const SectionBreakdown = ({ group, onDrill }) => {
                 <Box>
                   <Stat
                     dense
+                    value={corrected}
+                    color={CORRECTED_COLOR}
+                    onClick={
+                      corrected > 0
+                        ? () =>
+                            onDrill({
+                              section: key,
+                              title: drillTitle,
+                              bucket: "closed",
+                              isPoCorrected: "corrected",
+                              closedLabel,
+                              purchaseGroup: group.purchaseGroup,
+                            })
+                        : undefined
+                    }
+                  />
+                  <Typography variant="caption" sx={{ color: "#94a3b8", display: "block" }}>
+                    PO Corrected
+                  </Typography>
+                </Box>
+                <Box>
+                  <Stat
+                    dense
                     value={s.systemGenerated}
                     color="#475569"
                     onClick={() =>
                       onDrill({
                         section: key,
-                        title: `${label} — ${group.purchaseGroupName || group.purchaseGroup}`,
+                        title: drillTitle,
                         bucket: "total",
                         closedLabel,
                         purchaseGroup: group.purchaseGroup,
@@ -202,6 +250,7 @@ const GroupRow = ({ group, onDrill }) => {
   const total = group.total?.systemGenerated ?? 0;
   const pending = group.total?.pending ?? 0;
   const closed = group.total?.closed ?? 0;
+  const corrected = group.total?.poCorrected ?? 0;
   const pct = closedPct(closed, total);
 
   // Combined (row-level) click: this number is Header + Line + RC added
@@ -209,17 +258,33 @@ const GroupRow = ({ group, onDrill }) => {
   // (sectionCounts) alongside it. The popup uses this to show
   // "Header 2 · Line Item 2 · RC Overlap 1" instead of leaving the person
   // to wonder how a single list could ever add up to this total.
-  const combinedTrigger = (bucket) => ({
-    section: null,
-    title: `${bucket === "pending" ? "Pending" : bucket === "closed" ? "Closed" : "Not Verified"} — ${group.purchaseGroupName || group.purchaseGroup} (Header + Line + RC)`,
-    bucket,
-    purchaseGroup: group.purchaseGroup,
-    sectionCounts: {
-      header: countFor(group, "header", bucket),
-      line: countFor(group, "line", bucket),
-      rc: countFor(group, "rc", bucket),
-    },
-  });
+  //
+  // kind: "total" | "pending" | "closed" | "poCorrected". "poCorrected" is
+  // the Closed list pre-filtered to "POs Corrected" (the dialog opens with
+  // that toggle already selected).
+  const combinedTrigger = (kind) => {
+    const isCorrected = kind === "poCorrected";
+    const bucket = isCorrected ? "closed" : kind;
+    const label = isCorrected
+      ? "PO Corrected"
+      : kind === "pending"
+        ? "Pending"
+        : kind === "closed"
+          ? "Closed"
+          : "Not Verified";
+    return {
+      section: null,
+      title: `${label} — ${group.purchaseGroupName || group.purchaseGroup} (Header + Line + RC)`,
+      bucket,
+      ...(isCorrected && { isPoCorrected: "corrected" }),
+      purchaseGroup: group.purchaseGroup,
+      sectionCounts: {
+        header: countFor(group, "header", kind),
+        line: countFor(group, "line", kind),
+        rc: countFor(group, "rc", kind),
+      },
+    };
+  };
 
   return (
     <>
@@ -277,6 +342,20 @@ const GroupRow = ({ group, onDrill }) => {
         </TableCell>
         <TableCell align="right">
           <Stat
+            value={corrected}
+            color={CORRECTED_COLOR}
+            onClick={
+              corrected > 0
+                ? (e) => {
+                    e.stopPropagation();
+                    onDrill(combinedTrigger("poCorrected"));
+                  }
+                : undefined
+            }
+          />
+        </TableCell>
+        <TableCell align="right">
+          <Stat
             value={pending}
             color={PENDING_COLOR}
             onClick={
@@ -321,7 +400,7 @@ const GroupRow = ({ group, onDrill }) => {
         </TableCell>
       </TableRow>
       <TableRow>
-        <TableCell colSpan={6} sx={{ p: 0, borderBottom: open ? "1px solid" : "none", borderColor: "grey.100" }}>
+        <TableCell colSpan={7} sx={{ p: 0, borderBottom: open ? "1px solid" : "none", borderColor: "grey.100" }}>
           <Collapse in={open} timeout={200} unmountOnExit>
             <SectionBreakdown group={group} onDrill={onDrill} />
           </Collapse>
@@ -335,6 +414,13 @@ const GroupRow = ({ group, onDrill }) => {
  * Per-purchasing-group breakdown of the "Remarks Impact" numbers
  * (Header + Line + RC Overlap combined), for Admin / Procurement Manager
  * / SSB Digital only.
+ *
+ * Columns: Total Not Verified, Closed, PO Corrected, Pending, % Closed.
+ * "PO Corrected" is a SUBSET of Closed: closed items whose latest remark
+ * was submitted as "Yes — PO corrected" (as opposed to "System
+ * Altercation" / informative-only, or closed with just a check mark).
+ * Closed = PO Corrected + everything else closed, so PO Corrected can
+ * never exceed Closed.
  *
  * The restriction is enforced server-side: getRemarksImpactSummary only
  * populates `byPurchaseGroup` in its response when the caller is
@@ -353,11 +439,12 @@ const GroupRow = ({ group, onDrill }) => {
  *
  * `onDrilldown` receives the same shape RemarksImpactListDialog already
  * expects ({ section, title, bucket, closedLabel }), plus a
- * `purchaseGroup` field, and — for the combined row-level Total/Closed/
- * Pending clicks only — a `sectionCounts: { header, line, rc }` field so
- * the dialog can badge its Header/Line/RC switcher with the exact count
- * behind each section instead of leaving the person to guess how the
- * combined number breaks down.
+ * `purchaseGroup` field, optionally `isPoCorrected: "corrected"` (the
+ * PO Corrected clicks), and — for the combined row-level clicks only — a
+ * `sectionCounts: { header, line, rc }` field so the dialog can badge its
+ * Header/Line/RC switcher with the exact count behind each section
+ * instead of leaving the person to guess how the combined number breaks
+ * down.
  */
 const PurchaseGroupRemarksImpactTable = ({ groups, loading, onDrilldown }) => {
   const sortedGroups = useMemo(
@@ -370,6 +457,7 @@ const PurchaseGroupRemarksImpactTable = ({ groups, loading, onDrilldown }) => {
   const grandTotal = sortedGroups.reduce((s, g) => s + (g.total?.systemGenerated ?? 0), 0);
   const grandPending = sortedGroups.reduce((s, g) => s + (g.total?.pending ?? 0), 0);
   const grandClosed = sortedGroups.reduce((s, g) => s + (g.total?.closed ?? 0), 0);
+  const grandCorrected = sortedGroups.reduce((s, g) => s + (g.total?.poCorrected ?? 0), 0);
 
   return (
     <Paper
@@ -414,7 +502,7 @@ const PurchaseGroupRemarksImpactTable = ({ groups, loading, onDrilldown }) => {
               <MuiTooltip
                 arrow
                 placement="top"
-                title="Not Verified, Closed and Pending counts across Header, Line-Item and RC Overlap checks combined, one row per purchasing group. Expand a row to see the Header / Line / RC split. Visible to Admin, Procurement Manager and SSB Digital only."
+                title="Not Verified, Closed, PO Corrected and Pending counts across Header, Line-Item and RC Overlap checks combined, one row per purchasing group. PO Corrected is the part of Closed where the buyer's latest remark said the PO was corrected. Expand a row to see the Header / Line / RC split. Visible to Admin, Procurement Manager and SSB Digital only."
               >
                 <InfoOutlinedIcon sx={{ fontSize: 18, ml: 0.75, color: "text.disabled", cursor: "help" }} />
               </MuiTooltip>
@@ -425,7 +513,7 @@ const PurchaseGroupRemarksImpactTable = ({ groups, loading, onDrilldown }) => {
           </Box>
         </Box>
         {!loading && grandTotal > 0 && (
-          <Box sx={{ display: "flex", gap: 3, textAlign: "right" }}>
+          <Box sx={{ display: "flex", gap: 3, textAlign: "right", flexWrap: "wrap" }}>
             <Box>
               <Typography variant="h5" sx={{ fontWeight: 800, color: PENDING_COLOR }}>
                 {grandPending}
@@ -440,6 +528,14 @@ const PurchaseGroupRemarksImpactTable = ({ groups, loading, onDrilldown }) => {
               </Typography>
               <Typography variant="caption" sx={{ color: "#94a3b8" }}>
                 Closed across all groups
+              </Typography>
+            </Box>
+            <Box>
+              <Typography variant="h5" sx={{ fontWeight: 800, color: CORRECTED_COLOR }}>
+                {grandCorrected}
+              </Typography>
+              <Typography variant="caption" sx={{ color: "#94a3b8" }}>
+                PO Corrected across all groups
               </Typography>
             </Box>
           </Box>
@@ -468,6 +564,7 @@ const PurchaseGroupRemarksImpactTable = ({ groups, loading, onDrilldown }) => {
                 <TableCell>Purchase Group</TableCell>
                 <TableCell align="right">Total Not Verified</TableCell>
                 <TableCell align="right">Closed</TableCell>
+                <TableCell align="right">PO Corrected</TableCell>
                 <TableCell align="right">Pending</TableCell>
                 <TableCell>% Closed</TableCell>
               </TableRow>
