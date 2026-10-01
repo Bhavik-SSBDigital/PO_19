@@ -23,6 +23,7 @@ import FileDownloadRoundedIcon from "@mui/icons-material/FileDownloadRounded";
 import CheckCircleOutlineRoundedIcon from "@mui/icons-material/CheckCircleOutlineRounded";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import LayersRoundedIcon from "@mui/icons-material/LayersRounded";
+import DescriptionRoundedIcon from "@mui/icons-material/DescriptionRounded";
 import WarningAmberRoundedIcon from "@mui/icons-material/WarningAmberRounded";
 import {
   BarChart,
@@ -46,6 +47,7 @@ import FilterBar, { DEFAULT_FILTERS } from "./components/FilterBar";
 import DrilldownDialog from "./components/DrilldownDialog";
 import HeaderDrilldownDialog from "./components/HeaderDrilldownDialog";
 import HeaderKpiDrilldownDialog from "./components/HeaderKpiDrilldownDialog";
+import RcKpiDrilldownDialog from "./components/RcKpiDrilldownDialog";
 import {
   ControlWiseTooltip,
   SeverityTooltip,
@@ -67,6 +69,18 @@ const GRID_COLOR = "#f1f5f9";
 const HEADER_ACCENT = "#4f46e5";
 const HEADER_ACCENT_BG = "#eef2ff";
 const OVERVIEW_ACCENT = "#0f172a";
+// RC-level (RC Overlap) panels get their own teal accent so they read as a
+// third, distinct level next to Header (indigo) and Line-Item (neutral).
+const RC_ACCENT = "#0d9488";
+const RC_ACCENT_BG = "#f0fdfa";
+const RC_ACCENT_BORDER = "#99f6e4";
+const RC_ACCENT_DARK = "#115e59";
+const RC_PANEL_TONE = {
+  bg: "#fafffe",
+  border: RC_ACCENT_BORDER,
+  title: RC_ACCENT_DARK,
+  hint: RC_ACCENT,
+};
 // Monthly Exception Trend colors
 const TREND_LINE_COLOR = "#4f46e5";
 const TREND_HEADER_COLOR = "#f97316";
@@ -151,6 +165,8 @@ const InfoTip = ({ text, placement = "top" }) => {
   );
 };
 
+// `accent` switches the card to a tinted style. By default that's the
+// Header indigo; pass accentBg / accentBorder to re-tint it (RC uses teal).
 const KpiCard = ({
   label,
   value,
@@ -160,6 +176,8 @@ const KpiCard = ({
   info,
   valueColor = "text.primary",
   accent,
+  accentBg = HEADER_ACCENT_BG,
+  accentBorder = "#c7d2fe",
   emphasize,
 }) => {
   const content = (
@@ -226,9 +244,9 @@ const KpiCard = ({
       sx={{
         height: "100%",
         borderRadius: 4,
-        background: accent ? HEADER_ACCENT_BG : "#ffffff",
+        background: accent ? accentBg : "#ffffff",
         border: "1px solid",
-        borderColor: accent ? "#c7d2fe" : "grey.100",
+        borderColor: accent ? accentBorder : "grey.100",
         boxShadow: "0 10px 30px -5px rgba(0,0,0,0.04)",
         transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
         ...(onClick && {
@@ -376,6 +394,8 @@ const RemarksImpactCardBody = ({
   </CardContent>
 );
 
+// `accent` tints the panel. Default tint is the Header indigo; pass `tone`
+// ({ bg, border, title, hint }) to re-tint it (RC panels use teal).
 const ChartPanel = ({
   title,
   hint,
@@ -383,69 +403,79 @@ const ChartPanel = ({
   height = 320,
   info,
   accent,
+  tone,
   icon,
-}) => (
-  <Paper
-    elevation={0}
-    sx={{
-      p: 3,
-      height: "100%",
-      borderRadius: 4,
-      background: accent ? "#fbfbff" : "#ffffff",
-      border: "1px solid",
-      borderColor: accent ? "#c7d2fe" : "grey.100",
-      boxShadow: "0 10px 30px -5px rgba(0,0,0,0.04)",
-    }}
-  >
-    <Box
+}) => {
+  const t = {
+    bg: "#fbfbff",
+    border: "#c7d2fe",
+    title: "#3730a3",
+    hint: "#6366f1",
+    ...(tone || {}),
+  };
+  return (
+    <Paper
+      elevation={0}
       sx={{
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "flex-start",
-        mb: 4,
+        p: 3,
+        height: "100%",
+        borderRadius: 4,
+        background: accent ? t.bg : "#ffffff",
+        border: "1px solid",
+        borderColor: accent ? t.border : "grey.100",
+        boxShadow: "0 10px 30px -5px rgba(0,0,0,0.04)",
       }}
     >
-      <Box>
-        <Typography
-          variant="h6"
-          sx={{
-            fontWeight: 800,
-            color: accent ? "#3730a3" : "#0f172a",
-            display: "flex",
-            alignItems: "center",
-          }}
-        >
-          {icon}
-          {title}
-          {info && (
-            <MuiTooltip title={info} placement="top" arrow>
-              <InfoOutlinedIcon
-                sx={{
-                  fontSize: 18,
-                  ml: 0.75,
-                  color: "text.disabled",
-                  cursor: "help",
-                  verticalAlign: "text-bottom",
-                  transition: "color 0.2s",
-                  "&:hover": { color: "#4f46e5" },
-                }}
-              />
-            </MuiTooltip>
-          )}
-        </Typography>
-        {hint && (
+      <Box
+        sx={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          mb: 4,
+        }}
+      >
+        <Box>
           <Typography
-            variant="caption"
-            sx={{ color: accent ? "#6366f1" : "#64748b", fontWeight: 500 }}
+            variant="h6"
+            sx={{
+              fontWeight: 800,
+              color: accent ? t.title : "#0f172a",
+              display: "flex",
+              alignItems: "center",
+            }}
           >
-            {hint}
+            {icon}
+            {title}
+            {info && (
+              <MuiTooltip title={info} placement="top" arrow>
+                <InfoOutlinedIcon
+                  sx={{
+                    fontSize: 18,
+                    ml: 0.75,
+                    color: "text.disabled",
+                    cursor: "help",
+                    verticalAlign: "text-bottom",
+                    transition: "color 0.2s",
+                    "&:hover": { color: "#4f46e5" },
+                  }}
+                />
+              </MuiTooltip>
+            )}
           </Typography>
-        )}
+          {hint && (
+            <Typography
+              variant="caption"
+              sx={{ color: accent ? t.hint : "#64748b", fontWeight: 500 }}
+            >
+              {hint}
+            </Typography>
+          )}
+        </Box>
       </Box>
-    </Box>
-    <Box sx={{ width: "100%", height }}>{children}</Box>
-  </Paper>
-);
+      <Box sx={{ width: "100%", height }}>{children}</Box>
+    </Paper>
+  );
+};
 
 const ComplianceTooltip = ({ active, payload, labelKey, labelFormatter }) => {
   if (!active || !payload || !payload.length) return null;
@@ -687,6 +717,7 @@ const ExecutiveDashboard = () => {
   const [drilldown, setDrilldown] = useState(null);
   const [headerDrilldown, setHeaderDrilldown] = useState(null);
   const [headerKpiDrilldown, setHeaderKpiDrilldown] = useState(null);
+  const [rcDrilldown, setRcDrilldown] = useState(null);
   const [poPreview, setPoPreview] = useState(null);
   const abortRef = useRef(null);
 
@@ -765,6 +796,7 @@ const ExecutiveDashboard = () => {
 
   const kpis = data?.kpis || {};
   const headerKpis = kpis.header || {};
+  const rcKpis = kpis.rc || {};
   const charts = data?.charts || {};
   const kpiDefs = data?.kpiDefinitions || {};
   const chartDefs = data?.chartDefinitions || {};
@@ -772,6 +804,8 @@ const ExecutiveDashboard = () => {
     ? `Showing figures for purchasing group ${data.scope.restrictedToPurchaseGroup} only`
     : undefined;
   const missingHeaderDataCount = kpis.missingHeaderDataCount || 0;
+  const rcGroupChartData = charts.rcPurchaseGroupCompliance || [];
+  const rcVendorChartData = charts.rcVendorCompliance || [];
 
   const monthlyTrendData = mergeMonthlyTrends(
     charts.monthlyExceptionTrend,
@@ -784,6 +818,8 @@ const ExecutiveDashboard = () => {
     setHeaderDrilldown({ pointNo, title, ...extra });
   const openHeaderKpiDrilldown = (dimension, title, value) =>
     setHeaderKpiDrilldown({ dimension, title, value });
+  const openRcDrilldown = (dimension, title, extra = {}) =>
+    setRcDrilldown({ dimension, title, ...extra });
 
   const handleRowAction = (row, mode) => {
     if (!row) return;
@@ -817,13 +853,16 @@ const ExecutiveDashboard = () => {
     const lines = ["Section,Key,Value,Extra"];
 
     Object.entries(kpis).forEach(([k, v]) => {
-      if (k === "header") return;
+      if (k === "header" || k === "rc") return;
       if (!k.toLowerCase().includes("hold")) {
         lines.push(`Overview / Line-Level KPI,${csvEscape(k)},${csvEscape(v)},`);
       }
     });
     Object.entries(headerKpis).forEach(([k, v]) => {
       lines.push(`Header-Level KPI,${csvEscape(k)},${csvEscape(v)},`);
+    });
+    Object.entries(rcKpis).forEach(([k, v]) => {
+      lines.push(`RC-Level KPI,${csvEscape(k)},${csvEscape(v)},`);
     });
 
     (charts.controlWiseCompliance || []).forEach((d) =>
@@ -834,6 +873,16 @@ const ExecutiveDashboard = () => {
     (charts.headerControlWiseCompliance || []).forEach((d) =>
       lines.push(
         `Control-Wise Compliance (Header-Level),Point ${d.pointNo} (${d.severity}),${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`,
+      ),
+    );
+    (charts.rcPurchaseGroupCompliance || []).forEach((d) =>
+      lines.push(
+        `RC Compliance by Purchase Group,${csvEscape(d.purchaseGroupName || d.purchaseGroup)},${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`,
+      ),
+    );
+    (charts.rcVendorCompliance || []).forEach((d) =>
+      lines.push(
+        `RC Compliance by Vendor,${csvEscape(d.vendorName || d.vendorCode)},${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`,
       ),
     );
     (charts.exceptionBySeverity || []).forEach((d) =>
@@ -889,6 +938,94 @@ const ExecutiveDashboard = () => {
     URL.revokeObjectURL(url);
   };
 
+  // Shared renderer for the two stacked Verified / Not Verified RC charts
+  // (by purchase group, by vendor) so they stay visually identical.
+  const renderRcStackedChart = ({
+    chartData,
+    categoryKey,
+    labelOf,
+    axisWidth,
+    drillDimension,
+    drillTitle,
+  }) => (
+    <ResponsiveContainer>
+      <BarChart
+        data={chartData}
+        layout="vertical"
+        margin={{ top: 10, bottom: 10, left: 10, right: 30 }}
+        barCategoryGap="25%"
+      >
+        <ChartGradients />
+        <CartesianGrid
+          strokeDasharray="3 3"
+          horizontal={false}
+          stroke={RC_ACCENT_BORDER}
+        />
+        <XAxis
+          type="number"
+          allowDecimals={false}
+          axisLine={false}
+          tickLine={false}
+          tick={{ fill: RC_ACCENT, fontSize: 12, fontWeight: 500 }}
+        />
+        <YAxis
+          type="category"
+          dataKey={categoryKey}
+          tickFormatter={(v) => {
+            const row = chartData.find((c) => c[categoryKey] === v);
+            return truncateLabel(labelOf(row) || v, 26);
+          }}
+          width={axisWidth}
+          axisLine={false}
+          tickLine={false}
+          tick={{ fill: RC_ACCENT_DARK, fontSize: 13, fontWeight: 600 }}
+        />
+        <Tooltip
+          content={<ComplianceTooltip labelFormatter={(d) => labelOf(d)} />}
+          cursor={{ fill: alpha(RC_ACCENT, 0.06) }}
+        />
+        <Legend
+          iconType="circle"
+          wrapperStyle={{ paddingTop: 10, fontSize: "14px", fontWeight: 600 }}
+        />
+        <Bar
+          dataKey="verified"
+          stackId="a"
+          fill="url(#gradVerified)"
+          name="Verified"
+          cursor="pointer"
+          radius={[6, 0, 0, 6]}
+          barSize={20}
+          onClick={(d) => {
+            const p = payloadOf(d);
+            openRcDrilldown(
+              drillDimension,
+              `${drillTitle}: ${labelOf(p)} - Verified RCs`,
+              { value: p[categoryKey], statusFilter: "verified" },
+            );
+          }}
+        />
+        <Bar
+          dataKey="notVerified"
+          stackId="a"
+          fill="url(#gradNotVerified)"
+          name="Not Verified"
+          radius={[0, 6, 6, 0]}
+          cursor="pointer"
+          barSize={20}
+          onClick={(d) => {
+            const p = payloadOf(d);
+            openRcDrilldown(
+              drillDimension,
+              `${drillTitle}: ${labelOf(p)} - Not-Verified RCs`,
+              { value: p[categoryKey], statusFilter: "notVerified" },
+            );
+          }}
+        />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+
   return (
     <Box sx={{ maxWidth: "xl", mx: "auto", p: { xs: 2, sm: 3 } }}>
       <Box
@@ -929,6 +1066,8 @@ const ExecutiveDashboard = () => {
             first, in the indigo-tinted panels) and 10{" "}
             <strong>Line-Item</strong> points (one result per PO line). Both
             sets of points cover the same POs — see "Total POs" below.
+            Separately, every Rate Contract gets one <strong>RC Overlap</strong>{" "}
+            check (shown in the teal-tinted panels at the bottom).
             Criticality of each checkpoint is managed on the Risk
             Categorization Master page.
           </Typography>
@@ -970,6 +1109,7 @@ const ExecutiveDashboard = () => {
             border: "1px solid",
             borderColor: "grey.100",
             boxShadow: "0 10px 30px -5px rgba(0,0,0,0.04)",
+            flexWrap: "wrap",
           }}
         >
           <Chip
@@ -1009,6 +1149,22 @@ const ExecutiveDashboard = () => {
                   : kpis.overallComplianceScore >= 50
                     ? "#d97706"
                     : NOT_VERIFIED_COLOR,
+            }}
+          />
+          <Chip
+            icon={<DescriptionRoundedIcon fontSize="small" />}
+            label={
+              rcKpis.overallComplianceScore != null
+                ? `${rcKpis.overallComplianceScore}% RC compliant`
+                : "—"
+            }
+            sx={{
+              fontWeight: 800,
+              borderRadius: 2,
+              px: 1,
+              bgcolor: RC_ACCENT_BG,
+              color: RC_ACCENT,
+              "& .MuiChip-icon": { color: RC_ACCENT },
             }}
           />
           <Box sx={{ width: "1px", height: 24, bgcolor: "divider" }} />
@@ -2253,6 +2409,181 @@ const ExecutiveDashboard = () => {
         </Grid>
       </Grid>
 
+      {/* RC-LEVEL (RC Overlap) — distinct teal styling. One check per Rate
+          Contract, so there is no control-wise breakdown like Header/Line
+          have: an RC is simply Verified or Not Verified. Closed = a Not
+          Verified RC whose remarks are locked; Pending = still open. Only
+          purchase group / vendor / material filters can narrow these
+          figures (see buildRcWhere in dashboard-controller.js) — PO
+          number, dates, plant and PO type don't exist on an RC. */}
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 5, mb: 1.5 }}>
+        <DescriptionRoundedIcon sx={{ color: RC_ACCENT, fontSize: 20 }} />
+        <Typography
+          variant="overline"
+          sx={{ fontWeight: 800, color: RC_ACCENT, letterSpacing: 1.5 }}
+        >
+          RC Overlap Level (1 check per Rate Contract)
+        </Typography>
+      </Box>
+      <Typography
+        variant="caption"
+        sx={{ display: "block", mb: 2, color: "#64748b", fontWeight: 500 }}
+      >
+        Only the Purchase Group, Vendor and Material Code filters apply to RC
+        figures — PO number, dates, plant and PO type don't exist on a Rate
+        Contract.
+      </Typography>
+      <Grid container spacing={3} sx={{ mb: 5 }}>
+        <Grid item xs={12} sm={6} md={3}>
+          <KpiCard
+            accent
+            accentBg={RC_ACCENT_BG}
+            accentBorder={RC_ACCENT_BORDER}
+            label="RC Compliance"
+            value={
+              rcKpis.overallComplianceScore != null
+                ? `${rcKpis.overallComplianceScore}%`
+                : "—"
+            }
+            loading={loading}
+            sublabel={`Verified ÷ (Verified + Not Verified), per RC — ${rcKpis.totalRCCount ?? 0} RCs in scope. Click to view all RCs.`}
+            info={
+              kpiDefs.rcComplianceScore ||
+              "Verified ÷ (Verified + Not Verified) Rate Contracts"
+            }
+            onClick={
+              rcKpis.totalRCCount
+                ? () => openRcDrilldown("all", "All RCs — RC Overlap Detail")
+                : undefined
+            }
+          />
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <KpiCard
+            accent
+            accentBg={RC_ACCENT_BG}
+            accentBorder={RC_ACCENT_BORDER}
+            label="RCs Closed"
+            value={rcKpis.closedRCCount ?? "—"}
+            valueColor="#059669"
+            loading={loading}
+            sublabel={`Not Verified RCs whose remarks are locked. ${rcKpis.pendingRCCount ?? 0} still pending, out of ${rcKpis.notVerifiedCount ?? 0} Not Verified. Click to view closed RCs.`}
+            info={
+              kpiDefs.closedRCCount ||
+              "Not Verified RCs where the RC-level check has been closed (remarks locked)."
+            }
+            onClick={
+              rcKpis.closedRCCount
+                ? () => openRcDrilldown("closed", "RCs — Closed")
+                : undefined
+            }
+          />
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <KpiCard
+            accent
+            accentBg={RC_ACCENT_BG}
+            accentBorder={RC_ACCENT_BORDER}
+            label="Verified (RC)"
+            value={rcKpis.verifiedCount ?? "—"}
+            valueColor="#059669"
+            loading={loading}
+            sublabel="RCs with no overlap found. Click to view Verified RCs."
+            info={kpiDefs.rcVerifiedCount || "Count of Verified Rate Contracts."}
+            onClick={
+              rcKpis.verifiedCount
+                ? () => openRcDrilldown("verified", "RCs — Verified")
+                : undefined
+            }
+          />
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <KpiCard
+            accent
+            accentBg={RC_ACCENT_BG}
+            accentBorder={RC_ACCENT_BORDER}
+            label="Not Verified (RC)"
+            value={rcKpis.notVerifiedCount ?? "—"}
+            valueColor="#dc2626"
+            loading={loading}
+            sublabel="RCs flagged by the RC Overlap check. Click to view Not Verified RCs."
+            info={
+              kpiDefs.rcNotVerifiedCount ||
+              "Count of Not Verified Rate Contracts (system-flagged overlaps)."
+            }
+            onClick={
+              rcKpis.notVerifiedCount
+                ? () => openRcDrilldown("notVerified", "RCs — Not Verified")
+                : undefined
+            }
+          />
+        </Grid>
+      </Grid>
+
+      <Grid container spacing={3}>
+        {rcGroupChartData.length > 0 && (
+          <Grid item xs={12}>
+            <ChartPanel
+              title="RC Compliance by Purchase Group"
+              hint="Verified vs. Not Verified RCs per purchasing group, worst first. An RC listing several groups counts once toward each. Click a segment to drill in."
+              info="Shows verified vs. not-verified RC counts for every purchasing group. Visible to Admin, Procurement Manager and SSB Digital only."
+              accent
+              tone={RC_PANEL_TONE}
+              icon={<DescriptionRoundedIcon sx={{ mr: 1, color: RC_ACCENT }} />}
+              height={horizontalChartHeight(rcGroupChartData.length)}
+            >
+              {loading ? (
+                <Skeleton
+                  variant="rounded"
+                  height="100%"
+                  sx={{ borderRadius: 2 }}
+                />
+              ) : (
+                renderRcStackedChart({
+                  chartData: rcGroupChartData,
+                  categoryKey: "purchaseGroup",
+                  labelOf: (d) => d?.purchaseGroupName || d?.purchaseGroup,
+                  axisWidth: 170,
+                  drillDimension: "purchaseGroup",
+                  drillTitle: "RC Purchase Group",
+                })
+              )}
+            </ChartPanel>
+          </Grid>
+        )}
+
+        {rcVendorChartData.length > 0 && (
+          <Grid item xs={12}>
+            <ChartPanel
+              title="RC Compliance by Vendor"
+              hint="Top 15 vendors by not-verified RC count. Click a segment to drill in."
+              info="Shows verified vs. not-verified RC counts for the 15 vendors with the most Not Verified Rate Contracts."
+              accent
+              tone={RC_PANEL_TONE}
+              icon={<DescriptionRoundedIcon sx={{ mr: 1, color: RC_ACCENT }} />}
+              height={horizontalChartHeight(rcVendorChartData.length)}
+            >
+              {loading ? (
+                <Skeleton
+                  variant="rounded"
+                  height="100%"
+                  sx={{ borderRadius: 2 }}
+                />
+              ) : (
+                renderRcStackedChart({
+                  chartData: rcVendorChartData,
+                  categoryKey: "vendorCode",
+                  labelOf: (d) => d?.vendorName || d?.vendorCode,
+                  axisWidth: 200,
+                  drillDimension: "vendor",
+                  drillTitle: "RC Vendor",
+                })
+              )}
+            </ChartPanel>
+          </Grid>
+        )}
+      </Grid>
+
       <Box sx={{ mt: 5 }}>
         <PoWiseExceptionsTable
           rows={charts.poWiseExceptions || []}
@@ -2276,7 +2607,8 @@ const ExecutiveDashboard = () => {
         Executive P2P Compliance Control Tower — "Total POs" above is the
         single figure for how many POs are in scope; Header-Level and
         Line-Item sections above only report compliance against that same
-        set of POs. Checkpoint descriptions and criticality live on the
+        set of POs. RC Overlap compliance is measured per Rate Contract, not
+        per PO. Checkpoint descriptions and criticality live on the
         Risk Categorization Master page.
       </Typography>
 
@@ -2299,6 +2631,11 @@ const ExecutiveDashboard = () => {
         appliedFilters={buildSummaryBody(filters)}
         onClose={() => setHeaderKpiDrilldown(null)}
         onViewHeader={(poNumber) => setPoPreview({ poNumber })}
+      />
+      <RcKpiDrilldownDialog
+        drilldown={rcDrilldown}
+        appliedFilters={buildSummaryBody(filters)}
+        onClose={() => setRcDrilldown(null)}
       />
       <PoDetailsPreviewDialog
         preview={poPreview}

@@ -89,6 +89,42 @@ function buildWhere(body = {}, user = {}) {
   return where;
 }
 
+/**
+ * RC-level counterpart to buildWhere().
+ *
+ * RcOverlapResult carries no po_number / po_created_date / plant /
+ * po_type of its own, so only the filters that DO exist on that table can
+ * narrow the RC section:
+ *   - purchaseGroup (RcOverlapResult.purchaseGroups is an array -> hasSome)
+ *   - vendorCode    (RcOverlapResult.vendorCode)
+ *   - materialCode  (RcOverlapResult.rcMaterialCode)
+ * PO number / PO date / PR date / plant / PO type filters from the filter
+ * bar have nothing on an RC to filter against and are intentionally
+ * ignored for RC figures.
+ *
+ * A Buyer is always restricted to RCs that list their own purchase group,
+ * regardless of what's in the body (same rule as everywhere else here).
+ */
+function buildRcWhere(body = {}, user = {}) {
+  const where = {};
+  const isUnrestricted =
+    user.isAdmin || user.isProcurementManager || !user.isBuyer;
+
+  if (isUnrestricted) {
+    if (Array.isArray(body.purchaseGroup) && body.purchaseGroup.length) {
+      where.purchaseGroups = { hasSome: body.purchaseGroup };
+    }
+  } else {
+    const ownGroup = getPurchaseGroupCode(user.username);
+    where.purchaseGroups = { has: ownGroup || "__no_group_assigned__" };
+  }
+
+  if (body.vendorCode) where.vendorCode = body.vendorCode;
+  if (body.materialCode) where.rcMaterialCode = body.materialCode;
+
+  return where;
+}
+
 function scopeOf(user = {}) {
   if (user.isAdmin || user.isProcurementManager || !user.isBuyer) return null;
   const ownGroup = getPurchaseGroupCode(user.username);
@@ -491,6 +527,96 @@ export const getExecutiveSummary = async (req, res) => {
       notVerified: headerNotVerifiedCount,
     });
 
+    // ---- RC-LEVEL COMPLIANCE ---------------------------------------------
+    // One check per RC (RC Overlap), so there is no "control-wise" breakdown
+    // like header/line have. An RC is either Verified or Not Verified.
+    //   Closed  = a Not Verified RC whose remarks are locked (same
+    //             definition as the Remarks Impact RC card).
+    //   Pending = a Not Verified RC that is still open.
+    // Only RcOverlapResult-native filters (purchase group / vendor /
+    // material) apply here - see buildRcWhere().
+    const isUnrestrictedUser = !scope;
+    const rcRows = await prisma.rcOverlapResult.findMany({
+      where: buildRcWhere(req.body || {}, user),
+      select: {
+        id: true,
+        vendorCode: true,
+        status: true,
+        remarksLocked: true,
+        purchaseGroups: true,
+      },
+    });
+
+    const filterGroups =
+      Array.isArray(req.body?.purchaseGroup) && req.body.purchaseGroup.length
+        ? new Set(req.body.purchaseGroup)
+        : null;
+
+    let rcVerifiedCount = 0;
+    let rcNotVerifiedCount = 0;
+    let rcClosedCount = 0;
+    const rcByGroup = {};
+    const rcByVendor = {};
+
+    for (const rc of rcRows) {
+      const isVerified = rc.status === "Verified";
+      const isNotVerified = rc.status === "Not Verified";
+      if (!isVerified && !isNotVerified) continue;
+
+      if (isVerified) rcVerifiedCount++;
+      else {
+        rcNotVerifiedCount++;
+        if (rc.remarksLocked) rcClosedCount++;
+      }
+
+      const vKey = rc.vendorCode || "Unassigned";
+      rcByVendor[vKey] = rcByVendor[vKey] || { verified: 0, notVerified: 0 };
+      if (isVerified) rcByVendor[vKey].verified++;
+      else rcByVendor[vKey].notVerified++;
+
+      if (isUnrestrictedUser) {
+        const groups = rc.purchaseGroups?.length
+          ? rc.purchaseGroups
+          : ["Unassigned"];
+        for (const g of groups) {
+          if (filterGroups && !filterGroups.has(g)) continue;
+          rcByGroup[g] = rcByGroup[g] || { verified: 0, notVerified: 0 };
+          if (isVerified) rcByGroup[g].verified++;
+          else rcByGroup[g].notVerified++;
+        }
+      }
+    }
+
+    const rcCompliancePct = compliancePctOf({
+      verified: rcVerifiedCount,
+      notVerified: rcNotVerifiedCount,
+    });
+
+    const rcPurchaseGroupCompliance = Object.entries(rcByGroup)
+      .map(([group, v]) => ({
+        purchaseGroup: group,
+        purchaseGroupName: getPurchaseGroupName(group),
+        verified: v.verified,
+        notVerified: v.notVerified,
+        compliancePct: compliancePctOf(v),
+      }))
+      .sort((a, b) => (a.compliancePct ?? 101) - (b.compliancePct ?? 101));
+
+    const rcVendorCompliance = Object.entries(rcByVendor)
+      .map(([vendorCode, v]) => {
+        const vendor = getVendorInfo(vendorCode);
+        return {
+          vendorCode,
+          vendorName: vendor?.name || getVendorName(vendorCode),
+          verified: v.verified,
+          notVerified: v.notVerified,
+          compliancePct: compliancePctOf(v),
+        };
+      })
+      .filter((v) => v.notVerified > 0)
+      .sort((a, b) => b.notVerified - a.notVerified)
+      .slice(0, 15);
+
     const topN = (obj, n = 10) =>
       Object.entries(obj)
         .sort((a, b) => b[1].count - a[1].count)
@@ -593,6 +719,14 @@ export const getExecutiveSummary = async (req, res) => {
           closedPOCount: headerClosedCount,
           openPOCount: Math.max(headerRecords.length - headerClosedCount, 0),
         },
+        rc: {
+          totalRCCount: rcVerifiedCount + rcNotVerifiedCount,
+          verifiedCount: rcVerifiedCount,
+          notVerifiedCount: rcNotVerifiedCount,
+          overallComplianceScore: rcCompliancePct,
+          closedRCCount: rcClosedCount,
+          pendingRCCount: Math.max(rcNotVerifiedCount - rcClosedCount, 0),
+        },
       },
       charts: {
         controlWiseCompliance: Object.entries(controlWise)
@@ -612,6 +746,8 @@ export const getExecutiveSummary = async (req, res) => {
           })
           .sort((a, b) => Number(a.pointNo) - Number(b.pointNo)),
         headerControlWiseCompliance,
+        rcPurchaseGroupCompliance,
+        rcVendorCompliance,
         poWiseExceptions: poWiseExceptionsAll,
         exceptionBySeverity: SEVERITY_LEVELS.map((severity) => ({
           severity,
@@ -1135,6 +1271,146 @@ export const getExecutiveHeaderKpiDrilldown = async (req, res) => {
     return res
       .status(500)
       .json({ message: "Failed to compute header KPI drilldown" });
+  }
+};
+
+/**
+ * ============================================================================
+ * RC-LEVEL drilldown - the exact list behind any RC KPI card / RC chart
+ * segment on the Executive Dashboard. Mirrors getExecutiveHeaderKpiDrilldown
+ * but each row is one Rate Contract (RcOverlapResult), not a PO.
+ *
+ * body: { dimension, value?, statusFilter?, page, pageSize, ...filters }
+ *   dimension:
+ *     "all"           every RC in scope
+ *     "verified"      status === "Verified"
+ *     "notVerified"   status === "Not Verified"
+ *     "closed"        Not Verified AND remarksLocked
+ *     "pending"       Not Verified AND NOT remarksLocked
+ *     "purchaseGroup" RCs listing purchase group `value` ("Unassigned" =
+ *                     RCs listing none)
+ *     "vendor"        RCs for vendor code `value`
+ *   statusFilter (optional, "verified" | "notVerified"): narrows the
+ *     purchaseGroup / vendor dimensions to one side of the stacked bar.
+ *
+ * Scoping is buildRcWhere(): a Buyer only ever sees RCs listing their own
+ * purchase group, regardless of the body.
+ * ============================================================================
+ */
+export const getExecutiveRcDrilldown = async (req, res) => {
+  try {
+    const user = req.user || {};
+    const {
+      dimension = "all",
+      value,
+      statusFilter,
+      page = 1,
+      pageSize = 25,
+      ...filterBody
+    } = req.body || {};
+
+    const where = buildRcWhere(filterBody, user);
+    const allRcs = await prisma.rcOverlapResult.findMany({
+      where,
+      orderBy: { rcNumber: "asc" },
+    });
+
+    const isVerified = (rc) => rc.status === "Verified";
+    const isNotVerified = (rc) => rc.status === "Not Verified";
+
+    const matchesStatusFilter = (rc) => {
+      if (!statusFilter) return true;
+      if (statusFilter === "verified") return isVerified(rc);
+      if (statusFilter === "notVerified") return isNotVerified(rc);
+      return true;
+    };
+
+    const matchesDimension = (rc) => {
+      switch (dimension) {
+        case "verified":
+          return isVerified(rc);
+        case "notVerified":
+          return isNotVerified(rc);
+        case "closed":
+          return isNotVerified(rc) && !!rc.remarksLocked;
+        case "pending":
+          return isNotVerified(rc) && !rc.remarksLocked;
+        case "purchaseGroup": {
+          const groups = rc.purchaseGroups?.length
+            ? rc.purchaseGroups
+            : ["Unassigned"];
+          return groups.includes(value);
+        }
+        case "vendor":
+          return (rc.vendorCode || "Unassigned") === value;
+        case "all":
+        default:
+          return true;
+      }
+    };
+
+    const filtered = allRcs.filter(
+      (rc) => matchesDimension(rc) && matchesStatusFilter(rc),
+    );
+
+    const take = Math.min(Number(pageSize) || 25, 200);
+    const skip = (Math.max(Number(page) || 1, 1) - 1) * take;
+    const pageRcs = filtered.slice(skip, skip + take);
+
+    // Latest remark per RC, only for the rows on this page.
+    const latestByRc = new Map();
+    if (pageRcs.length) {
+      const remarks = await prisma.poRcRemark.findMany({
+        where: { rcOverlapResultId: { in: pageRcs.map((r) => r.id) } },
+        orderBy: { submittedAt: "desc" },
+      });
+      for (const r of remarks) {
+        if (!latestByRc.has(r.rcOverlapResultId))
+          latestByRc.set(r.rcOverlapResultId, r);
+      }
+    }
+
+    const fmtDate = (d) => (d ? new Date(d).toISOString().slice(0, 10) : null);
+
+    const results = pageRcs.map((rc) => {
+      const latest = latestByRc.get(rc.id);
+      const vendor = getVendorInfo(rc.vendorCode);
+      return {
+        key: `rc-${rc.id}`,
+        id: rc.id,
+        rcNumber: rc.rcNumber,
+        vendorCode: rc.vendorCode,
+        vendorName: vendor?.name || getVendorName(rc.vendorCode),
+        materialCode: rc.rcMaterialCode,
+        validFrom: fmtDate(rc.validFrom),
+        validTo: fmtDate(rc.validTo),
+        purchaseGroups: (rc.purchaseGroups || []).join(", "),
+        overlappingRcs: (rc.overlappingRcs || []).join(", "),
+        result: rc.status,
+        systemRemark: rc.remark || "",
+        locked: !!rc.remarksLocked,
+        lockedAt: rc.remarksLockedAt,
+        latestRemark: latest?.remark || "",
+        isPoCorrected: latest
+          ? latest.isSystemResultWrong
+            ? "PO Corrected"
+            : "System Altercation"
+          : "",
+      };
+    });
+
+    return res.status(200).json({
+      results,
+      total: filtered.length,
+      page: Number(page),
+      pageSize: take,
+      dimension,
+      value,
+      scope: scopeOf(user),
+    });
+  } catch (error) {
+    console.error("Error in getExecutiveRcDrilldown:", error);
+    return res.status(500).json({ message: "Failed to compute RC drilldown" });
   }
 };
 
