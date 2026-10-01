@@ -14,6 +14,25 @@ import pandas as pd
 # change, kept here so future edits know why a check does what it does)
 #
 # THIS REVISION:
+#   - GLOBAL EXCLUSION (applies to ALL points) widened: the low-value
+#     Net Price exclusion (Net Price INR 0 / 0.01 / 1) that previously
+#     covered only PO Types ZJVW/ZVJW now covers this full set:
+#         ZJVW, ZVJW, ZJWV, ZLFR, ZIFR, ZSER
+#     i.e. ZLFR, ZIFR and ZSER were ADDED alongside the job-work types.
+#     "ZJWV" was also added because point #10 already treats ZJWV as a
+#     job-work type and the client's instruction spelled it that way;
+#     ZVJW is kept so nothing that was excluded before stops being
+#     excluded. The set lives in JOB_WORK_PO_TYPES (name kept for
+#     backwards-compatibility; it now holds more than job-work types).
+#     Behaviour for the new types: a line with one of these PO Types AND
+#     Net Price 0/0.01/1 is marked Not Applicable on every point (kept in
+#     all outputs, same as before for ZJVW/ZVJW). Lines of these types
+#     with any other Net Price are audited normally.
+#     NOTE: ZSER lines with a nominal Net Price are now Not Applicable for
+#     point #17 (ZSER item category) as well, because the exclusion runs
+#     before every rule.
+#
+# PREVIOUS REVISION:
 #   - Points #6 (EYW freight required) and #7 (EXW/FCA must not have
 #     freight) now return Data Missing ("Manual"/"MANUAL") instead of a
 #     false Not Verified (#6) or false Verified (#7) when the PO has ZERO
@@ -31,7 +50,7 @@ import pandas as pd
 #     Data-Missing line could be hidden behind an NA line from another
 #     line item on the same PO for a header-level point).
 #
-# PREVIOUS REVISION:
+# EARLIER REVISION:
 #   - RC Overlap `purchaseGroups` is now read DIRECTLY from the RC master's
 #     own "Purchase group" column instead of being derived by cross-
 #     referencing the current batch's POAUDIT PO lines. The old approach
@@ -56,7 +75,7 @@ import pandas as pd
 #     row, immune to the vendor-code padding issue, and inherits the RC
 #     master's own cumulative nature (see merge-rc-master.js) automatically.
 #
-# EARLIER REVISION:
+# OLDER REVISION:
 #   - Point 4 (MSME payment term): the allowed payment-term set now ALSO
 #     includes Z107 (100% after satisfactory commissioning), Z112 (quarterly
 #     advance), Z147 (half yearly advance) and Z154 (on receipt of periodical
@@ -171,7 +190,12 @@ EXCLUDED_LINE_REMARK = (
 )
 
 ZSTO_PO_TYPE = "ZSTO"
-JOB_WORK_PO_TYPES = {"ZJVW", "ZVJW"}
+
+# Global low-value exclusion (ALL points): a line whose PO Type is in this
+# set AND whose Net Price is 0 / 0.01 / 1 is marked Not Applicable on every
+# point. The constant name is historical (it started as ZJVW/ZVJW only);
+# THIS REVISION added ZJWV, ZLFR, ZIFR and ZSER to it.
+JOB_WORK_PO_TYPES = {"ZJVW", "ZVJW", "ZJWV", "ZLFR", "ZIFR", "ZSER"}
 JOB_WORK_LOW_VALUE_NET_PRICES = {0.0, 0.01, 1.0}
 NET_PRICE_COLUMN = "Net price"
 
@@ -461,8 +485,15 @@ def load_dws_rate_approvals(path):
     return by_po
 
 
+MIN_PO_CREATED_DATE = "20260910"  # POs created before this are out of audit scope
+
+
 def filter_to_scope(po_rows):
-    in_scope = [r for r in po_rows if s(r, "Purchase Group") in VALID_PURCHASE_GROUPS]
+    in_scope = [
+        r for r in po_rows
+        if s(r, "Purchase Group") in VALID_PURCHASE_GROUPS
+        and (not s(r, "PO Created date") or s(r, "PO Created date") >= MIN_PO_CREATED_DATE)
+    ]
     dropped = len(po_rows) - len(in_scope)
     if dropped:
         log_assumption(
@@ -512,6 +543,9 @@ def _is_zsto_po(row):
 
 
 def _is_low_value_job_work_po(row):
+    """True if PO Type is in JOB_WORK_PO_TYPES (ZJVW, ZVJW, ZJWV, ZLFR, ZIFR,
+    ZSER) AND Net Price is 0 / 0.01 / 1. Function name kept for
+    compatibility; it now covers more than job-work PO types."""
     po_type = s(row, "PO Type").strip().upper()
     if po_type not in JOB_WORK_PO_TYPES:
         return False
@@ -549,7 +583,7 @@ def _exclusion_remark(row):
     if _is_low_value_job_work_po(row):
         return (
             f"Not Applicable - line item excluded from all audit points "
-            f"(Job Work PO Type '{s(row, 'PO Type')}' with nominal Net Price "
+            f"(PO Type '{s(row, 'PO Type')}' with nominal Net Price "
             f"of {s(row, NET_PRICE_COLUMN)})"
         )
     return EXCLUDED_LINE_REMARK
@@ -578,7 +612,7 @@ def evaluate_rule(rule_no, fn, row, ctx):
 
 
 # ---------------------------------------------------------------------------
-# Points #6/#7 CND-presence guard (THIS REVISION)
+# Points #6/#7 CND-presence guard
 # ---------------------------------------------------------------------------
 def _po_missing_from_cnd(po_number, cnd_by_po):
     """
@@ -943,10 +977,10 @@ def rule_13_eyw_freight_required(row, ctx):
 
     po_number = s(row, "PO number")
 
-    # THIS REVISION: if POAUDITCND has ZERO rows at all for this PO, we
-    # cannot tell "no freight condition" apart from "condition extract
-    # never captured this PO" - flag Data Missing instead of guessing
-    # Not Verified. See _po_missing_from_cnd().
+    # If POAUDITCND has ZERO rows at all for this PO, we cannot tell
+    # "no freight condition" apart from "condition extract never captured
+    # this PO" - flag Data Missing instead of guessing Not Verified.
+    # See _po_missing_from_cnd().
     if _po_missing_from_cnd(po_number, ctx["cnd_by_po"]):
         return MANUAL, (
             f"PO {po_number} has no matching row(s) at all in the POAUDITCND file "
@@ -1001,10 +1035,9 @@ def rule_14_exw_fca_no_freight(row, ctx):
 
     po_number = s(row, "PO number")
 
-    # THIS REVISION: same CND-presence guard as point #6 - see
-    # _po_missing_from_cnd(). Without this, a PO absent from CND entirely
-    # was silently treated as "no freight condition -> Verified", which is
-    # a false-positive verdict, not a real one.
+    # Same CND-presence guard as point #6 - see _po_missing_from_cnd().
+    # Without this, a PO absent from CND entirely was silently treated as
+    # "no freight condition -> Verified", which is a false-positive verdict.
     if _po_missing_from_cnd(po_number, ctx["cnd_by_po"]):
         return MANUAL, (
             f"PO {po_number} has no matching row(s) at all in the POAUDITCND file "
@@ -1611,11 +1644,11 @@ def build_addpo_records(po_rows, ctx):
     return records
 
 
-# THIS REVISION: priority order used when a PO's line items disagree on a
-# header-level point's verdict. MANUAL/MANUAL_CHECK (Data Missing) now
-# ranks above NA - previously only NOT_VERIFIED > VERIFIED > NA was
-# considered, so a genuinely Data-Missing line could be hidden behind an
-# NA line from another line item on the same PO.
+# Priority order used when a PO's line items disagree on a header-level
+# point's verdict. MANUAL/MANUAL_CHECK (Data Missing) ranks above NA -
+# previously only NOT_VERIFIED > VERIFIED > NA was considered, so a
+# genuinely Data-Missing line could be hidden behind an NA line from
+# another line item on the same PO.
 _HEADER_STATUS_PRIORITY = [NOT_VERIFIED, VERIFIED, MANUAL, MANUAL_CHECK, NA]
 
 
@@ -1636,7 +1669,8 @@ def build_po_header_records(po_rows, ctx):
                 status, remark = NA, (
                     "No eligible line items for this PO (all line items are "
                     "excluded - Deletion indicator 'L', Returns Item 'X', PO "
-                    "Type 'ZSTO', and/or a low-value ZJVW/ZVJW Job Work PO)"
+                    "Type 'ZSTO', and/or a low-value Net Price line of PO Type "
+                    "ZJVW/ZVJW/ZJWV/ZLFR/ZIFR/ZSER)"
                 )
             else:
                 per_line = [
@@ -1719,14 +1753,17 @@ def run(poaudit_path, cnd_path, rc_path, out_path, addpo_json_path=None, header_
             f"dropping them entirely the way Deletion Indicator 'L' rows are dropped.",
         )
 
-    job_work_count = sum(1 for r in po_rows if _is_low_value_job_work_po(r))
-    if job_work_count:
+    low_value_count = sum(1 for r in po_rows if _is_low_value_job_work_po(r))
+    if low_value_count:
         log_assumption(
-            "Global Exclusion - Low-value Job Work ZJVW/ZVJW",
-            f"{job_work_count} of {len(po_rows)} remaining in-scope PO line(s) were "
+            "Global Exclusion - Low-value Net Price (ZJVW/ZVJW/ZJWV/ZLFR/ZIFR/ZSER)",
+            f"{low_value_count} of {len(po_rows)} remaining in-scope PO line(s) were "
             f"excluded from ALL 19 audit points (marked Not Applicable on every point) "
-            f"because PO Type is ZJVW or ZVJW AND the Net Price ('{NET_PRICE_COLUMN}') "
-            f"is 0, 0.01, or 1, per client instruction.",
+            f"because PO Type is one of {sorted(JOB_WORK_PO_TYPES)} AND the Net Price "
+            f"('{NET_PRICE_COLUMN}') is 0, 0.01, or 1, per client instruction. "
+            f"ZLFR, ZIFR and ZSER were added to the original ZJVW/ZVJW job-work set; "
+            f"ZJWV was also included because point #10 already treats it as a "
+            f"job-work type - confirm ZJWV and ZVJW are both wanted.",
         )
 
     ctx = build_context(po_rows, cnd_by_po, rc_rows, dws_by_po, po9_extra_rows=history_extra)
