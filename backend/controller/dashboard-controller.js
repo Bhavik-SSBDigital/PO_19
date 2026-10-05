@@ -31,7 +31,6 @@ import { getMandatoryPoints } from "../utility/not-verified-scope.js";
 import { isPointCovered } from "../utility/effective-result.js";
 
 const PURCHASE_GROUPS = [
-  "P02",
   "P09",
   "P13",
   "P14",
