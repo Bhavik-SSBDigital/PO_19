@@ -180,13 +180,27 @@ router.post(
   getPlantsForFilter,
 );
 
-router.get("/reports/audit-point-config", getAuditPointConfig);
-router.post("/reports/audit-point-config", getAuditPointConfig);
-router.post("/risk-categorization/update-severity", updateAuditPointSeverity);
+// --- Risk Categorization ---
+// READ: any logged-in user may view the page.
+router.get("/reports/audit-point-config", requireAuth, getAuditPointConfig);
+router.post("/reports/audit-point-config", requireAuth, getAuditPointConfig);
+
+// WRITE: admin AND procurement manager. Everyone else is view-only.
+router.post(
+  "/risk-categorization/update-severity",
+  requireAuth,
+  requireAnyOf("isAdmin", "isProcurementManager"),
+  updateAuditPointSeverity,
+);
 // Admin-only. Call after `node scripts/seed-point-definitions.js` so a
 // running server picks up edited title/summary/logic text without a
 // restart - see scripts/POINT_CHANGE_PROCESS.md.
-router.post("/risk-categorization/reload-point-config", reloadPointConfig);
+router.post(
+  "/risk-categorization/reload-point-config",
+  requireAuth,
+  requireAnyOf("isAdmin"),
+  reloadPointConfig,
+);
 
 // --- Buyer point-level remarks (LINE-LEVEL) ---
 router.post(

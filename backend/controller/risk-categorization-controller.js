@@ -1,8 +1,7 @@
 import { prisma } from "../lib/prisma.js";
-// CHANGED: point content (title/summary/logic/dataPoints) now lives in the
-// DB (AuditPointConfig table), not a file - see utility/point-definitions.js
-// and scripts/seed-point-definitions.js. This controller no longer touches
-// utility/point-reference.js at all.
+// Point content (title/summary/logic/dataPoints) lives in the DB
+// (AuditPointConfig table), see utility/point-definitions.js and
+// scripts/seed-point-definitions.js.
 import {
   ensurePointDefinitionsLoaded,
   invalidatePointDefinitionsCache,
@@ -15,11 +14,16 @@ import {
   invalidateSeverityCache,
 } from "../utility/severity.js";
 
+// Server-side checks. req.user is attached by requireAuth, which reads it
+// from the token in the DB. Nothing here trusts client-sent headers.
+// If requireAuth did not run, req.user is undefined and these deny.
+const isAdminUser = (req) => !!req.user?.isAdmin;
+const canEditSeverity = (req) =>
+  !!(req.user?.isAdmin || req.user?.isProcurementManager);
+
 // GET/POST /reports/audit-point-config
-// Returns every audit point's fixed description (pointNo/title/summary/
-// logic/dataPoints - never editable) plus its current, admin-set severity.
-// Both now come straight from the DB (AuditPointConfig), read through
-// point-definitions.js's cache.
+// Readable by any logged-in user. Returns each point's fixed description
+// plus its current severity.
 export const getAuditPointConfig = async (req, res) => {
   try {
     await Promise.all([ensureSeverityLoaded(), ensurePointDefinitionsLoaded()]);
@@ -42,22 +46,16 @@ export const getAuditPointConfig = async (req, res) => {
 };
 
 // POST /risk-categorization/reload-point-config
-// Admin-only. Forces this server process to drop its in-memory
-// severity/point-definitions caches and re-read AuditPointConfig from the
-// DB immediately. Use this right after running
-// `node scripts/seed-point-definitions.js` (which writes straight to the
-// DB and has no way to reach an already-running server on its own) so the
-// content change is live everywhere in this process without a restart.
+// Admin-only. Drops this server process's in-memory caches and re-reads
+// AuditPointConfig from the DB. Use after running
+// `node scripts/seed-point-definitions.js`.
 //
-// NOTE: if the backend runs as more than one process (PM2 cluster mode,
-// multiple containers, etc.), each process has its OWN cache and this
-// endpoint only reloads the process that receives the request - call it
-// against every instance (or just restart the fleet) after a content
-// change so no instance is left serving stale point text.
+// NOTE: if the backend runs as multiple processes (PM2 cluster, several
+// containers), each has its own cache. Call this on every instance or
+// restart them all after a content change.
 export const reloadPointConfig = async (req, res) => {
   try {
-    const role = req.user?.role || req.headers["x-user-role"];
-    if (role && !["admin", "isAdmin"].includes(role)) {
+    if (!isAdminUser(req)) {
       return res.status(403).json({
         message: "Only an admin can reload audit point configuration",
       });
@@ -77,22 +75,16 @@ export const reloadPointConfig = async (req, res) => {
 };
 
 // POST /risk-categorization/update-severity  { pointNo, severity }
-// Admin-only. Adjust the `req.user?.role` check below to match however
-// your auth middleware attaches the logged-in user's role.
-//
-// IMPORTANT: this endpoint only ever touches the `severity` column of
-// AuditPointConfig. title/summary/logic/dataPoints/scope on that same row
-// are NOT admin-editable here - they're fixed content maintained only via
-// scripts/seed-point-definitions.js (see that file's header comment). This
-// mirrors the old behavior exactly: an admin adjusts criticality, nothing
-// else.
+// Admin AND Procurement Manager. Only ever touches the `severity` column of
+// AuditPointConfig. title/summary/logic/dataPoints/scope are fixed content
+// maintained only via scripts/seed-point-definitions.js.
 export const updateAuditPointSeverity = async (req, res) => {
   try {
-    const role = req.user?.role || req.headers["x-user-role"];
-    if (role && !["admin", "isAdmin"].includes(role)) {
-      return res
-        .status(403)
-        .json({ message: "Only an admin can change audit point criticality" });
+    if (!canEditSeverity(req)) {
+      return res.status(403).json({
+        message:
+          "Only an admin or procurement manager can change audit point criticality",
+      });
     }
 
     const { pointNo, severity } = req.body || {};

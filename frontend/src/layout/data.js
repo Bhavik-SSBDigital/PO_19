@@ -57,7 +57,6 @@ const adminNavItems = [
     icon: icons.PlaylistAddCheckRoundedIcon,
     breadcrumbs: false,
   },
-  // NEW — standalone RC Overlap (rule 19) section
   {
     id: "rc-overlap",
     title: "RC Overlap",
@@ -66,9 +65,6 @@ const adminNavItems = [
     icon: icons.AssignmentTurnedInRoundedIcon,
     breadcrumbs: false,
   },
-  // NEW — Buyer Remarks Report. Admin sees every buyer's remarks (per the
-  // controller's isAdmin/isProcurementManager branch), same page Buyers/PM
-  // already had access to below.
   {
     id: "po-remarks-report",
     title: "Buyer Remarks Report",
@@ -112,7 +108,6 @@ const headNavItems = [
     icon: icons.PlaylistAddCheckRoundedIcon,
     breadcrumbs: false,
   },
-  // NEW — standalone RC Overlap (rule 19) section
   {
     id: "rc-overlap",
     title: "RC Overlap",
@@ -156,7 +151,6 @@ const executorNavItems = [
     icon: icons.PlaylistAddCheckRoundedIcon,
     breadcrumbs: false,
   },
-  // NEW — standalone RC Overlap (rule 19) section
   {
     id: "rc-overlap",
     title: "RC Overlap",
@@ -200,7 +194,6 @@ const ssbdNavItems = [
     icon: icons.PlaylistAddCheckRoundedIcon,
     breadcrumbs: false,
   },
-  // NEW — standalone RC Overlap (rule 19) section
   {
     id: "rc-overlap",
     title: "RC Overlap",
@@ -230,13 +223,9 @@ const auditorNavItems = [
   },
 ];
 
-// Buyer / Procurement Manager bucket.
-// Per requirements: Dashboard, Search-Data, PO-Data only - no User
-// Management, and (unlike admin/head/executor/ssbd) no Risk-Categorization
-// either, since that wasn't in the list of pages these two roles should see.
-// RC Overlap is added here too, right alongside PO-Data, since Buyers/PMs
-// are exactly the users who need to see RC compliance status.
-const buyerOrProcurementManagerNavItems = [
+// Buyer bucket: Dashboard, Search-Data, PO-Data, RC Overlap, Buyer Remarks
+// Report. No Risk-Categorization for buyers.
+const buyerNavItems = [
   {
     id: "custom-dashboard",
     title: "Dashboard",
@@ -261,7 +250,6 @@ const buyerOrProcurementManagerNavItems = [
     icon: icons.PlaylistAddCheckRoundedIcon,
     breadcrumbs: false,
   },
-  // NEW — standalone RC Overlap (rule 19) section
   {
     id: "rc-overlap",
     title: "RC Overlap",
@@ -280,11 +268,23 @@ const buyerOrProcurementManagerNavItems = [
   },
 ];
 
-// SSBDigital — full-visibility, read-only role (see backend Role.isSsbDigital).
-// Mirrors the Buyer/PM nav bucket for the shared read-only report pages,
-// plus the two SSBDigital/Admin-only additions from item 1 and item 3 of
-// the build spec. No "createUser" or any mutating page - SSBDigital has
-// zero write access anywhere in this app.
+// Procurement Manager bucket: everything a buyer sees, plus
+// Risk-Categorization. The page is VIEW-ONLY for PMs - only admin can
+// change criticality (enforced in the form component and must also be
+// enforced in the backend endpoint).
+const procurementManagerNavItems = [
+  ...buyerNavItems,
+  {
+    id: "risk-categorization",
+    title: "Risk-Categorization",
+    type: "item",
+    url: "/risk-categorization",
+    icon: icons.LowPriorityRoundedIcon,
+    breadcrumbs: false,
+  },
+];
+
+// SSBDigital - full-visibility, read-only role (see backend Role.isSsbDigital).
 const ssbDigitalNavItems = [
   {
     id: "custom-dashboard",
@@ -326,7 +326,6 @@ const ssbDigitalNavItems = [
     icon: icons.AssignmentTurnedInRoundedIcon,
     breadcrumbs: false,
   },
-  // NEW — item 1: Processing History (Admin + SSBDigital)
   {
     id: "processing-history",
     title: "Processing History",
@@ -335,7 +334,6 @@ const ssbDigitalNavItems = [
     icon: icons.ManageSearchRoundedIcon,
     breadcrumbs: false,
   },
-  // NEW — item 3: Accumulated Exports (Admin + SSBDigital)
   {
     id: "accumulated-exports",
     title: "Accumulated Exports",
@@ -355,16 +353,14 @@ const menuItems = {
   executor: executorNavItems,
   ssbdUser: ssbdNavItems,
 
-  // Buyer + Procurement Manager
-  isBuyer: buyerOrProcurementManagerNavItems,
-  isProcurementManager: buyerOrProcurementManagerNavItems,
+  // Buyer and Procurement Manager now have separate buckets
+  isBuyer: buyerNavItems,
+  isProcurementManager: procurementManagerNavItems,
 
-  // NEW — SSBDigital (distinct from the pre-existing, unrelated "ssbdUser"/
-  // "SSBD" legacy bucket above)
   ssbDigital: ssbDigitalNavItems,
 
-  // optional old bucket name
-  buyerOrPM: buyerOrProcurementManagerNavItems,
+  // optional old bucket name - kept pointing at the PM bucket
+  buyerOrPM: procurementManagerNavItems,
 };
 
 export default menuItems;

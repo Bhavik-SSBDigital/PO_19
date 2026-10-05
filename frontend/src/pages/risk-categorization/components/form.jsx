@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   Paper, Table, TableHead, TableRow, TableCell, TableBody, TableContainer,
-  Select, MenuItem, Chip, Skeleton, Typography, Box,
+  Select, MenuItem, Chip, Skeleton, Typography,
 } from "@mui/material";
 import { toast } from "react-toastify";
 import { get, post } from "utils/axiosApi";
@@ -9,17 +9,18 @@ import { get, post } from "utils/axiosApi";
 const SEVERITY_COLORS = { Critical: "#c0392b", High: "#e67e22", Medium: "#f1c40f", Low: "#95a5a6" };
 const DEFAULT_SEVERITY_LEVELS = ["Critical", "High", "Medium", "Low"];
 
+// Roles allowed to change criticality. Everyone else is view-only.
+// The backend enforces the same rule (admin + procurement manager).
+const EDITOR_ROLES = ["admin", "isAdmin", "isProcurementManager"];
+
 const RiskCategorizationForm = () => {
   const [points, setPoints] = useState([]);
   const [severityLevels, setSeverityLevels] = useState(DEFAULT_SEVERITY_LEVELS);
   const [loading, setLoading] = useState(true);
   const [savingPointNo, setSavingPointNo] = useState(null);
 
-  // Adjust this to however your app actually determines the logged-in
-  // user's role (redux store, decoded JWT, etc.) - localStorage.role is
-  // what SearchAuditData.jsx in this codebase already reads elsewhere.
   const role = localStorage.getItem("role");
-  const isAdmin = role === "admin" || role === "isAdmin";
+  const canEdit = EDITOR_ROLES.includes(role);
 
   const load = async () => {
     setLoading(true);
@@ -40,6 +41,9 @@ const RiskCategorizationForm = () => {
   }, []);
 
   const handleSeverityChange = async (pointNo, severity) => {
+    // Defensive guard: view-only roles can never trigger a save
+    if (!canEdit) return;
+
     const prev = points;
     setPoints((cur) => cur.map((p) => (p.pointNo === pointNo ? { ...p, severity } : p)));
     setSavingPointNo(pointNo);
@@ -58,9 +62,9 @@ const RiskCategorizationForm = () => {
 
   return (
     <Paper variant="outlined" sx={{ p: 2 }}>
-      {!isAdmin && (
+      {!canEdit && (
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
-          View only — only an admin can change criticality.
+          View only — only an admin or procurement manager can change criticality.
         </Typography>
       )}
       <TableContainer>
@@ -82,7 +86,7 @@ const RiskCategorizationForm = () => {
                   <Typography variant="body2" color="text.secondary">{p.summary}</Typography>
                 </TableCell>
                 <TableCell>
-                  {isAdmin ? (
+                  {canEdit ? (
                     <Select
                       size="small"
                       fullWidth
@@ -95,7 +99,11 @@ const RiskCategorizationForm = () => {
                       ))}
                     </Select>
                   ) : (
-                    <Chip size="small" label={p.severity} sx={{ bgcolor: SEVERITY_COLORS[p.severity] || "#999", color: "#fff" }} />
+                    <Chip
+                      size="small"
+                      label={p.severity}
+                      sx={{ bgcolor: SEVERITY_COLORS[p.severity] || "#999", color: "#fff" }}
+                    />
                   )}
                 </TableCell>
               </TableRow>
