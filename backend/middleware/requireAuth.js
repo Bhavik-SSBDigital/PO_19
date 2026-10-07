@@ -13,8 +13,10 @@ import { prisma } from "../lib/prisma.js";
  */
 export const requireAuth = async (req, res, next) => {
   try {
-    const accessToken = req.headers["authorization"]?.substring(7);
-    if (!accessToken) {
+    const authHeader = req.headers.authorization || "";
+    const [scheme, accessToken] = authHeader.split(" ");
+
+    if (scheme !== "Bearer" || !accessToken) {
       return res.status(401).json({ message: "Missing access token" });
     }
 

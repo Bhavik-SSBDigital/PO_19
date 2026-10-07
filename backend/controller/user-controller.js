@@ -22,6 +22,9 @@ const transporter = nodemailer.createTransport({
   socketTimeout: 15000,
 });
 
+const DUMMY_PASSWORD_HASH =
+  "$2a$10$wJd2Lzfd4rM39NAO/vjQCeQN/J.SSEGYyQJHnFHgxJJl9eThGv4qi";
+
 /**
  * ============================================================
  * EDIT USER
@@ -468,10 +471,10 @@ export const get_users = async (req, res) => {
  */
 export const changePassword = async (req, res) => {
   try {
-    const { username, currentPassword, newPassword, confirmPassword } =
-      req.body;
+    const { currentPassword, newPassword, confirmPassword } = req.body;
+    const userId = req.user?.id;
 
-    if (!username || !currentPassword || !newPassword || !confirmPassword) {
+    if (!userId || !currentPassword || !newPassword || !confirmPassword) {
       return res.status(400).json({
         message: "All fields are required",
       });
@@ -485,13 +488,13 @@ export const changePassword = async (req, res) => {
 
     const user = await prisma.user.findFirst({
       where: {
-        username,
+        id: userId,
       },
     });
 
     if (!user) {
-      return res.status(404).json({
-        message: "User not found",
+      return res.status(401).json({
+        message: "Invalid or expired session",
       });
     }
 
@@ -499,7 +502,7 @@ export const changePassword = async (req, res) => {
 
     if (!isMatch) {
       return res.status(400).json({
-        message: "Current password is incorrect",
+        message: "Unable to change password with the supplied credentials",
       });
     }
 
@@ -571,8 +574,9 @@ export const forgotPassword = async (req, res) => {
     });
 
     if (!user) {
-      return res.status(400).json({
-        message: "Username and email do not match",
+      return res.status(200).json({
+        message:
+          "If the submitted details match an account, password reset instructions will be sent.",
       });
     }
 
@@ -638,7 +642,7 @@ AIA Audit System`,
 
     return res.status(200).json({
       message:
-        "Password reset successfully. New credentials have been sent to your email.",
+        "If the submitted details match an account, password reset instructions will be sent.",
     });
   } catch (error) {
     console.error("Error in forgotPassword:", error);
@@ -703,25 +707,10 @@ export const login = async (req, res) => {
       },
     });
 
-    console.log("LOGIN USERNAME:", JSON.stringify(username));
+    const passwordHash = user?.password || DUMMY_PASSWORD_HASH;
+    const passwordMatches = await bcrypt.compare(password, passwordHash);
 
-    console.log("USER FOUND:", !!user);
-
-    if (!user) {
-      return res.status(401).json({
-        message: "Invalid username or password",
-      });
-    }
-
-    const passwordMatches = await bcrypt.compare(password, user.password);
-
-    console.log("USER ID:", user.id);
-
-    console.log("DB USERNAME:", JSON.stringify(user.username));
-
-    console.log("PASSWORD MATCH:", passwordMatches);
-
-    if (!passwordMatches) {
+    if (!user || !passwordMatches) {
       return res.status(401).json({
         message: "Invalid username or password",
       });

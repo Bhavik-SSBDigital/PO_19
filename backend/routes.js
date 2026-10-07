@@ -97,10 +97,10 @@ import { getProcessingHistory } from "./controller/processing-history-controller
 const router = express.Router();
 
 // --- Auth ---
-router.post("/signup", signup);
+router.post("/signup", requireAuth, requireAnyOf("isAdmin"), signup);
 router.post("/signin", login);
-router.post("/logout", logout);
-router.post("/changePassword", changePassword);
+router.post("/logout", requireAuth, logout);
+router.post("/changePassword", requireAuth, changePassword);
 
 router.put("/users/:id", requireAuth, requireAnyOf("isAdmin"), editUser);
 
@@ -134,8 +134,8 @@ router.post(
   getExecutiveHeaderDrilldown,
 );
 
-router.get("/getRoles", getRoles);
-router.get("/getUsers", get_users);
+router.get("/getRoles", requireAuth, requireAnyOf("isAdmin"), getRoles);
+router.get("/getUsers", requireAuth, requireAnyOf("isAdmin"), get_users);
 
 // --- PO Lines ---
 // FIX: requireAuth was missing here, so req.user was always {} — the new
@@ -143,7 +143,12 @@ router.get("/getUsers", get_users);
 // who's asking.
 router.post("/reports/po-lines", requireAuth, get_po_lines);
 
-router.delete("/deleteUser/:id", deleteUser);
+router.delete(
+  "/deleteUser/:id",
+  requireAuth,
+  requireAnyOf("isAdmin"),
+  deleteUser,
+);
 
 // --- PO Data / Advanced Filters ---
 router.post(

@@ -7,6 +7,7 @@ import { dirname } from "path";
 import dotenv from "dotenv";
 import db from "./lib/prisma.js";
 import router from "./routes.js";
+import { corsOptions, securityHeaders } from "./middleware/securityHeaders.js";
 
 dotenv.config();
 
@@ -16,7 +17,9 @@ const __dirname = dirname(__filename);
 
 const app = express();
 
-app.use(cors());
+app.disable("x-powered-by");
+app.use(securityHeaders);
+app.use(cors(corsOptions));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 

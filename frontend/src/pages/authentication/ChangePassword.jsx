@@ -26,8 +26,6 @@ const ChangePassword = () => {
   });
   const [showPassword, setShowPassword] = useState("");
 
-  const username = localStorage.getItem("username");
-
   const handleChange = (e) => {
     const { name, value } = e.target;
     setInputs((prevState) => ({
@@ -45,11 +43,6 @@ const ChangePassword = () => {
     const currentPassword = inputs.currentPassword.trim();
     const newPassword = inputs.newPassword.trim();
     const confirmPassword = inputs.confirmPassword.trim();
-
-    if (!username) {
-      toast.error("Username not found. Please log in again.");
-      return;
-    }
 
     if (!currentPassword || !newPassword || !confirmPassword) {
       toast.error(
@@ -72,7 +65,6 @@ const ChangePassword = () => {
     
     try {
       const response = await post("/changePassword", {
-        username,
         currentPassword,
         newPassword,
         confirmPassword,
