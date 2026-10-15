@@ -95,12 +95,47 @@ export const getPoHeaderSummary = async (req, res) => {
       return res.status(400).json({ message: "po_number is required" });
     }
 
-    const headerRecord = await resolvePoHeader(po_number, req.body?.source_file_ts);
-    const latestLine = headerRecord || req.body?.source_file_ts ? null : await prisma.auditResult.findFirst({ where: { type: "PO", po_number }, orderBy: { source_file_ts: "desc" }, select: { source_file_ts: true } });
-    const sourceFileTs = headerRecord?.source_file_ts || (req.body?.source_file_ts ? new Date(req.body.source_file_ts) : latestLine?.source_file_ts);
+    const requestedTs = req.body?.source_file_ts ? new Date(req.body.source_file_ts) : null;
+    if (requestedTs && Number.isNaN(requestedTs.getTime())) {
+      return res.status(400).json({ message: "Invalid source_file_ts" });
+    }
+
+    // Return every version timestamp for the selector, while resolving the
+    // requested snapshot (or latest snapshot when no timestamp was passed).
+    const [auditVersions, headerVersions] = await Promise.all([
+      prisma.auditResult.findMany({
+        where: { type: "PO", po_number, source_file_ts: { not: null } },
+        select: { source_file_ts: true },
+        distinct: ["source_file_ts"],
+        orderBy: { source_file_ts: "desc" },
+      }),
+      prisma.poHeaderResult.findMany({
+        where: { po_number, source_file_ts: { not: null } },
+        select: { source_file_ts: true },
+        distinct: ["source_file_ts"],
+        orderBy: { source_file_ts: "desc" },
+      }),
+    ]);
+    const versionMap = new Map();
+    for (const { source_file_ts } of [...auditVersions, ...headerVersions]) {
+      if (source_file_ts) versionMap.set(source_file_ts.toISOString(), source_file_ts);
+    }
+    const availableSourceFileTimestamps = [...versionMap.values()].sort(
+      (a, b) => b.getTime() - a.getTime(),
+    );
+    if (
+      requestedTs &&
+      !availableSourceFileTimestamps.some((ts) => ts.getTime() === requestedTs.getTime())
+    ) {
+      return res.status(404).json({ message: "PO version not found for that file timestamp" });
+    }
+    const sourceFileTs = requestedTs || availableSourceFileTimestamps[0] || null;
+    const headerRecord = sourceFileTs
+      ? await prisma.poHeaderResult.findFirst({ where: { po_number, source_file_ts: sourceFileTs } })
+      : await resolvePoHeader(po_number);
 
     const lineRows = await prisma.auditResult.findMany({
-      where: { type: "PO", po_number, ...(req.body?.source_file_ts && sourceFileTs ? { source_file_ts: sourceFileTs } : {}) },
+      where: { type: "PO", po_number, ...(sourceFileTs ? { source_file_ts: sourceFileTs } : {}) },
       select: {
         id: true,
         source_file_ts: true,
@@ -112,6 +147,9 @@ export const getPoHeaderSummary = async (req, res) => {
         results: true,
         remarksLocked: true,
         remarksLockedAt: true,
+        vendor_code: true,
+        purchase_group: true,
+        po_type: true,
       },
       orderBy: [{ source_file_ts: "desc" }, { po_line_item: "asc" }],
     });
@@ -120,14 +158,8 @@ export const getPoHeaderSummary = async (req, res) => {
       return res.status(404).json({ message: "PO not found" });
     }
 
-    let scopeGroup = headerRecord?.purchase_group || null;
-    if (!scopeGroup && lineRows.length) {
-      const firstLine = await prisma.auditResult.findFirst({
-        where: { type: "PO", po_number, ...(sourceFileTs ? { source_file_ts: sourceFileTs } : {}) },
-        select: { purchase_group: true, vendor_code: true, po_type: true },
-      });
-      scopeGroup = firstLine?.purchase_group || null;
-    }
+    const firstLine = lineRows[0];
+    const scopeGroup = headerRecord?.purchase_group || firstLine?.purchase_group || null;
     if (
       !(user.isAdmin || user.isProcurementManager || user.isSsbDigital) &&
       (!user.isBuyer || getPurchaseGroupCode(user.username) !== scopeGroup)
@@ -140,17 +172,7 @@ export const getPoHeaderSummary = async (req, res) => {
     const header = await getHeaderForPo(po_number, user, sourceFileTs);
     const headerRemarksByPoint = header.headerRemarksByPoint;
 
-    const firstLine = lineRows[0];
-    const vendor = firstLine
-      ? getVendorInfo(
-          (
-            await prisma.auditResult.findFirst({
-              where: { type: "PO", po_number, ...(sourceFileTs ? { source_file_ts: sourceFileTs } : {}) },
-              select: { vendor_code: true },
-            })
-          )?.vendor_code,
-        )
-      : getVendorInfo(headerRecord?.vendor_code);
+    const vendor = getVendorInfo(firstLine?.vendor_code || headerRecord?.vendor_code);
 
     const lineItems = lineRows.map((row) => ({
       id: row.id,
@@ -173,6 +195,7 @@ export const getPoHeaderSummary = async (req, res) => {
       scope: "po-header",
       po_number,
       source_file_ts: sourceFileTs?.toISOString?.() || null,
+      available_source_file_timestamps: availableSourceFileTimestamps.map((ts) => ts.toISOString()),
       vendorCode: headerRecord?.vendor_code || vendor?.code || null,
       vendorName: vendor?.name || getVendorName(headerRecord?.vendor_code),
       vendorGstin: vendor?.gstin || "",

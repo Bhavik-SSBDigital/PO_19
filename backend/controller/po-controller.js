@@ -452,17 +452,22 @@ export const get_po_audit_result = async (req, res) => {
       const where = { type: "PO" };
       if (id) where.id = id;
       if (poMaterialNumber) where.po_material_number = poMaterialNumber;
-      if (source_file_ts && !id) where.source_file_ts = new Date(source_file_ts);
+      if (source_file_ts) {
+        const requestedTs = new Date(source_file_ts);
+        if (Number.isNaN(requestedTs.getTime())) {
+          return res.status(400).json({ message: "Invalid source_file_ts" });
+        }
+        where.source_file_ts = requestedTs;
+      }
       if (!id && !poMaterialNumber && po_number && po_line_item) {
         where.po_number = po_number;
         where.po_line_item = po_line_item;
-        if (source_file_ts) where.source_file_ts = new Date(source_file_ts);
       }
       if (fiscalYear) where.fiscalYear = fiscalYear;
 
       const result = await prisma.auditResult.findFirst({
         where,
-        orderBy: source_file_ts ? undefined : { source_file_ts: "desc" },
+        orderBy: id || source_file_ts ? undefined : { source_file_ts: "desc" },
         include: RESULT_INCLUDE,
       });
 
@@ -475,7 +480,23 @@ export const get_po_audit_result = async (req, res) => {
       }
 
       const enriched = await withExceptionPoints(result, user);
-      return res.status(200).json(enriched);
+      const versionRows = await prisma.auditResult.findMany({
+        where: {
+          type: "PO",
+          po_number: result.po_number,
+          po_line_item: result.po_line_item,
+          source_file_ts: { not: null },
+        },
+        select: { source_file_ts: true },
+        distinct: ["source_file_ts"],
+        orderBy: { source_file_ts: "desc" },
+      });
+      return res.status(200).json({
+        ...enriched,
+        available_source_file_timestamps: versionRows
+          .map((row) => row.source_file_ts?.toISOString?.())
+          .filter(Boolean),
+      });
     }
 
     // PO-ONLY lookup - hand off entirely to the header-level system.
@@ -500,8 +521,26 @@ export const get_po_lines = async (req, res) => {
     if (!poNumber)
       return res.status(400).json({ message: "poNumber is required" });
 
-    const latest = source_file_ts ? null : await prisma.auditResult.findFirst({ where: { type: "PO", po_number: poNumber }, orderBy: { source_file_ts: "desc" }, select: { source_file_ts: true } });
-    const selectedTs = source_file_ts ? new Date(source_file_ts) : latest?.source_file_ts;
+    const requestedTs = source_file_ts ? new Date(source_file_ts) : null;
+    if (requestedTs && Number.isNaN(requestedTs.getTime())) {
+      return res.status(400).json({ message: "Invalid source_file_ts" });
+    }
+    const versionRows = await prisma.auditResult.findMany({
+      where: { type: "PO", po_number: poNumber, source_file_ts: { not: null } },
+      select: { source_file_ts: true },
+      distinct: ["source_file_ts"],
+      orderBy: { source_file_ts: "desc" },
+    });
+    const availableSourceFileTimestamps = versionRows
+      .map((row) => row.source_file_ts)
+      .filter(Boolean);
+    if (
+      requestedTs &&
+      !availableSourceFileTimestamps.some((ts) => ts.getTime() === requestedTs.getTime())
+    ) {
+      return res.status(404).json({ message: "PO version not found for that file timestamp" });
+    }
+    const selectedTs = requestedTs || availableSourceFileTimestamps[0] || null;
     const rows = await prisma.auditResult.findMany({
       where: { type: "PO", po_number: poNumber, ...(selectedTs ? { source_file_ts: selectedTs } : {}) },
       select: ROW_SELECT,
@@ -538,7 +577,14 @@ export const get_po_lines = async (req, res) => {
 
     return res
       .status(200)
-      .json({ poNumber, header, total: lines.length, lines });
+      .json({
+        poNumber,
+        source_file_ts: selectedTs?.toISOString?.() || null,
+        available_source_file_timestamps: availableSourceFileTimestamps.map((ts) => ts.toISOString()),
+        header,
+        total: lines.length,
+        lines,
+      });
   } catch (error) {
     console.error("Error in get_po_lines:", error);
     return res.status(500).json({ message: "Failed to fetch PO lines" });

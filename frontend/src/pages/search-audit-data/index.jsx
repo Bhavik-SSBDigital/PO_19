@@ -7,6 +7,7 @@ import {
   Button,
   Stack,
   TextField,
+  MenuItem,
   Divider,
   CircularProgress,
   Card,
@@ -323,7 +324,7 @@ const SearchAuditData = () => {
   const navigate = useNavigate();
   const roleFlags = useRoleFlags();
   const currentUserId = localStorage.getItem("userId");
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { dataViewType } = useSelector((state) => state.menu);
 
   const [searchLoading, setSearchLoading] = useState(false);
@@ -396,7 +397,18 @@ const SearchAuditData = () => {
     try {
       const res = await post(`/${endpoint}`, payload);
       setSearchData(res);
-      sessionStorage.setItem("searchInput-audit", JSON.stringify(inputs));
+      const resolvedInputs =
+        dataViewType === "PO" && res.source_file_ts
+          ? { ...inputs, fileTs: res.source_file_ts }
+          : inputs;
+      if (dataViewType === "PO") {
+        setSearchInputs((current) => ({ ...current, fileTs: res.source_file_ts || "" }));
+        const nextParams = new URLSearchParams(searchParams);
+        if (res.source_file_ts) nextParams.set("fileTs", res.source_file_ts);
+        else nextParams.delete("fileTs");
+        setSearchParams(nextParams, { replace: true });
+      }
+      sessionStorage.setItem("searchInput-audit", JSON.stringify(resolvedInputs));
       window.scrollTo({ top: 520, left: 0, behavior: "smooth" });
     } catch (error) {
       setSearchData();
@@ -424,6 +436,16 @@ const SearchAuditData = () => {
   const backToHeaderView = () => {
     const next = { ...searchInputs, poLineItem: "" };
     setSearchInputs(next);
+    handleSearch(next);
+  };
+
+  const selectFileTimestamp = (sourceFileTs) => {
+    const next = { ...searchInputs, fileTs: sourceFileTs };
+    setSearchInputs(next);
+    const nextParams = new URLSearchParams(searchParams);
+    if (sourceFileTs) nextParams.set("fileTs", sourceFileTs);
+    else nextParams.delete("fileTs");
+    setSearchParams(nextParams, { replace: true });
     handleSearch(next);
   };
 
@@ -464,6 +486,7 @@ const SearchAuditData = () => {
         PONumber = "",
         poLineItem = "",
         paymentDocumentNumber = "",
+        fileTs = "",
       } = searchInput;
       if (
         documentNumber.trim() ||
@@ -606,6 +629,7 @@ const SearchAuditData = () => {
                         ...searchInputs,
                         PONumber: e.target.value,
                         poMaterialNumber: "",
+                        fileTs: "",
                       });
                     }}
                     InputProps={{
@@ -677,6 +701,28 @@ const SearchAuditData = () => {
             </Stack>
           </Card>
         )}
+
+        {dataViewType === "PO" &&
+          Array.isArray(searchData?.available_source_file_timestamps) &&
+          searchData.available_source_file_timestamps.length > 0 && (
+            <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 2 }}>
+              <TextField
+                select
+                label="PO file timestamp"
+                value={searchInputs.fileTs || searchData.source_file_ts || ""}
+                disabled={searchLoading}
+                sx={{ minWidth: 320 }}
+                helperText="Defaults to the latest version. Choose another timestamp to view that snapshot."
+                onChange={(event) => selectFileTimestamp(event.target.value)}
+              >
+                {searchData.available_source_file_timestamps.map((timestamp, index) => (
+                  <MenuItem key={timestamp} value={timestamp}>
+                    {index === 0 ? "Latest — " : ""}{formatFileTimestamp(timestamp)}
+                  </MenuItem>
+                ))}
+              </TextField>
+            </Box>
+          )}
 
         {/*
           ══════════════════════════════════════════════════════════════

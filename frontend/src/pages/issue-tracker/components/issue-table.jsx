@@ -25,6 +25,7 @@ import SSBDRemarksForm from "./remarks-form";
 // import { documentSearch, poMaterialNumberSearch } from "utils/navigation";
 import { TableSkeleton } from "../../../components/Skeletons";
 import SearchResultLink from "../../../components/SearchResultLink";
+import { buildSearchUrl } from "../../../utils/po-link-utils";
 
 const IssueListTable = ({ tableData, onUpdate, loading }) => {
   const navigate = useNavigate();
@@ -42,7 +43,7 @@ const IssueListTable = ({ tableData, onUpdate, loading }) => {
     const url = {
       PJV: `/search-data?documentNo=${row.documentNumber}&year=${row.fiscalYear}`,
       NONPO: `/search-data?documentNo=${row.documentNumber}&year=${row.fiscalYear}`,
-      PO: `/search-data?PONo=${row.po_material_number}`,
+      PO: buildSearchUrl(row.po_number, row.po_line_item, row.source_file_ts),
       BPV: `/search-data?paymentDocumentNumber=${row.documentNumber}&year=${row.fiscalYear}`,
     }[dataViewType];
     navigate(url);
@@ -119,7 +120,15 @@ const IssueListTable = ({ tableData, onUpdate, loading }) => {
                       </TableCell>
                     )} */}
                     <TableCell>
-                      {result.documentNumber ? (
+                      {dataViewType === "PO" ? (
+                        <Typography
+                          component="span"
+                          sx={{ color: "primary.main", cursor: "pointer" }}
+                          onClick={() => navigate(buildSearchUrl(result.po_number, result.po_line_item, result.source_file_ts))}
+                        >
+                          {result.po_number || result.documentNumber || "-"}
+                        </Typography>
+                      ) : result.documentNumber ? (
                         <SearchResultLink
                           number={result.documentNumber}
                           year={result.fiscalYear}
