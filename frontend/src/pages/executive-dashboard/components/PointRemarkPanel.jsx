@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Box,
   Typography,
@@ -13,12 +13,6 @@ import {
   DialogTitle,
   DialogContent,
   Tooltip,
-  Radio,
-  RadioGroup,
-  FormControlLabel,
-  FormControl,
-  FormLabel,
-  MenuItem,
   Divider,
 } from "@mui/material";
 import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
@@ -36,32 +30,71 @@ import {
   deletePoRemark,
   togglePointChecked,
 } from "../../../api/api-functions";
+import PoCorrectedField from "./PoCorrectedField";
 
-const SYSTEM_RESULT_OPTIONS = [
-  "Verified",
-  "Not Verified",
-  "Not Applicable",
-];
+const SYSTEM_RESULT_OPTIONS = ["Verified", "Not Verified", "Not Applicable"];
+
+// Stable empty array. A fresh `[]` default on every render used to make the
+// "sync from props" effect fire on every render and wipe local state.
+const NO_REMARKS = [];
+const idsKey = (arr) => (arr || []).map((r) => r.id).join(",");
+
+const safeStorageGet = (key) => {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+};
+
+const safeStorageSet = (key, value) => {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Ignore storage failures; the fetched remarks remain the source of truth.
+  }
+};
+
+const safeStorageRemove = (key) => {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // Ignore storage failures; the fetched remarks remain the source of truth.
+  }
+};
 
 const PointRemarkPanel = ({
   auditResultId,
   poNumber,
   poLineItem,
+  sourceFileTs,
   pointNo,
   currentUserId,
   isBuyer,
   isAdmin,
   isProcurementManager,
   locked: lockedProp = false,
-  initialRemarks = [],
+  initialRemarks = NO_REMARKS,
+  // NEW: parent already knows a remark exists (e.g. a drilldown row that
+  // only has the remark text, not the full remark list). Makes the button
+  // say "View Remarks" instantly instead of after opening the dialog.
+  initialHasRemark = false,
   initialChecked = false,
   systemResult = "",
   onRemarksChanged,
   compact = false,
 }) => {
   const canSubmit = isBuyer;
+  const remarkPresenceKey = auditResultId
+    ? `po-line-remark:audit:${auditResultId}:${pointNo}`
+    : `po-line-remark:po:${poNumber}:${poLineItem}:${sourceFileTs || "latest"}:${pointNo}`;
 
   const [remarks, setRemarks] = useState(initialRemarks);
+  const [hasKnownRemark, setHasKnownRemark] = useState(
+    initialRemarks.length > 0 ||
+      initialHasRemark ||
+      safeStorageGet(remarkPresenceKey) === "1",
+  );
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [draft, setDraft] = useState("");
@@ -69,29 +102,32 @@ const PointRemarkPanel = ({
   const [locked, setLocked] = useState(lockedProp);
   const [checked, setChecked] = useState(initialChecked);
   const [checkBusy, setCheckBusy] = useState(false);
-  const [isSystemResultWrong, setIsSystemResultWrong] = useState("informative");
+  const [poCorrectedAnswer, setPoCorrectedAnswer] = useState("");
   const [buyerResult, setBuyerResult] = useState("");
+  const [showPoCorrectedErrors, setShowPoCorrectedErrors] = useState(false);
 
-  // Keep buyerResult in sync with the "Is PO corrected?" toggle:
-  //  - "informative" (No) -> pre-fill with the system's own result, since
-  //    that's genuinely the intended default for a non-disputing remark.
-  //  - "wrong" (Yes, PO corrected) -> force back to BLANK. Previously this
-  //    silently carried over the system's result, so the dropdown looked
-  //    pre-answered even though the buyer hadn't chosen anything yet -
-  //    confusing, since the whole point of this mode is to let the buyer
-  //    pick something DIFFERENT from the system. Never pre-select a value
-  //    here; make the buyer choose explicitly every time.
+  // Last thing we told the parent - used to skip duplicate notifications
+  // (each one used to trigger a dashboard-wide refetch).
+  const lastNotifiedRef = useRef(null);
+
+  // Sync from props ONLY when the actual remark ids change (never on array
+  // identity), and never wipe local state with an empty list.
+  const initialKey = idsKey(initialRemarks);
   useEffect(() => {
-    if (isSystemResultWrong === "informative") {
-      setBuyerResult(systemResult || "");
-    } else {
-      setBuyerResult("");
+    if (initialRemarks.length > 0) {
+      setRemarks(initialRemarks);
+      setHasKnownRemark(true);
+      safeStorageSet(remarkPresenceKey, "1");
     }
-  }, [isSystemResultWrong, systemResult]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialKey, remarkPresenceKey]);
 
   useEffect(() => {
-    setRemarks(initialRemarks);
-  }, [initialRemarks]);
+    if (initialHasRemark) {
+      setHasKnownRemark(true);
+      safeStorageSet(remarkPresenceKey, "1");
+    }
+  }, [initialHasRemark, remarkPresenceKey]);
 
   useEffect(() => {
     setLocked(lockedProp);
@@ -102,20 +138,32 @@ const PointRemarkPanel = ({
   }, [initialChecked]);
 
   const ownRemark = remarks.find(
-    (r) => currentUserId != null && String(r.submittedBy) === String(currentUserId)
+    (r) =>
+      currentUserId != null && String(r.submittedBy) === String(currentUserId),
   );
 
   const notifyParent = (nextRemarks, nextLocked, nextChecked) => {
+    const sig = `${nextRemarks.length}|${nextChecked}|${nextLocked}`;
+    if (lastNotifiedRef.current === sig) return;
+    lastNotifiedRef.current = sig;
     onRemarksChanged?.({
       pointNo,
       remarksCount: nextRemarks.length,
       checked: nextChecked,
       remarksLocked: nextLocked,
+      latestRemark: nextRemarks[0]?.remark || "",
     });
+  };
+
+  const persistPresence = (list) => {
+    if (list.length > 0) safeStorageSet(remarkPresenceKey, "1");
+    else safeStorageRemove(remarkPresenceKey);
   };
 
   const applyRemarks = (next, nextLocked, nextChecked) => {
     setRemarks(next);
+    setHasKnownRemark(next.length > 0);
+    persistPresence(next);
     if (nextLocked !== undefined) setLocked(nextLocked);
     if (nextChecked !== undefined) setChecked(nextChecked);
     notifyParent(
@@ -125,90 +173,162 @@ const PointRemarkPanel = ({
     );
   };
 
-  const load = async () => {
-    setLoading(true);
+  // `silent` = refresh in the background: no spinner, no error toast.
+  const load = async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     try {
-      const payload = auditResultId
-        ? { auditResultId, pointNo }
-        : { poNumber, poLineItem, pointNo };
+      const payload = { ...(auditResultId ? { auditResultId } : { poNumber, poLineItem }), pointNo, source_file_ts: sourceFileTs };
       const res = await getPoRemarks(payload);
       const stillChecked = (res?.checkedPoints || []).includes(Number(pointNo));
-      applyRemarks(res?.remarks || [], Boolean(res?.remarksLocked), stillChecked);
+      applyRemarks(
+        res?.remarks || [],
+        Boolean(res?.remarksLocked),
+        stillChecked,
+      );
     } catch (error) {
-      toast.error(error?.response?.data?.message || error?.message || "Failed to load remarks");
+      if (!silent) {
+        toast.error(
+          error?.response?.data?.message ||
+            error?.message ||
+            "Failed to load remarks",
+        );
+      }
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
   useEffect(() => {
     if (open) {
-      load();
+      // Already have remarks on screen -> show them at once, refresh quietly.
+      load({ silent: remarks.length > 0 });
     } else {
       setDraft("");
-      setIsSystemResultWrong("informative");
-      setBuyerResult(systemResult || "");
+      setPoCorrectedAnswer("");
+      setBuyerResult("");
+      setShowPoCorrectedErrors(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, auditResultId, poNumber, poLineItem, pointNo]);
+  }, [open, auditResultId, poNumber, poLineItem, sourceFileTs, pointNo]);
 
   useEffect(() => {
     if (!open) return;
     if (!ownRemark) {
       setDraft("");
-      setIsSystemResultWrong("informative");
-      setBuyerResult(systemResult || "");
+      setPoCorrectedAnswer("");
+      setBuyerResult("");
+      setShowPoCorrectedErrors(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, remarks]);
 
   const handleSubmit = async () => {
     if (!draft.trim() || ownRemark) return;
+    if (!poCorrectedAnswer || (poCorrectedAnswer === "no" && !buyerResult)) {
+      setShowPoCorrectedErrors(true);
+      toast.info('Answer "Is PO corrected?" before submitting.');
+      return;
+    }
+
+    const text = draft.trim();
+    const base = { ...(auditResultId ? { auditResultId } : { poNumber, poLineItem }), pointNo, source_file_ts: sourceFileTs };
+    const payload = {
+      ...base,
+      remark: text,
+      isSystemResultWrong: poCorrectedAnswer === "yes",
+    };
+    if (poCorrectedAnswer === "no") payload.buyerResult = buyerResult;
+
+    // OPTIMISTIC: the button flips to "View Remarks" right now.
+    const prevRemarks = remarks;
+    const optimistic = {
+      id: `tmp-${Date.now()}`,
+      remark: text,
+      submittedBy: currentUserId,
+      isMine: true,
+      submittedByName: "You",
+      isSystemResultWrong: poCorrectedAnswer === "yes",
+      buyerResult: poCorrectedAnswer === "no" ? buyerResult : undefined,
+      submittedAt: new Date().toISOString(),
+    };
+    setRemarks([optimistic, ...prevRemarks]);
+    setHasKnownRemark(true);
+    safeStorageSet(remarkPresenceKey, "1");
     setSubmitting(true);
+
     try {
-      const base = auditResultId
-        ? { auditResultId, pointNo }
-        : { poNumber, poLineItem, pointNo };
-      const res = await submitPoRemark({
-        ...base,
-        remark: draft.trim(),
-        isSystemResultWrong: isSystemResultWrong === "wrong",
-        buyerResult: buyerResult || systemResult,
-      });
+      const res = await submitPoRemark(payload);
+      const next = res?.remark
+        ? [res.remark, ...prevRemarks.filter((i) => i.id !== res.remark.id)]
+        : [optimistic, ...prevRemarks];
+      applyRemarks(
+        next,
+        res?.remarksLocked !== undefined ? Boolean(res.remarksLocked) : locked,
+        checked,
+      );
       toast.success(res?.tally?.autoClosed ? res.message : "Remark added");
-      await load();
+      // Reconcile with the server quietly - nobody waits for this.
+      load({ silent: true });
     } catch (error) {
-      toast.error(error?.response?.data?.message || error?.message || "Failed to save remark");
+      // ROLLBACK
+      setRemarks(prevRemarks);
+      setHasKnownRemark(prevRemarks.length > 0);
+      persistPresence(prevRemarks);
+      toast.error(
+        error?.response?.data?.message ||
+          error?.message ||
+          "Failed to save remark",
+      );
     } finally {
       setSubmitting(false);
     }
   };
 
   const handleDelete = async (id) => {
+    const prevRemarks = remarks;
+    const next = prevRemarks.filter((r) => r.id !== id);
+    // OPTIMISTIC remove
+    setRemarks(next);
+    setHasKnownRemark(next.length > 0);
+    persistPresence(next);
     try {
-      await deletePoRemark(id);
+      await deletePoRemark(id, sourceFileTs);
       toast.success("Remark deleted");
-      await load();
+      applyRemarks(next);
+      load({ silent: true });
     } catch (error) {
-      toast.error(error?.response?.data?.message || error?.message || "Failed to delete remark");
+      setRemarks(prevRemarks);
+      setHasKnownRemark(prevRemarks.length > 0);
+      persistPresence(prevRemarks);
+      toast.error(
+        error?.response?.data?.message ||
+          error?.message ||
+          "Failed to delete remark",
+      );
     }
   };
 
   const handleToggleChecked = async () => {
+    const wasChecked = checked;
+    // OPTIMISTIC flip
+    setChecked(!wasChecked);
     setCheckBusy(true);
     try {
-      const base = auditResultId
-        ? { auditResultId, pointNo }
-        : { poNumber, poLineItem, pointNo };
-      const res = await togglePointChecked({ ...base, checked: !checked });
-      toast.success(res?.tally?.autoClosed ? res.message : (res?.message || "Updated"));
+      const base = { ...(auditResultId ? { auditResultId } : { poNumber, poLineItem }), pointNo, source_file_ts: sourceFileTs };
+      const res = await togglePointChecked({ ...base, checked: !wasChecked });
+      toast.success(
+        res?.tally?.autoClosed ? res.message : res?.message || "Updated",
+      );
       const stillChecked = (res?.checkedPoints || []).includes(Number(pointNo));
       const nextLocked = res?.tally?.autoClosed ? true : locked;
       setChecked(stillChecked);
       if (res?.tally?.autoClosed) setLocked(true);
       notifyParent(remarks, nextLocked, stillChecked);
     } catch (error) {
-      toast.error(error?.response?.data?.message || error?.message || "Failed to update");
+      setChecked(wasChecked);
+      toast.error(
+        error?.response?.data?.message || error?.message || "Failed to update",
+      );
     } finally {
       setCheckBusy(false);
     }
@@ -222,7 +342,7 @@ const PointRemarkPanel = ({
   let chipIcon = <ChatBubbleRoundedIcon fontSize="small" />;
   let chipVariant = "outlined";
 
-  if (count > 0) {
+  if (hasKnownRemark) {
     // A point WITH a remark is "View Remarks" regardless of section lock
     // state — viewing is always allowed. Locking only ever blocks adding
     // a NEW remark, never viewing existing ones.
@@ -230,13 +350,8 @@ const PointRemarkPanel = ({
     chipColor = ownRemark ? "primary" : "info";
     chipVariant = "filled";
   } else if (canSubmit && locked) {
-    // IMPORTANT: `locked` here is the SECTION's (whole line item's /
-    // whole PO header's) closure state, not this point's own state — a
-    // point can have zero remarks and still be perfectly fine, because it
-    // was never mandatory (system already said Verified/N-A/Manual
-    // Review). Do NOT label this "Locked" - that reads as if THIS POINT
-    // was closed, which is never true; only a section closes. Show a
-    // quiet, non-alarming "No Remark" instead, with no lock icon.
+    // `locked` is the SECTION's closure state, not this point's own state.
+    // Do NOT label this "Locked" - show a quiet "No Remark" instead.
     chipLabel = "No Remark";
     chipColor = "default";
     chipVariant = "outlined";
@@ -253,7 +368,12 @@ const PointRemarkPanel = ({
   return (
     <>
       <Stack spacing={0.5} alignItems="flex-start">
-        <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
+        <Stack
+          direction="row"
+          spacing={0.75}
+          alignItems="center"
+          flexWrap="wrap"
+        >
           <Chip
             size="small"
             clickable
@@ -265,8 +385,14 @@ const PointRemarkPanel = ({
             sx={{ fontWeight: 700, borderRadius: "16px" }}
           />
 
-          {canSubmit && count === 0 && !locked && (
-            <Tooltip title={checked ? "Marked as Checked — click to undo" : "Mark this point as reviewed (no remark needed)"}>
+          {canSubmit && !hasKnownRemark && !locked && (
+            <Tooltip
+              title={
+                checked
+                  ? "Marked as Checked — click to undo"
+                  : "Mark this point as reviewed (no remark needed)"
+              }
+            >
               <span>
                 <IconButton
                   size="small"
@@ -285,8 +411,13 @@ const PointRemarkPanel = ({
               </span>
             </Tooltip>
           )}
-          {checked && count === 0 && (
-            <Chip size="small" label="Checked" color="success" sx={{ fontWeight: 700, height: 22 }} />
+          {checked && !hasKnownRemark && (
+            <Chip
+              size="small"
+              label="Checked"
+              color="success"
+              sx={{ fontWeight: 700, height: 22 }}
+            />
           )}
         </Stack>
 
@@ -306,14 +437,23 @@ const PointRemarkPanel = ({
                 lineHeight: 1.3,
               }}
             >
-              {latest.submittedByName || "Buyer"}{latest.isMine ? " (you)" : ""}:{" "}
-              <Box component="span" sx={{ fontWeight: 700, color: "text.primary" }}>
+              {latest.submittedByName || "Buyer"}
+              {latest.isMine ? " (you)" : ""}:{" "}
+              <Box
+                component="span"
+                sx={{ fontWeight: 700, color: "text.primary" }}
+              >
                 {latest.remark}
               </Box>
-              {latest.buyerResult && (
-                <Box component="span" sx={{ display: "block", color: "text.secondary" }}>
+              {latest.buyerResult && latest.buyerResult !== systemResult && (
+                <Box
+                  component="span"
+                  sx={{ display: "block", color: "text.secondary" }}
+                >
                   Buyer's Result: {latest.buyerResult}
-                  {latest.isSystemResultWrong ? " (PO Corrected)" : " (System Altercation)"}
+                  {latest.isSystemResultWrong
+                    ? " (PO Corrected)"
+                    : " (System Altercation)"}
                 </Box>
               )}
             </Typography>
@@ -321,8 +461,23 @@ const PointRemarkPanel = ({
         )}
       </Stack>
 
-      <Dialog open={open} onClose={() => setOpen(false)} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
-        <DialogTitle sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", bgcolor: "grey.50", borderBottom: "1px solid", borderColor: "divider" }}>
+      <Dialog
+        open={open}
+        onClose={() => setOpen(false)}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: 3 } }}
+      >
+        <DialogTitle
+          sx={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            bgcolor: "grey.50",
+            borderBottom: "1px solid",
+            borderColor: "divider",
+          }}
+        >
           <Box>
             <Typography variant="h6" fontWeight={700}>
               Point {pointNo}
@@ -350,7 +505,10 @@ const PointRemarkPanel = ({
               <CircularProgress size={24} />
             </Box>
           ) : (
-            <Stack spacing={2} sx={{ mb: canSubmit && !locked && !ownRemark ? 3 : 0 }}>
+            <Stack
+              spacing={2}
+              sx={{ mb: canSubmit && !locked && !ownRemark ? 3 : 0 }}
+            >
               {locked && (
                 <Alert
                   icon={<LockRoundedIcon fontSize="small" />}
@@ -366,17 +524,26 @@ const PointRemarkPanel = ({
 
               {!locked && systemResult && (
                 <Alert severity="info" sx={{ py: 0.5 }}>
-                  System's current result for this point: <strong>{systemResult}</strong>
+                  System's current result for this point:{" "}
+                  <strong>{systemResult}</strong>
                 </Alert>
               )}
 
               {remarks.length === 0 && (
-                <Typography variant="body2" color="text.secondary" textAlign="center" py={2}>
+                <Typography
+                  variant="body2"
+                  color="text.secondary"
+                  textAlign="center"
+                  py={2}
+                >
                   No remarks have been added yet.
                 </Typography>
               )}
               {remarks.map((r) => {
-                const isMine = r.isMine ?? (currentUserId != null && String(r.submittedBy) === String(currentUserId));
+                const isMine =
+                  r.isMine ??
+                  (currentUserId != null &&
+                    String(r.submittedBy) === String(currentUserId));
                 return (
                   <Box
                     key={r.id}
@@ -390,17 +557,44 @@ const PointRemarkPanel = ({
                       borderLeftColor: isMine ? "#2563eb" : "#94a3b8",
                     }}
                   >
-                    <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                      <Typography variant="body2" sx={{ wordBreak: "break-word", pr: 2, fontWeight: 700, color: "text.primary" }}>
+                    <Box
+                      sx={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "flex-start",
+                      }}
+                    >
+                      <Typography
+                        variant="body2"
+                        sx={{
+                          wordBreak: "break-word",
+                          pr: 2,
+                          fontWeight: 700,
+                          color: "text.primary",
+                        }}
+                      >
                         {r.remark}
                       </Typography>
                       {isMine && canSubmit && !locked && (
-                        <IconButton size="small" color="error" onClick={() => handleDelete(r.id)} sx={{ mt: -0.5, mr: -0.5 }}>
+                        <IconButton
+                          size="small"
+                          color="error"
+                          onClick={() => handleDelete(r.id)}
+                          disabled={String(r.id).startsWith("tmp-")}
+                          sx={{ mt: -0.5, mr: -0.5 }}
+                        >
                           <DeleteOutlineRoundedIcon fontSize="small" />
                         </IconButton>
                       )}
                     </Box>
-                    <Box sx={{ mt: 1.5, display: "flex", gap: 1, flexWrap: "wrap" }}>
+                    <Box
+                      sx={{
+                        mt: 1.5,
+                        display: "flex",
+                        gap: 1,
+                        flexWrap: "wrap",
+                      }}
+                    >
                       <Chip
                         size="small"
                         color={isMine ? "primary" : "default"}
@@ -409,19 +603,40 @@ const PointRemarkPanel = ({
                           r.submittedByName ||
                           `${r.submitter?.firstName || ""} ${r.submitter?.lastName || r.submitter?.username || ""}`.trim()
                         }
-                        sx={{ height: 24, fontSize: "0.75rem", fontWeight: 600, bgcolor: "white" }}
+                        sx={{
+                          height: 24,
+                          fontSize: "0.75rem",
+                          fontWeight: 600,
+                          bgcolor: "white",
+                        }}
                       />
-                      {isMine && <Chip size="small" label="Your remark" sx={{ height: 24, fontSize: "0.7rem" }} />}
-                      {r.buyerResult && (
+                      {isMine && (
+                        <Chip
+                          size="small"
+                          label="Your remark"
+                          sx={{ height: 24, fontSize: "0.7rem" }}
+                        />
+                      )}
+                      {r.buyerResult && r.buyerResult !== systemResult && (
                         <Chip
                           size="small"
                           label={`Buyer's Result: ${r.buyerResult}`}
-                          sx={{ height: 24, fontSize: "0.7rem", bgcolor: "#eef2ff", color: "#3730a3", fontWeight: 600 }}
+                          sx={{
+                            height: 24,
+                            fontSize: "0.7rem",
+                            bgcolor: "#eef2ff",
+                            color: "#3730a3",
+                            fontWeight: 600,
+                          }}
                         />
                       )}
                       <Chip
                         size="small"
-                        label={r.isSystemResultWrong ? "PO Corrected" : "System Altercation"}
+                        label={
+                          r.isSystemResultWrong
+                            ? "PO Corrected"
+                            : "System Altercation"
+                        }
                         color={r.isSystemResultWrong ? "error" : "default"}
                         variant={r.isSystemResultWrong ? "filled" : "outlined"}
                         sx={{ height: 24, fontSize: "0.7rem", fontWeight: 600 }}
@@ -431,7 +646,11 @@ const PointRemarkPanel = ({
                           size="small"
                           variant="outlined"
                           label={new Date(r.submittedAt).toLocaleString()}
-                          sx={{ height: 24, fontSize: "0.7rem", bgcolor: "white" }}
+                          sx={{
+                            height: 24,
+                            fontSize: "0.7rem",
+                            bgcolor: "white",
+                          }}
                         />
                       )}
                     </Box>
@@ -455,48 +674,40 @@ const PointRemarkPanel = ({
 
               <Divider />
 
-              <FormControl>
-                <FormLabel sx={{ fontWeight: 700, fontSize: "0.85rem", mb: 0.5 }}>
-                  Is PO corrected?
-                </FormLabel>
-                <RadioGroup
-                  row
-                  value={isSystemResultWrong}
-                  onChange={(e) => setIsSystemResultWrong(e.target.value)}
-                >
-                  <FormControlLabel value="wrong" control={<Radio size="small" />} label="Yes — PO corrected" />
-                  <FormControlLabel value="informative" control={<Radio size="small" />} label="No — informative only" />
-                </RadioGroup>
-              </FormControl>
-
-              <TextField
-                select
-                size="small"
-                fullWidth
-                label="Buyer's Result (what should it be?)"
-                value={buyerResult}
-                onChange={(e) => setBuyerResult(e.target.value)}
-                disabled={isSystemResultWrong === "informative"}
-                helperText={
-                  isSystemResultWrong === "informative"
-                    ? "Buyer's result is not needed for informative remarks. It will use the system's result."
-                    : "Select what the result should actually be — nothing is pre-selected."
-                }
-              >
-                {SYSTEM_RESULT_OPTIONS.map((opt) => (
-                  <MenuItem key={opt} value={opt}>
-                    {opt}
-                  </MenuItem>
-                ))}
-              </TextField>
+              <PoCorrectedField
+                value={poCorrectedAnswer}
+                onChange={setPoCorrectedAnswer}
+                systemResult={systemResult}
+                buyerResult={buyerResult}
+                onBuyerResultChange={setBuyerResult}
+                disabled={submitting}
+                allowedResults={SYSTEM_RESULT_OPTIONS}
+                showErrors={showPoCorrectedErrors}
+              />
 
               <Button
                 variant="contained"
                 color="success"
-                disabled={submitting || !draft.trim()}
+                disabled={
+                  submitting ||
+                  !draft.trim() ||
+                  !poCorrectedAnswer ||
+                  (poCorrectedAnswer === "no" && !buyerResult)
+                }
                 onClick={handleSubmit}
-                sx={{ height: "40px", px: 3, boxShadow: "none", alignSelf: "flex-start" }}
-                startIcon={submitting ? <CircularProgress size={16} color="inherit" /> : <SendRoundedIcon />}
+                sx={{
+                  height: "40px",
+                  px: 3,
+                  boxShadow: "none",
+                  alignSelf: "flex-start",
+                }}
+                startIcon={
+                  submitting ? (
+                    <CircularProgress size={16} color="inherit" />
+                  ) : (
+                    <SendRoundedIcon />
+                  )
+                }
               >
                 Add Remark
               </Button>

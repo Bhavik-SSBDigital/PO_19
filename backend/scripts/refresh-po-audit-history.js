@@ -97,6 +97,17 @@ function listBatches() {
     .sort(); // lexicographic sort == chronological for YYYYMMDD_HHMMSS
 }
 
+function timestampFromName(filePath) {
+  const name = path.basename(filePath);
+  const m = name.match(/^POAUDIT_(\d{14})\.csv$/i);
+  if (!m) return null;
+  const stamp = m[1];
+  const [year, month, day, hour, minute, second] = [stamp.slice(0,4),stamp.slice(4,6),stamp.slice(6,8),stamp.slice(8,10),stamp.slice(10,12),stamp.slice(12,14)].map(Number);
+  const check = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  if (check.getUTCFullYear() !== year || check.getUTCMonth() !== month - 1 || check.getUTCDate() !== day || check.getUTCHours() !== hour || check.getUTCMinutes() !== minute || check.getUTCSeconds() !== second) return null;
+  return new Date(Date.UTC(year, month - 1, day, hour - 5, minute - 30, second));
+}
+
 function findFile(dir, prefix) {
   const files = fs
     .readdirSync(dir)
@@ -152,7 +163,9 @@ function runEngineForBatch(batchDir, batchId) {
   }
 
   if (!fs.existsSync(addpoJson)) return null;
-  return JSON.parse(fs.readFileSync(addpoJson, "utf8"));
+  const sourceFileTs = timestampFromName(poauditPath);
+  if (!sourceFileTs) throw new Error(`Invalid POAUDIT filename: ${poauditPath}`);
+  return { rows: JSON.parse(fs.readFileSync(addpoJson, "utf8")), sourceFileTs };
 }
 
 function pointsByNo(results) {
@@ -161,11 +174,13 @@ function pointsByNo(results) {
   return map;
 }
 
-async function applyRow(freshDoc) {
-  if (!freshDoc.po_material_number) return { action: "skipped-no-key" };
+async function applyRow(freshDoc, sourceFileTs) {
+  const poNumber = String(freshDoc.po_number || "").trim();
+  const lineItem = String(freshDoc.po_line_item || String(freshDoc.po_material_number || "").split("-").at(-1) || "").trim().replace(/\.0+$/, "");
+  if (!poNumber || !lineItem) return { action: "skipped-no-key" };
 
   const existing = await prisma.auditResult.findFirst({
-    where: { po_material_number: freshDoc.po_material_number },
+    where: { po_number: poNumber, po_line_item: lineItem, source_file_ts: sourceFileTs },
   });
   if (!existing) return { action: "skipped-no-db-match" };
 
@@ -221,11 +236,11 @@ async function main() {
     batchNum++;
     const batchDir = path.join(SYNC_PROCESSED_DIR, batchId);
     console.log(`--- [${batchNum}/${batches.length}] Replaying ${batchId} ---`);
-    const rows = runEngineForBatch(batchDir, batchId);
-    if (!rows) continue;
+    const run = runEngineForBatch(batchDir, batchId);
+    if (!run) continue;
 
-    for (const row of rows) {
-      const result = await applyRow(row);
+    for (const row of run.rows) {
+      const result = await applyRow(row, run.sourceFileTs);
       tally[result.action] = (tally[result.action] || 0) + 1;
     }
   }

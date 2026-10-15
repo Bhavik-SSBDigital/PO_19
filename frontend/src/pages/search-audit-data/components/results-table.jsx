@@ -157,6 +157,7 @@ const AuditResults = ({ searchData }) => {
 
   const poNumber = searchData?.po_number;
   const poLineItem = searchData?.lineItem || searchData?.po_line_item;
+  const sourceFileTs = searchData?.source_file_ts;
 
   const [locked, setLocked] = useState(false);
   const [lockBusy, setLockBusy] = useState(false);
@@ -206,7 +207,7 @@ const AuditResults = ({ searchData }) => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await getPoRemarks({ poNumber, poLineItem });
+        const res = await getPoRemarks({ poNumber, poLineItem, source_file_ts: sourceFileTs });
         if (!cancelled) setLocked(Boolean(res?.remarksLocked));
       } catch (error) {
         // non-fatal — bar just won't reflect the true state until reload
@@ -215,7 +216,7 @@ const AuditResults = ({ searchData }) => {
     return () => {
       cancelled = true;
     };
-  }, [poNumber, poLineItem]);
+  }, [poNumber, poLineItem, sourceFileTs]);
 
   const toggleLock = async () => {
     if (!poNumber || !poLineItem) return;
@@ -430,6 +431,7 @@ const AuditResults = ({ searchData }) => {
                     <PointRemarkPanel
                       poNumber={poNumber}
                       poLineItem={poLineItem}
+                      sourceFileTs={sourceFileTs}
                       pointNo={row.pointNo}
                       currentUserId={currentUserId}
                       isBuyer={isBuyer}

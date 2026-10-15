@@ -72,6 +72,13 @@ function sendWorkbook(res, worksheet, sheetName, filenamePrefix) {
   return res.status(200).send(buffer);
 }
 
+function fileTimestampIst(value) {
+  if (!value) return "-";
+  const parts = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(value);
+  const part = (type) => parts.find((item) => item.type === type)?.value || "";
+  return `${part("day")}-${part("month")}-${part("year")} ${part("hour")}:${part("minute")}:${part("second")}`;
+}
+
 /**
  * ============================================================================
  * 1. Accumulated PO file — LINE-ITEM level (one row per AuditResult)
@@ -80,6 +87,7 @@ function sendWorkbook(res, worksheet, sheetName, filenamePrefix) {
 const LINE_COLUMNS = [
   ["PO Number", "poNumber"],
   ["PO Line Item", "poLineItem"],
+  ["File Timestamp", "fileTimestamp"],
   ["PR Number", "purchaseReq"],
   ["PO Type", "poType"],
   ["PO Type Name", "poTypeName"],
@@ -132,6 +140,7 @@ function buildAccumulatedLineRow(row) {
   return {
     poNumber: row.po_number || "",
     poLineItem: row.po_line_item || "",
+    fileTimestamp: fileTimestampIst(row.source_file_ts),
     purchaseReq: row.purchase_req || "",
     poType: row.po_type || "",
     poTypeName: getPoTypeName(row.po_type),
@@ -169,7 +178,7 @@ export const downloadAccumulatedPoLineExport = async (req, res) => {
     // No where clause at all — this is the FULL AuditResult table,
     // deliberately unscoped/unfiltered (see file header comment).
     const rows = await prisma.auditResult.findMany({
-      orderBy: [{ po_number: "asc" }, { po_line_item: "asc" }],
+      orderBy: [{ po_number: "asc" }, { po_line_item: "asc" }, { source_file_ts: "asc" }],
     });
 
     const worksheet = sheetFromRows(
@@ -197,6 +206,7 @@ export const downloadAccumulatedPoLineExport = async (req, res) => {
  */
 const HEADER_COLUMNS = [
   ["PO Number", "poNumber"],
+  ["File Timestamp", "fileTimestamp"],
   ["Vendor Code", "vendorCode"],
   ["Vendor Name", "vendorName"],
   ["PO Type", "poType"],
@@ -220,6 +230,7 @@ function buildAccumulatedHeaderRow(row) {
 
   return {
     poNumber: row.po_number || "",
+    fileTimestamp: fileTimestampIst(row.source_file_ts),
     vendorCode: row.vendor_code || "",
     vendorName: vendor?.name || getVendorName(row.vendor_code),
     poType: row.po_type || "",
@@ -241,7 +252,7 @@ export const downloadAccumulatedPoHeaderExport = async (req, res) => {
     await ensureSeverityLoaded();
 
     const rows = await prisma.poHeaderResult.findMany({
-      orderBy: { po_number: "asc" },
+      orderBy: [{ po_number: "asc" }, { source_file_ts: "asc" }],
     });
 
     const worksheet = sheetFromRows(

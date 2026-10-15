@@ -44,12 +44,14 @@ import AuditDetails from "./components/audit-details";
 import AuditResults from "./components/results-table";
 import AuditResultReview from "./components/audit-result-review";
 import PoHeaderChecksPanel from "../executive-dashboard/components/PoHeaderChecksPanel";
+import { formatFileTimestamp } from "../../utils/formatFileTimestamp";
 
 // Shared "PO summary" strip — shown on the LINE-ITEM view only (the PO
 // header view has its own summary block built into the header response).
 const PO_SUMMARY_FIELDS = [
   ["PO Number", (d) => d.po_number],
   ["Line Item", (d) => d.lineItem || d.po_line_item],
+  ["File Timestamp", (d) => formatFileTimestamp(d.source_file_ts)],
   ["Vendor Code", (d) => d.vendorCode || d.vendor_code],
   ["Vendor", (d) => d.vendorName],
   ["GSTIN", (d) => d.vendorGstin || d.GSTInOfVendor],
@@ -109,9 +111,10 @@ const LineItemPickerRow = ({ item, onOpen }) => (
   <TableRow
     hover
     sx={{ cursor: "pointer" }}
-    onClick={() => onOpen(item.lineItem)}
+    onClick={() => onOpen(item)}
   >
     <TableCell sx={{ fontWeight: 700 }}>{item.lineItem}</TableCell>
+    <TableCell sx={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatFileTimestamp(item.source_file_ts)}</TableCell>
     <TableCell>{item.materialCode || "—"}</TableCell>
     <TableCell>
       <Typography
@@ -244,6 +247,7 @@ const PoHeaderView = ({
 
       <PoHeaderChecksPanel
         poNumber={data.po_number}
+        sourceFileTs={data.source_file_ts}
         header={data.header}
         currentUserId={currentUserId}
         isBuyer={roleFlags.isBuyer}
@@ -266,6 +270,7 @@ const PoHeaderView = ({
           <TableHead sx={{ bgcolor: "#f5f5f5" }}>
             <TableRow>
               <TableCell sx={{ fontWeight: 700 }}>Line Item</TableCell>
+              <TableCell sx={{ fontWeight: 700 }}>File Timestamp</TableCell>
               <TableCell sx={{ fontWeight: 700 }}>Material</TableCell>
               <TableCell sx={{ fontWeight: 700 }}>Description</TableCell>
               <TableCell sx={{ fontWeight: 700 }} align="right">
@@ -281,7 +286,7 @@ const PoHeaderView = ({
           <TableBody>
             {(data.lineItems || []).map((item) => (
               <LineItemPickerRow
-                key={item.id || item.lineItem}
+                key={`${item.id || item.lineItem}:${item.source_file_ts || ""}`}
                 item={item}
                 onOpen={onOpenLineItem}
               />
@@ -289,7 +294,7 @@ const PoHeaderView = ({
             {(!data.lineItems || data.lineItems.length === 0) && (
               <TableRow>
                 <TableCell
-                  colSpan={7}
+                  colSpan={8}
                   align="center"
                   sx={{ color: "text.secondary", py: 3 }}
                 >
@@ -332,6 +337,7 @@ const SearchAuditData = () => {
     PONumber: "",
     poLineItem: "",
     poMaterialNumber: "",
+    fileTs: "",
   });
 
   const [pomaterialNoOptions, setPOMaterialNoOptions] = useState([]);
@@ -344,6 +350,7 @@ const SearchAuditData = () => {
       PONumber,
       poLineItem,
       poMaterialNumber,
+      fileTs,
     } = inputs;
 
     if (
@@ -371,6 +378,7 @@ const SearchAuditData = () => {
         po_number: PONumber?.trim(),
         po_line_item: poLineItem?.trim() || undefined,
         poMaterialNumber: poMaterialNumber?.trim() || undefined,
+        source_file_ts: fileTs?.trim() || undefined,
       };
     } else if (dataViewType === "BPV") {
       payload = {
@@ -405,8 +413,8 @@ const SearchAuditData = () => {
   // Drill from the PO-header view into a specific line item — re-runs the
   // same search with poLineItem set, which flips the backend response
   // (and this page's render) into the Line-Item view.
-  const openLineItem = (lineItem) => {
-    const next = { ...searchInputs, poLineItem: String(lineItem) };
+  const openLineItem = (item) => {
+    const next = { ...searchInputs, poLineItem: String(item.lineItem), fileTs: item.source_file_ts || searchInputs.fileTs };
     setSearchInputs(next);
     handleSearch(next);
   };
@@ -424,6 +432,7 @@ const SearchAuditData = () => {
     const PONoParams = searchParams.get("PONo")?.trim();
     const poLineItemParams = searchParams.get("poLineItem")?.trim();
     const poMaterialNo = searchParams.get("poMaterialNo")?.trim();
+    const fileTs = searchParams.get("fileTs")?.trim();
     const paymentDocumentNumber = searchParams.get("paymentDocumentNumber");
     const storedInput = sessionStorage.getItem("searchInput-audit");
     const searchInput = storedInput ? JSON.parse(storedInput) : null;
@@ -433,6 +442,7 @@ const SearchAuditData = () => {
       poMaterialNo ||
       PONoParams ||
       poLineItemParams ||
+      fileTs ||
       paymentDocumentNumber
     ) {
       const inputs = {
@@ -440,6 +450,7 @@ const SearchAuditData = () => {
         PONumber: PONoParams || "",
         poLineItem: poLineItemParams || "",
         poMaterialNumber: poMaterialNo || "",
+        fileTs: fileTs || "",
         paymentDocumentNumber: paymentDocumentNumber || "",
       };
       handleSearch(inputs);
@@ -713,6 +724,7 @@ const SearchAuditData = () => {
                 </Button>
                 <PoHeaderChecksPanel
                   poNumber={searchData.po_number}
+                  sourceFileTs={searchData.source_file_ts}
                   header={searchData.header}
                   currentUserId={currentUserId}
                   isBuyer={roleFlags.isBuyer}

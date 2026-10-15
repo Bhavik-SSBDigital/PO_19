@@ -16,6 +16,7 @@ import {
 } from "@mui/material";
 
 import moment from "moment";
+import { formatFileTimestamp } from "../../../utils/formatFileTimestamp";
 import { useSelector } from "react-redux";
 import { useNavigate } from "react-router-dom";
 import { CloseRounded, TaskAltRounded } from "@mui/icons-material";
@@ -65,7 +66,7 @@ const IssueListTable = ({ tableData, onUpdate, loading }) => {
               <TableCell sx={{ py: "5px" }}>Sr No</TableCell>
               <TableCell sx={{ py: "5px" }}>Document No/Ref No</TableCell>
               {dataViewType === "PO" && (
-                <TableCell sx={{ py: "5px" }}>PO Material Number</TableCell>
+                <><TableCell sx={{ py: "5px" }}>PO Material Number</TableCell><TableCell sx={{ py: "5px" }}>File Timestamp</TableCell></>
               )}
               <TableCell sx={{ py: "5px" }}>Supplier Name</TableCell>
 
@@ -89,7 +90,7 @@ const IssueListTable = ({ tableData, onUpdate, loading }) => {
             {tableData?.length ? (
               tableData.map((result, index) => {
                 return (
-                  <TableRow key={index}>
+                  <TableRow key={`${result.id || index}:${result.source_file_ts || ""}`}>
                     <TableCell>{1 + index}</TableCell>
 
                     {/* {["PJV", "BPV"].includes(dataViewType) ? (
@@ -131,7 +132,7 @@ const IssueListTable = ({ tableData, onUpdate, loading }) => {
                       )}
                     </TableCell>
                     {dataViewType === "PO" && (
-                      <TableCell>{result.po_material_number || "-"}</TableCell>
+                      <><TableCell>{result.po_material_number || "-"}</TableCell><TableCell sx={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatFileTimestamp(result.source_file_ts)}</TableCell></>
                       // <TableCell>
                       //   {result.documentNumber ? (
                       //     <p

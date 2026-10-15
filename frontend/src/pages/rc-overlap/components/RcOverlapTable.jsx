@@ -852,6 +852,7 @@ const RcOverlapTable = ({
             <RcRemarkPanel
               compact
               rcId={quickRemarkRow.id}
+              systemResult={quickRemarkRow.status}
               roleFlags={roleFlags}
               currentUserId={currentUserId}
               onChanged={() => {

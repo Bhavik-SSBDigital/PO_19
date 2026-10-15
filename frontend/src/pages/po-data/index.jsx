@@ -92,24 +92,24 @@ const PODataPage = () => {
     }
     const lineItem = (row.lineItems && row.lineItems[0]) || null;
     if (mode === "newtab") {
-      window.open(buildSearchUrl(row.poNumber, lineItem), "_blank", "noopener,noreferrer");
+      window.open(buildSearchUrl(row.poNumber, lineItem, row.source_file_ts), "_blank", "noopener,noreferrer");
     } else {
-      setPoPreview({ poNumber: row.poNumber, lineItem });
+      setPoPreview({ poNumber: row.poNumber, lineItem, source_file_ts: row.source_file_ts });
     }
   };
 
-  const openLineItemPreview = (poNumber, lineItem) => {
+  const openLineItemPreview = (poNumber, lineItem, sourceFileTs) => {
     setPoBreakdown(null);
-    setPoPreview({ poNumber, lineItem });
+    setPoPreview({ poNumber, lineItem, source_file_ts: sourceFileTs || poBreakdown?.source_file_ts });
   };
 
-  const openLineItemNewTab = (poNumber, lineItem) => {
-    window.open(buildSearchUrl(poNumber, lineItem), "_blank", "noopener,noreferrer");
+  const openLineItemNewTab = (poNumber, lineItem, sourceFileTs) => {
+    window.open(buildSearchUrl(poNumber, lineItem, sourceFileTs || poBreakdown?.source_file_ts), "_blank", "noopener,noreferrer");
   };
 
   const openFullSearchPage = (preview, newTab) => {
     if (!preview) return;
-    const url = buildSearchUrl(preview.poNumber, preview.lineItem);
+    const url = buildSearchUrl(preview.poNumber, preview.lineItem, preview.source_file_ts);
     if (newTab) {
       window.open(url, "_blank", "noopener,noreferrer");
     } else {

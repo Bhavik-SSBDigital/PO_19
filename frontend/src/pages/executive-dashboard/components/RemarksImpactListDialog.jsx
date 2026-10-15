@@ -28,6 +28,7 @@ import {
 } from "@mui/material";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import { post } from "utils/axiosApi";
+import { formatFileTimestamp } from "utils/formatFileTimestamp";
 
 const PAGE_SIZE = 25;
 
@@ -421,6 +422,7 @@ const RemarksImpactListDialog = ({ trigger, onClose }) => {
                       {!isHeader && (
                         <TableCell sx={{ fontWeight: 700 }}>Line</TableCell>
                       )}
+                      <TableCell sx={{ fontWeight: 700 }}>File Timestamp</TableCell>
                       <TableCell sx={{ fontWeight: 700 }}>PO Date</TableCell>
                       <TableCell sx={{ fontWeight: 700 }}>PO Type</TableCell>
                       <TableCell sx={{ fontWeight: 700 }}>Plant</TableCell>
@@ -456,6 +458,7 @@ const RemarksImpactListDialog = ({ trigger, onClose }) => {
                       <>
                         <TableCell>{r.poNumber}</TableCell>
                         {!isHeader && <TableCell>{r.lineItem}</TableCell>}
+                        <TableCell sx={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatFileTimestamp(r.source_file_ts)}</TableCell>
                         <TableCell>{r.poDate || "—"}</TableCell>
                         <TableCell>{r.poType || "—"}</TableCell>
                         <TableCell>{r.plant || "—"}</TableCell>

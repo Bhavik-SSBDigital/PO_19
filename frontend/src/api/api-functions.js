@@ -3,7 +3,7 @@ import apiClient, { post } from "./api-client";
 export const getPurchaseGroupsList = () => post("/reports/purchase-groups", {});
 export const submitPoRemark = (payload) => post("/po-remarks", payload);
 export const getPoRemarks = (payload) => post("/po-remarks/search", payload);
-export const deletePoRemark = (id) => apiClient.delete(`/po-remarks/${id}`);
+export const deletePoRemark = (id, sourceFileTs) => apiClient.delete(`/po-remarks/${id}`, { params: sourceFileTs ? { source_file_ts: sourceFileTs } : {} });
 
 export const logout = async (navigate) => {
   try {
@@ -108,8 +108,8 @@ export const submitPoHeaderRemark = (payload) =>
   post("/po-header-remarks", payload);
 export const updatePoHeaderRemark = (payload) =>
   post("/updatePoHeaderRemark", payload);
-export const deletePoHeaderRemark = (id) =>
-  apiClient.delete(`/po-header-remarks/${id}`);
+export const deletePoHeaderRemark = (id, sourceFileTs) =>
+  apiClient.delete(`/po-header-remarks/${id}`, { params: sourceFileTs ? { source_file_ts: sourceFileTs } : {} });
 
 // THE PO-LEVEL close/reopen toggle — separate system from
 // setAuditResultCheckedStatus above, which is line-level only. Closing a

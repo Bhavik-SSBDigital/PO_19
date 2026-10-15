@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { formatFileTimestamp } from "utils/formatFileTimestamp";
 import {
   Dialog, DialogTitle, DialogContent, IconButton, Table, TableHead, TableRow,
   TableCell, TableBody, TableContainer, Paper, Chip, Box, Typography,
@@ -53,8 +54,8 @@ const HeaderKpiDrilldownDialog = ({ drilldown, appliedFilters, onClose, onViewHe
 
   const pageCount = Math.max(Math.ceil(total / PAGE_SIZE), 1);
 
-  const openHeader = (poNumber) => {
-    onViewHeader(poNumber);
+  const openHeader = (poNumber, sourceFileTs) => {
+    onViewHeader(poNumber, sourceFileTs);
     onClose();
   };
 
@@ -81,6 +82,7 @@ const HeaderKpiDrilldownDialog = ({ drilldown, appliedFilters, onClose, onViewHe
               <TableHead>
                 <TableRow>
                   <TableCell sx={{ bgcolor: "#eef2ff" }}>PO Number</TableCell>
+                  <TableCell sx={{ bgcolor: "#eef2ff" }}>File Timestamp</TableCell>
                   <TableCell sx={{ bgcolor: "#eef2ff" }}>Vendor</TableCell>
                   <TableCell sx={{ bgcolor: "#eef2ff" }}>PO Type</TableCell>
                   <TableCell sx={{ bgcolor: "#eef2ff" }}>Purchasing Group</TableCell>
@@ -92,12 +94,13 @@ const HeaderKpiDrilldownDialog = ({ drilldown, appliedFilters, onClose, onViewHe
               <TableBody>
                 {rows.map((r) => (
                   <TableRow
-                    key={r.po_number}
+                    key={`${r.po_number}:${r.source_file_ts || ""}`}
                     hover
                     sx={{ cursor: "pointer" }}
-                    onClick={() => openHeader(r.po_number)}
+                    onClick={() => openHeader(r.po_number, r.source_file_ts)}
                   >
                     <TableCell sx={{ fontWeight: 700 }}>{r.po_number}</TableCell>
+                    <TableCell sx={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatFileTimestamp(r.source_file_ts)}</TableCell>
                     <TableCell>{r.vendorName || r.vendorCode || "—"}</TableCell>
                     <TableCell>{r.poTypeName || r.poType || "—"}</TableCell>
                     <TableCell>{r.purchaseGroupName || r.purchaseGroup || "—"}</TableCell>
@@ -139,7 +142,7 @@ const HeaderKpiDrilldownDialog = ({ drilldown, appliedFilters, onClose, onViewHe
                         title="View header checks"
                         onClick={(e) => {
                           e.stopPropagation();
-                          openHeader(r.po_number);
+                          openHeader(r.po_number, r.source_file_ts);
                         }}
                       >
                         <VisibilityRoundedIcon fontSize="small" />

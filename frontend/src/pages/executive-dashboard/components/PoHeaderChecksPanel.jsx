@@ -121,6 +121,7 @@ const HeaderVerificationChip = ({ point }) => {
  */
 const PoHeaderChecksPanel = ({
   poNumber,
+  sourceFileTs,
   header,
   currentUserId,
   isBuyer,
@@ -191,6 +192,7 @@ const PoHeaderChecksPanel = ({
     try {
       const res = await setPoHeaderCheckedStatus({
         po_number: poNumber,
+        source_file_ts: sourceFileTs,
         checked: !localLocked,
       });
       toast.success(
@@ -490,6 +492,7 @@ const PoHeaderChecksPanel = ({
                 <TableCell sx={{ verticalAlign: "top" }}>
                   <PoHeaderRemarkPanel
                     poNumber={poNumber}
+                    sourceFileTs={sourceFileTs}
                     pointNo={row.pointNo}
                     currentUserId={currentUserId}
                     isBuyer={isBuyer}

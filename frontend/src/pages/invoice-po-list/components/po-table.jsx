@@ -24,6 +24,7 @@ import {
 } from "@mui/material";
 
 import moment from "moment";
+import { formatFileTimestamp } from "../../../utils/formatFileTimestamp";
 import { toast } from "react-toastify";
 import { useNavigate } from "react-router-dom";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
@@ -257,6 +258,7 @@ const POTable = ({ tableData = [], getPageData, loading, value }) => {
               ) : null}
               <TableCell>Sr No.</TableCell>
               <TableCell>PO Number</TableCell>
+              <TableCell>File Timestamp</TableCell>
               <TableCell>Purchase Request</TableCell>
               <TableCell>Purchase Request Date</TableCell>
               <TableCell>PO Created Date</TableCell>
@@ -306,6 +308,7 @@ const POTable = ({ tableData = [], getPageData, loading, value }) => {
                         "-"
                       )}
                     </TableCell>
+                    <TableCell sx={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatFileTimestamp(result.source_file_ts)}</TableCell>
                     <TableCell>
                       {result.purchase_req ? result.purchase_req : "-"}
                     </TableCell>

@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import {
   Dialog, DialogTitle, DialogContent, IconButton, Table, TableHead, TableRow,
   TableCell, TableBody, TableContainer, Paper, Chip, Box, Typography,
-  Pagination, Skeleton, Tooltip as MuiTooltip, Menu, MenuItem,
+  Pagination, Skeleton, Tooltip as MuiTooltip, Menu, MenuItem, TableSortLabel,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
@@ -12,6 +12,7 @@ import FactCheckRoundedIcon from "@mui/icons-material/FactCheckRounded";
 import { post } from "utils/axiosApi";
 import PoDetailsPreviewDialog from "./PoDetailsPreviewDialog";
 import { buildSearchUrl } from "utils/po-link-utils";
+import { formatFileTimestamp } from "utils/formatFileTimestamp";
 
 const SEVERITY_COLORS = { Critical: "#c0392b", High: "#e67e22", Medium: "#f1c40f", Low: "#95a5a6" };
 const PAGE_SIZE = 25;
@@ -33,6 +34,7 @@ const DrilldownDialog = ({ drilldown, appliedFilters, onClose, onDataChanged }) 
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
+  const [timestampSort, setTimestampSort] = useState(0);
 
   // Row-level "Open in New Tab" / "View Details Here" / "View Line Item
   // Breakdown" facility - same one the Executive Dashboard's PO-Wise
@@ -101,17 +103,17 @@ const DrilldownDialog = ({ drilldown, appliedFilters, onClose, onDataChanged }) 
   const handleRowAction = (row, mode) => {
     if (!row) return;
     if (mode === "newtab") {
-      window.open(buildSearchUrl(row.po_number, row.lineItem), "_blank", "noopener,noreferrer");
+      window.open(buildSearchUrl(row.po_number, row.lineItem, row.source_file_ts), "_blank", "noopener,noreferrer");
     } else if (mode === "breakdown") {
-      setPoPreview({ poNumber: row.po_number });
+      setPoPreview({ poNumber: row.po_number, source_file_ts: row.source_file_ts });
     } else {
-      setPoPreview({ poNumber: row.po_number, lineItem: row.lineItem });
+      setPoPreview({ poNumber: row.po_number, lineItem: row.lineItem, source_file_ts: row.source_file_ts });
     }
   };
 
   const openFullSearchPage = (preview, newTab) => {
     if (!preview) return;
-    const url = buildSearchUrl(preview.poNumber, preview.lineItem);
+    const url = buildSearchUrl(preview.poNumber, preview.lineItem, preview.source_file_ts);
     if (newTab) {
       window.open(url, "_blank", "noopener,noreferrer");
     } else {
@@ -141,6 +143,7 @@ const DrilldownDialog = ({ drilldown, appliedFilters, onClose, onDataChanged }) 
                 <TableRow>
                   <TableCell>PO Number</TableCell>
                   <TableCell>Line Item</TableCell>
+                  <TableCell><TableSortLabel active={timestampSort !== 0} direction={timestampSort < 0 ? "desc" : "asc"} onClick={() => setTimestampSort((v) => v === 0 ? 1 : v === 1 ? -1 : 1)}>File Timestamp</TableSortLabel></TableCell>
                   <TableCell>PR Number</TableCell>
                   <TableCell>Vendor</TableCell>
                   <TableCell>GSTIN</TableCell>
@@ -155,15 +158,16 @@ const DrilldownDialog = ({ drilldown, appliedFilters, onClose, onDataChanged }) 
                 </TableRow>
               </TableHead>
               <TableBody>
-                {rows.map((r) => (
+                {[...rows].sort((a, b) => timestampSort * (new Date(a.source_file_ts || 0) - new Date(b.source_file_ts || 0))).map((r) => (
                   <TableRow
-                    key={r.id}
+                    key={`${r.id}:${r.source_file_ts || ""}`}
                     hover
                     sx={{ cursor: "pointer" }}
                     onClick={(e) => openRowMenu(e, r)}
                   >
                     <TableCell>{r.po_number || "—"}</TableCell>
                     <TableCell>{r.lineItem || "—"}</TableCell>
+                    <TableCell sx={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatFileTimestamp(r.source_file_ts)}</TableCell>
                     <TableCell>{r.purchase_req || "—"}</TableCell>
                     <TableCell>{r.vendorName || r.vendorCode || "—"}</TableCell>
                     <TableCell>{r.vendorGstin || "—"}</TableCell>

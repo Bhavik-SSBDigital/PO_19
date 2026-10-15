@@ -4,6 +4,7 @@ import {
   Grid, IconButton, Paper, Table, TableBody, TableCell, TableContainer,
   TableHead, TableRow, Typography, Chip, Divider, alpha,
 } from "@mui/material";
+import { formatFileTimestamp } from "utils/formatFileTimestamp";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
 import VisibilityRoundedIcon from "@mui/icons-material/VisibilityRounded";
@@ -117,6 +118,7 @@ const PoLineItemBreakdownDialog = ({ po, onClose, onViewLineItem, onOpenLineItem
                 <TableHead>
                   <TableRow>
                     <TableCell sx={{ fontWeight: 700 }}>Line Item</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }}>File Timestamp</TableCell>
                     <TableCell sx={{ fontWeight: 700 }}>Material Code</TableCell>
                     <TableCell sx={{ fontWeight: 700 }}>Status</TableCell>
                     <TableCell sx={{ fontWeight: 700 }}>Exceptions</TableCell>
@@ -126,8 +128,9 @@ const PoLineItemBreakdownDialog = ({ po, onClose, onViewLineItem, onOpenLineItem
                 </TableHead>
                 <TableBody>
                   {details.map((d, idx) => (
-                    <TableRow key={`${d.lineItem}-${idx}`} hover>
+                    <TableRow key={`${d.lineItem}-${d.source_file_ts || ""}-${idx}`} hover>
                       <TableCell sx={{ fontWeight: 700 }}>{d.lineItem}</TableCell>
+                      <TableCell sx={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatFileTimestamp(d.source_file_ts)}</TableCell>
                       <TableCell>{d.materialCode || "—"}</TableCell>
                       <TableCell><LineStatusChip closed={d.closed} /></TableCell>
                       <TableCell>
@@ -139,10 +142,10 @@ const PoLineItemBreakdownDialog = ({ po, onClose, onViewLineItem, onOpenLineItem
                       </TableCell>
                       <TableCell>{d.closed ? formatLockedAt(d.remarksLockedAt) : "—"}</TableCell>
                       <TableCell align="right">
-                        <IconButton size="small" title="View full audit details" onClick={() => onViewLineItem(po.poNumber, d.lineItem)}>
+                        <IconButton size="small" title="View full audit details" onClick={() => onViewLineItem(po.poNumber, d.lineItem, d.source_file_ts)}>
                           <VisibilityRoundedIcon fontSize="small" />
                         </IconButton>
-                        <IconButton size="small" title="Open in new tab" onClick={() => onOpenLineItemNewTab(po.poNumber, d.lineItem)}>
+                        <IconButton size="small" title="Open in new tab" onClick={() => onOpenLineItemNewTab(po.poNumber, d.lineItem, d.source_file_ts)}>
                           <OpenInNewRoundedIcon fontSize="small" />
                         </IconButton>
                       </TableCell>
@@ -150,7 +153,7 @@ const PoLineItemBreakdownDialog = ({ po, onClose, onViewLineItem, onOpenLineItem
                   ))}
                   {details.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={6} align="center" sx={{ color: "text.secondary", py: 3 }}>
+                      <TableCell colSpan={7} align="center" sx={{ color: "text.secondary", py: 3 }}>
                         No line items found for this PO.
                       </TableCell>
                     </TableRow>

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import PoDetailsPreviewDialog from "./components/PoDetailsPreviewDialog";
 import RemarksImpactListDialog from "./components/RemarksImpactListDialog";
-import PurchaseGroupRemarksImpactTable from "./components/PurchaseGroupRemarksImpactTable";
+import PoListDialog from "./components/PoListDialog";
 import PoWiseExceptionsTable from "./components/PoWiseExceptionsTable";
+import PoStatusSummaryTables from "./components/PoStatusSummaryTables";
 import { buildSearchUrl, getFirstLineItem } from "utils/po-link-utils";
 import {
   Box,
@@ -54,7 +55,7 @@ import {
   PoTypeTooltip,
 } from "./components/tooltips";
 
-// --- DASHBOARD PALETTE (v2) ---
+// --- DASHBOARD PALETTE ---
 const SEVERITY_COLORS = {
   Critical: "#dc2626",
   High: "#f97316",
@@ -64,13 +65,11 @@ const SEVERITY_COLORS = {
 const BAR_COLOR = "#4f46e5";
 const VERIFIED_COLOR = "#059669";
 const NOT_VERIFIED_COLOR = "#dc2626";
+const PENDING_COLOR = "#d97706";
 const GRID_COLOR = "#f1f5f9";
-// Header-level charts get their OWN accent color
 const HEADER_ACCENT = "#4f46e5";
 const HEADER_ACCENT_BG = "#eef2ff";
 const OVERVIEW_ACCENT = "#0f172a";
-// RC-level (RC Overlap) panels get their own teal accent so they read as a
-// third, distinct level next to Header (indigo) and Line-Item (neutral).
 const RC_ACCENT = "#0d9488";
 const RC_ACCENT_BG = "#f0fdfa";
 const RC_ACCENT_BORDER = "#99f6e4";
@@ -81,7 +80,6 @@ const RC_PANEL_TONE = {
   title: RC_ACCENT_DARK,
   hint: RC_ACCENT,
 };
-// Monthly Exception Trend colors
 const TREND_LINE_COLOR = "#4f46e5";
 const TREND_HEADER_COLOR = "#f97316";
 
@@ -124,6 +122,8 @@ const formatMonthLabel = (m) => {
   return parsed.isValid() ? parsed.format("MMM 'YY") : m;
 };
 
+const fmt = (v) => (typeof v === "number" ? v.toLocaleString() : "—");
+
 const mergeMonthlyTrends = (lineData = [], headerData = []) => {
   const map = new Map();
   (lineData || []).forEach((d) => {
@@ -150,7 +150,7 @@ const mergeMonthlyTrends = (lineData = [], headerData = []) => {
   return [...map.values()].sort((a, b) => (a.month < b.month ? -1 : 1));
 };
 
-const InfoTip = ({ text, placement = "top" }) => {
+const InfoTip = ({ text }) => {
   if (!text) return null;
   return (
     <InfoOutlinedIcon
@@ -165,8 +165,23 @@ const InfoTip = ({ text, placement = "top" }) => {
   );
 };
 
-// `accent` switches the card to a tinted style. By default that's the
-// Header indigo; pass accentBg / accentBorder to re-tint it (RC uses teal).
+// Small caption that tells the reader WHAT IS BEING COUNTED in a block.
+// This is the single biggest source of confusion: POs vs lines vs checks.
+const UnitBadge = ({ children, color = "#475569", bg = "#f1f5f9" }) => (
+  <Chip
+    size="small"
+    label={children}
+    sx={{
+      ml: 1.5,
+      fontWeight: 700,
+      fontSize: 11,
+      height: 22,
+      color,
+      bgcolor: bg,
+    }}
+  />
+);
+
 const KpiCard = ({
   label,
   value,
@@ -268,7 +283,6 @@ const KpiCard = ({
     </Card>
   );
 
-  // Wraps the entire KPI Card block so hovering anywhere shows the logic
   return info ? (
     <MuiTooltip title={info} placement="top" arrow>
       <Box sx={{ height: "100%" }}>{cardElement}</Box>
@@ -278,12 +292,8 @@ const KpiCard = ({
   );
 };
 
-// Body of a "Remarks Impact" card (see the dashboard's REMARKS IMPACT
-// section). Each of the 3 numbers (Total / Pending / Closed) is its own
-// clickable target — opens RemarksImpactListDialog scoped to that exact
-// bucket, so "409 = 402 + 7" always has three real lists behind it, not
-// one generic "pending" link for the whole card.
-const RemarksImpactNumber = ({ value, label, color, onClick }) => (
+// One "Remarks Impact" number. Each is its own click target.
+const RemarksImpactNumber = ({ value, label, color, onClick, prefix }) => (
   <Box
     onClick={onClick}
     sx={{
@@ -291,68 +301,102 @@ const RemarksImpactNumber = ({ value, label, color, onClick }) => (
       borderRadius: 2,
       px: 1,
       py: 0.5,
-      mx: -1,
       transition: "background-color 0.15s",
       "&:hover": onClick ? { bgcolor: alpha(color, 0.08) } : undefined,
     }}
   >
-    <Typography variant="h4" sx={{ fontWeight: 800, color, textDecoration: onClick ? "underline" : "none", textDecorationColor: alpha(color, 0.3), textUnderlineOffset: 4 }}>
+    <Typography
+      variant="h4"
+      sx={{
+        fontWeight: 800,
+        color,
+        textDecoration: onClick ? "underline" : "none",
+        textDecorationColor: alpha(color, 0.3),
+        textUnderlineOffset: 4,
+      }}
+    >
+      {prefix && (
+        <span style={{ color: "#94a3b8", marginRight: 6, fontWeight: 600 }}>
+          {prefix}
+        </span>
+      )}
       {value}
     </Typography>
-    <Typography variant="caption" color="text.secondary" sx={{ display: "flex", alignItems: "center", gap: 0.3 }}>
+    <Typography
+      variant="caption"
+      color="text.secondary"
+      sx={{ display: "flex", alignItems: "center", gap: 0.3 }}
+    >
       {label}
       {onClick && <span style={{ fontSize: "0.85em" }}>↗</span>}
     </Typography>
   </Box>
 );
 
+// Remarks Impact card. Order is now  TOTAL = CLOSED + PENDING  (left to right)
+// so the equation reads naturally.
 const RemarksImpactCardBody = ({
   title,
-  closedLabel,
-  pending,
+  unitLabel,
   closed,
+  pending,
   totalNotVerified,
   loading,
   nothingPending,
   onBucketClick,
 }) => (
   <CardContent sx={{ p: 3 }}>
-    <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-      <Typography variant="overline" color="text.secondary" sx={{ fontWeight: 700, letterSpacing: 1 }}>
-        {title} — Not Verified
+    <Box
+      sx={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+      }}
+    >
+      <Typography
+        variant="overline"
+        color="text.secondary"
+        sx={{ fontWeight: 700, letterSpacing: 1 }}
+      >
+        {title} — Not Verified {unitLabel}
       </Typography>
       <MuiTooltip
         arrow
         placement="top"
         title={
-          <Box sx={{ p: 0.5, maxWidth: 280 }}>
+          <Box sx={{ p: 0.5, maxWidth: 300 }}>
             <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.5 }}>
-              What these 3 numbers mean
+              How to read this card
             </Typography>
             <Typography variant="caption" component="div" sx={{ mb: 0.5 }}>
-              <b>Total Not Verified</b>: how many {title.toLowerCase()} points the system
-              originally flagged "Not Verified", when the data was first audited. This
-              number is frozen — it never changes, no matter what buyers do afterward.
+              Unit = <b>{unitLabel}</b>, not POs.
             </Typography>
             <Typography variant="caption" component="div" sx={{ mb: 0.5 }}>
-              <b>Pending</b>: of that total, how many still have no remark or check from a
-              buyer yet — i.e. still need action.
+              <b>Total Not Verified</b> = checks the system flagged.
+            </Typography>
+            <Typography variant="caption" component="div" sx={{ mb: 0.5 }}>
+              <b>Closed</b> = flagged checks that now have a remark or check.
             </Typography>
             <Typography variant="caption" component="div">
-              <b>{closedLabel}</b>: of that total, how many now have a remark or check —
-              done, regardless of whether the buyer agreed with the system or corrected it.
+              <b>Pending</b> = flagged checks nobody has acted on. Total =
+              Closed + Pending.
             </Typography>
           </Box>
         }
       >
-        <InfoOutlinedIcon sx={{ fontSize: 18, color: "text.disabled", cursor: "help" }} />
+        <InfoOutlinedIcon
+          sx={{ fontSize: 18, color: "text.disabled", cursor: "help" }}
+        />
       </MuiTooltip>
     </Box>
     {loading ? (
       <Skeleton width="80%" height={40} sx={{ borderRadius: 2, my: 1 }} />
     ) : nothingPending ? (
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, my: 1.5 }}>
-        <CheckCircleOutlineRoundedIcon fontSize="small" sx={{ color: "#15803d" }} />
+        <CheckCircleOutlineRoundedIcon
+          fontSize="small"
+          sx={{ color: "#15803d" }}
+        />
         <Typography variant="body1" sx={{ fontWeight: 700, color: "#15803d" }}>
           No Not Verified {title.toLowerCase()} items — nothing pending here.
         </Typography>
@@ -360,22 +404,26 @@ const RemarksImpactCardBody = ({
     ) : (
       <Box sx={{ display: "flex", alignItems: "baseline", gap: 1, my: 1 }}>
         <RemarksImpactNumber
-          value={pending}
-          label="Pending"
-          color="#dc2626"
-          onClick={pending > 0 ? () => onBucketClick("pending") : undefined}
-        />
-        <RemarksImpactNumber
-          value={closed}
-          label={closedLabel}
-          color="#059669"
-          onClick={closed > 0 ? () => onBucketClick("closed") : undefined}
-        />
-        <RemarksImpactNumber
           value={totalNotVerified}
           label="Total Not Verified"
           color="#475569"
-          onClick={totalNotVerified > 0 ? () => onBucketClick("total") : undefined}
+          onClick={
+            totalNotVerified > 0 ? () => onBucketClick("total") : undefined
+          }
+        />
+        <RemarksImpactNumber
+          prefix="="
+          value={closed}
+          label="Closed"
+          color={VERIFIED_COLOR}
+          onClick={closed > 0 ? () => onBucketClick("closed") : undefined}
+        />
+        <RemarksImpactNumber
+          prefix="+"
+          value={pending}
+          label="Pending"
+          color={PENDING_COLOR}
+          onClick={pending > 0 ? () => onBucketClick("pending") : undefined}
         />
       </Box>
     )}
@@ -383,19 +431,21 @@ const RemarksImpactCardBody = ({
       <Typography
         variant="caption"
         color="text.secondary"
-        sx={{ mt: 1, display: "block", pt: 1.5, borderTop: "1px dashed", borderColor: "grey.200" }}
+        sx={{
+          mt: 1,
+          display: "block",
+          pt: 1.5,
+          borderTop: "1px dashed",
+          borderColor: "grey.200",
+        }}
       >
-        {pending} pending + {closed} {closedLabel.toLowerCase()} = {totalNotVerified} total flagged
-        Not Verified by the system. This "Total Not Verified" number never changes — only
-        how much of it is still pending vs. already closed moves, the instant a remark or
-        check is added. Click any number above to see its exact list.
+        {totalNotVerified} flagged = {closed} closed + {pending} pending. Click
+        a number to see its list.
       </Typography>
     )}
   </CardContent>
 );
 
-// `accent` tints the panel. Default tint is the Header indigo; pass `tone`
-// ({ bg, border, title, hint }) to re-tint it (RC panels use teal).
 const ChartPanel = ({
   title,
   hint,
@@ -506,10 +556,7 @@ const ComplianceTooltip = ({ active, payload, labelKey, labelFormatter }) => {
         >
           Verified:
         </Typography>
-        <Typography
-          variant="caption"
-          sx={{ color: "#0f172a", fontWeight: 700 }}
-        >
+        <Typography variant="caption" sx={{ color: "#0f172a", fontWeight: 700 }}>
           {d.verified}
         </Typography>
       </Box>
@@ -520,10 +567,7 @@ const ComplianceTooltip = ({ active, payload, labelKey, labelFormatter }) => {
         >
           Not Verified:
         </Typography>
-        <Typography
-          variant="caption"
-          sx={{ color: "#0f172a", fontWeight: 700 }}
-        >
+        <Typography variant="caption" sx={{ color: "#0f172a", fontWeight: 700 }}>
           {d.notVerified}
         </Typography>
       </Box>
@@ -537,16 +581,10 @@ const ComplianceTooltip = ({ active, payload, labelKey, labelFormatter }) => {
           borderColor: "grey.100",
         }}
       >
-        <Typography
-          variant="caption"
-          sx={{ color: "#64748b", fontWeight: 700 }}
-        >
+        <Typography variant="caption" sx={{ color: "#64748b", fontWeight: 700 }}>
           Compliance:
         </Typography>
-        <Typography
-          variant="caption"
-          sx={{ color: "#0f172a", fontWeight: 800 }}
-        >
+        <Typography variant="caption" sx={{ color: "#0f172a", fontWeight: 800 }}>
           {d.compliancePct != null ? `${d.compliancePct}%` : "N/A"}
         </Typography>
       </Box>
@@ -613,10 +651,7 @@ const HeaderControlWiseTooltip = ({ active, payload }) => {
           borderTop: "1px solid #e0e7ff",
         }}
       >
-        <Typography
-          variant="caption"
-          sx={{ color: "#6366f1", fontWeight: 700 }}
-        >
+        <Typography variant="caption" sx={{ color: "#6366f1", fontWeight: 700 }}>
           PO Compliance:
         </Typography>
         <Typography variant="caption" sx={{ fontWeight: 800 }}>
@@ -654,12 +689,9 @@ const MonthlyTrendTooltip = ({ active, payload }) => {
           variant="caption"
           sx={{ color: TREND_LINE_COLOR, fontWeight: 700 }}
         >
-          Line-Item Exceptions:
+          Lines with an exception:
         </Typography>
-        <Typography
-          variant="caption"
-          sx={{ color: "#0f172a", fontWeight: 700 }}
-        >
+        <Typography variant="caption" sx={{ color: "#0f172a", fontWeight: 700 }}>
           {d.lineCount}
         </Typography>
       </Box>
@@ -668,12 +700,9 @@ const MonthlyTrendTooltip = ({ active, payload }) => {
           variant="caption"
           sx={{ color: TREND_HEADER_COLOR, fontWeight: 700 }}
         >
-          Header Exceptions:
+          POs with a header exception:
         </Typography>
-        <Typography
-          variant="caption"
-          sx={{ color: "#0f172a", fontWeight: 700 }}
-        >
+        <Typography variant="caption" sx={{ color: "#0f172a", fontWeight: 700 }}>
           {d.headerCount}
         </Typography>
       </Box>
@@ -700,6 +729,24 @@ const buildSummaryBody = (f) => ({
 
 const csvEscape = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
 
+// Section heading used for Header / Line / RC blocks.
+const LevelHeading = ({ icon, color, children, unit, unitColor, unitBg }) => (
+  <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1.5 }}>
+    {icon}
+    <Typography
+      variant="overline"
+      sx={{ fontWeight: 800, color, letterSpacing: 1.5 }}
+    >
+      {children}
+    </Typography>
+    {unit && (
+      <UnitBadge color={unitColor} bg={unitBg}>
+        {unit}
+      </UnitBadge>
+    )}
+  </Box>
+);
+
 const ExecutiveDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState(null);
@@ -721,20 +768,38 @@ const ExecutiveDashboard = () => {
   const [poPreview, setPoPreview] = useState(null);
   const abortRef = useRef(null);
 
-  // "Remarks Impact" cards - see utility/effective-result.js on the
-  // backend. Independent small fetch (not part of the big executive
-  // summary) so it stays cheap and simple: for each section, the required
-  // identity System Generated = Pending + Closed. Refetched on the same
-  // `onChanged` callback every remark-adding component already calls, so
-  // these numbers move the instant a remark is added/edited/deleted -
-  // never by editing the underlying system result.
+  // PO Status Summary + PO list: ONE endpoint, so the tables and the list
+  // below them can never disagree. Closed = no pending point (no "locked").
+  const [poStatus, setPoStatus] = useState(null);
+  const [poStatusLoading, setPoStatusLoading] = useState(true);
+  // Drill-down PO list opened from any PO number on the dashboard:
+  // { spec, title } - see components/poListFilters.js
+  const [poListDialog, setPoListDialog] = useState(null);
+
+  // Remarks Impact (same refresh moments). Refetched whenever a remark is
+  // added/edited/deleted; never rewrites the underlying results.
   const [remarksImpact, setRemarksImpact] = useState(null);
-  // Which "Remarks Impact" number was clicked - { section, title, bucket,
-  // closedLabel } or null. Drives RemarksImpactListDialog below.
   const [remarksImpactDialog, setRemarksImpactDialog] = useState(null);
   const [remarksImpactLoading, setRemarksImpactLoading] = useState(true);
 
-  const fetchRemarksImpact = useCallback(async (activeFilters) => {
+  const fetchPoStatus = useCallback(async (activeFilters) => {
+    setPoStatusLoading(true);
+    try {
+      setPoStatus(
+        await post("/reports/po-status-summary", buildSummaryBody(activeFilters)),
+      );
+    } catch (err) {
+      console.error("Error fetching PO status summary:", err);
+    } finally {
+      setPoStatusLoading(false);
+    }
+  }, []);
+
+  // Called on first load, filter change, Refresh and every onChanged /
+  // onDataChanged / onHeaderChanged callback, so ALL tables refresh together.
+  const fetchRemarksImpact = useCallback(
+    async (activeFilters) => {
+    fetchPoStatus(activeFilters);
     setRemarksImpactLoading(true);
     try {
       const response = await post(
@@ -747,7 +812,9 @@ const ExecutiveDashboard = () => {
     } finally {
       setRemarksImpactLoading(false);
     }
-  }, []);
+    },
+    [fetchPoStatus],
+  );
 
   const fetchSummary = useCallback(async (activeFilters) => {
     abortRef.current?.abort();
@@ -804,6 +871,15 @@ const ExecutiveDashboard = () => {
     ? `Showing figures for purchasing group ${data.scope.restrictedToPurchaseGroup} only`
     : undefined;
   const missingHeaderDataCount = kpis.missingHeaderDataCount || 0;
+
+  // Header / whole-PO closed numbers come from the SAME source as the PO Status
+  // Summary tables, so the two can never show different figures.
+  const ps = poStatus?.poSummary;
+  const hdrClosedPOs = ps?.header?.closed ?? headerKpis.closedPOCount;
+  const hdrPendingPOs = ps?.header?.pending ?? headerKpis.openPOCount;
+  const wholeClosedPOs = ps?.closed;
+  const headerOnlyClosedPOs =
+    ps ? Math.max(ps.header.closed - ps.closed, 0) : null;
   const rcGroupChartData = charts.rcPurchaseGroupCompliance || [];
   const rcVendorChartData = charts.rcVendorCompliance || [];
 
@@ -821,25 +897,37 @@ const ExecutiveDashboard = () => {
   const openRcDrilldown = (dimension, title, extra = {}) =>
     setRcDrilldown({ dimension, title, ...extra });
 
-  const handleRowAction = (row, mode) => {
+  const handleRowAction = (row, mode, extra) => {
     if (!row) return;
-    const lineItem = getFirstLineItem(row);
+    const lineItem = extra?.lineItem || getFirstLineItem(row);
     if (mode === "newtab") {
       window.open(
-        buildSearchUrl(row.poNumber, lineItem),
+        buildSearchUrl(row.poNumber, lineItem, row.source_file_ts),
         "_blank",
         "noopener,noreferrer",
       );
     } else if (mode === "breakdown") {
-      setPoPreview({ poNumber: row.poNumber });
+      setPoPreview({ poNumber: row.poNumber, source_file_ts: row.source_file_ts });
     } else {
-      setPoPreview({ poNumber: row.poNumber, lineItem });
+      setPoPreview({ poNumber: row.poNumber, lineItem, source_file_ts: row.source_file_ts });
     }
   };
 
+  // Open a PO list (the exact POs behind a number) - every PO there opens its
+  // header / line detail, where the buyer can close points.
+  const openPoList = (spec, title) => setPoListDialog({ spec, title });
+  // "Close points" button inside the detail dialog -> the buyer's existing
+  // remark / close dialog for that PO header or line.
+  const handleWork = (w) =>
+    handleRowAction(
+      { poNumber: w.poNumber, source_file_ts: w.source_file_ts },
+      w.lineItem ? "modal" : "breakdown",
+      w,
+    );
+
   const openFullSearchPage = (preview, newTab) => {
     if (!preview) return;
-    const url = buildSearchUrl(preview.poNumber, preview.lineItem);
+    const url = buildSearchUrl(preview.poNumber, preview.lineItem, preview.source_file_ts);
     if (newTab) {
       window.open(url, "_blank", "noopener,noreferrer");
     } else {
@@ -851,6 +939,22 @@ const ExecutiveDashboard = () => {
   const exportSummaryCsv = () => {
     if (!data) return;
     const lines = ["Section,Key,Value,Extra"];
+
+    // PO status first - the same numbers the on-screen tables show.
+    if (poStatus?.poSummary) {
+      const ps = poStatus.poSummary;
+      lines.push(`PO Status,total,${ps.total},`);
+      lines.push(`PO Status,closed,${ps.closed},`);
+      lines.push(`PO Status,pending,${ps.pending},`);
+      Object.entries(poStatus.statusCounts || {}).forEach(([k, v]) =>
+        lines.push(`PO Status,${csvEscape(k)},${v},`),
+      );
+      (poStatus.byPurchaseGroup || []).forEach((g) =>
+        lines.push(
+          `PO Status by Purchase Group,${csvEscape(g.purchaseGroup)},${g.closed},total=${g.totalPOs} pending=${g.inReview + g.pending}`,
+        ),
+      );
+    }
 
     Object.entries(kpis).forEach(([k, v]) => {
       if (k === "header" || k === "rc") return;
@@ -865,32 +969,42 @@ const ExecutiveDashboard = () => {
       lines.push(`RC-Level KPI,${csvEscape(k)},${csvEscape(v)},`);
     });
 
-    (charts.controlWiseCompliance || []).forEach((d) =>
+    const compRow = (section, label, d) =>
       lines.push(
-        `Control-Wise Compliance (Line-Level),Point ${d.pointNo} (${d.severity}),${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`,
+        `${section},${csvEscape(label)},${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`,
+      );
+    (charts.controlWiseCompliance || []).forEach((d) =>
+      compRow(
+        "Control-Wise Compliance (Line-Level)",
+        `Point ${d.pointNo} (${d.severity})`,
+        d,
       ),
     );
     (charts.headerControlWiseCompliance || []).forEach((d) =>
-      lines.push(
-        `Control-Wise Compliance (Header-Level),Point ${d.pointNo} (${d.severity}),${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`,
+      compRow(
+        "Control-Wise Compliance (Header-Level)",
+        `Point ${d.pointNo} (${d.severity})`,
+        d,
       ),
     );
     (charts.rcPurchaseGroupCompliance || []).forEach((d) =>
-      lines.push(
-        `RC Compliance by Purchase Group,${csvEscape(d.purchaseGroupName || d.purchaseGroup)},${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`,
+      compRow(
+        "RC Compliance by Purchase Group",
+        d.purchaseGroupName || d.purchaseGroup,
+        d,
       ),
     );
     (charts.rcVendorCompliance || []).forEach((d) =>
-      lines.push(
-        `RC Compliance by Vendor,${csvEscape(d.vendorName || d.vendorCode)},${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`,
-      ),
+      compRow("RC Compliance by Vendor", d.vendorName || d.vendorCode, d),
     );
     (charts.exceptionBySeverity || []).forEach((d) =>
       lines.push(`Exceptions by Severity,${d.severity},${d.count},${d.pct}%`),
     );
     (charts.purchaseGroupWiseCompliance || []).forEach((d) =>
-      lines.push(
-        `Purchase Group-Wise Compliance,${csvEscape(d.purchaseGroupName || d.purchaseGroup)},${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`,
+      compRow(
+        "Purchase Group-Wise Compliance",
+        d.purchaseGroupName || d.purchaseGroup,
+        d,
       ),
     );
     (charts.plantWiseExceptions || []).forEach((d) =>
@@ -899,9 +1013,7 @@ const ExecutiveDashboard = () => {
       ),
     );
     (charts.plantWiseCompliance || []).forEach((d) =>
-      lines.push(
-        `Plant-Wise Compliance,${csvEscape(d.plantName || d.plant)},${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`,
-      ),
+      compRow("Plant-Wise Compliance", d.plantName || d.plant, d),
     );
     (charts.vendorWiseTopExceptions || []).forEach((d) =>
       lines.push(
@@ -909,14 +1021,10 @@ const ExecutiveDashboard = () => {
       ),
     );
     (charts.vendorWiseCompliance || []).forEach((d) =>
-      lines.push(
-        `Vendor-Wise Compliance,${csvEscape(d.vendorName || d.vendorCode)},${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`,
-      ),
+      compRow("Vendor-Wise Compliance", d.vendorName || d.vendorCode, d),
     );
     (charts.poNumberWiseCompliance || []).forEach((d) =>
-      lines.push(
-        `PO-Wise Compliance,${csvEscape(d.poNumber)},${d.compliancePct ?? "N/A"}%,verified=${d.verified} notVerified=${d.notVerified}`,
-      ),
+      compRow("PO-Wise Compliance", d.poNumber, d),
     );
     (charts.monthlyExceptionTrend || []).forEach((d) =>
       lines.push(
@@ -938,35 +1046,43 @@ const ExecutiveDashboard = () => {
     URL.revokeObjectURL(url);
   };
 
-  // Shared renderer for the two stacked Verified / Not Verified RC charts
-  // (by purchase group, by vendor) so they stay visually identical.
-  const renderRcStackedChart = ({
+  // ONE renderer for every stacked Verified / Not Verified bar chart (line
+  // purchase group / plant / vendor / PO type, and the two RC charts), so
+  // they stay visually identical. `tone` switches the RC teal palette on.
+  const renderStackedChart = ({
     chartData,
     categoryKey,
     labelOf,
     axisWidth,
-    drillDimension,
-    drillTitle,
+    tooltip,
+    onSegment,
+    rc = false,
+    barSize = 20,
+    gap = "25%",
   }) => (
     <ResponsiveContainer>
       <BarChart
         data={chartData}
         layout="vertical"
         margin={{ top: 10, bottom: 10, left: 10, right: 30 }}
-        barCategoryGap="25%"
+        barCategoryGap={gap}
       >
         <ChartGradients />
         <CartesianGrid
           strokeDasharray="3 3"
           horizontal={false}
-          stroke={RC_ACCENT_BORDER}
+          stroke={rc ? RC_ACCENT_BORDER : GRID_COLOR}
         />
         <XAxis
           type="number"
           allowDecimals={false}
           axisLine={false}
           tickLine={false}
-          tick={{ fill: RC_ACCENT, fontSize: 12, fontWeight: 500 }}
+          tick={{
+            fill: rc ? RC_ACCENT : "#64748b",
+            fontSize: 12,
+            fontWeight: 500,
+          }}
         />
         <YAxis
           type="category"
@@ -978,11 +1094,15 @@ const ExecutiveDashboard = () => {
           width={axisWidth}
           axisLine={false}
           tickLine={false}
-          tick={{ fill: RC_ACCENT_DARK, fontSize: 13, fontWeight: 600 }}
+          tick={{
+            fill: rc ? RC_ACCENT_DARK : "#334155",
+            fontSize: 13,
+            fontWeight: 600,
+          }}
         />
         <Tooltip
-          content={<ComplianceTooltip labelFormatter={(d) => labelOf(d)} />}
-          cursor={{ fill: alpha(RC_ACCENT, 0.06) }}
+          content={tooltip}
+          cursor={{ fill: alpha(rc ? RC_ACCENT : "#4f46e5", rc ? 0.06 : 0.05) }}
         />
         <Legend
           iconType="circle"
@@ -995,15 +1115,8 @@ const ExecutiveDashboard = () => {
           name="Verified"
           cursor="pointer"
           radius={[6, 0, 0, 6]}
-          barSize={20}
-          onClick={(d) => {
-            const p = payloadOf(d);
-            openRcDrilldown(
-              drillDimension,
-              `${drillTitle}: ${labelOf(p)} - Verified RCs`,
-              { value: p[categoryKey], statusFilter: "verified" },
-            );
-          }}
+          barSize={barSize}
+          onClick={(d) => onSegment(payloadOf(d), "verified")}
         />
         <Bar
           dataKey="notVerified"
@@ -1012,18 +1125,75 @@ const ExecutiveDashboard = () => {
           name="Not Verified"
           radius={[0, 6, 6, 0]}
           cursor="pointer"
-          barSize={20}
-          onClick={(d) => {
-            const p = payloadOf(d);
-            openRcDrilldown(
-              drillDimension,
-              `${drillTitle}: ${labelOf(p)} - Not-Verified RCs`,
-              { value: p[categoryKey], statusFilter: "notVerified" },
-            );
-          }}
+          barSize={barSize}
+          onClick={(d) => onSegment(payloadOf(d), "notVerified")}
         />
       </BarChart>
     </ResponsiveContainer>
+  );
+
+  const statusWord = (s) => (s === "verified" ? "Verified" : "Not-Verified");
+
+  const lineStacked = ({
+    title,
+    hint,
+    info,
+    data: chartData,
+    categoryKey,
+    labelOf,
+    axisWidth,
+    dimension,
+    titlePrefix,
+    tooltip,
+    barSize,
+    gap,
+    heightArgs,
+  }) => (
+    <Grid item xs={12}>
+      <ChartPanel
+        title={title}
+        hint={hint}
+        info={info}
+        height={horizontalChartHeight(
+          (chartData || []).length,
+          ...(heightArgs || []),
+        )}
+      >
+        {loading ? (
+          <Skeleton variant="rounded" height="100%" sx={{ borderRadius: 2 }} />
+        ) : (
+          renderStackedChart({
+            chartData: chartData || [],
+            categoryKey,
+            labelOf,
+            axisWidth,
+            barSize,
+            gap,
+            tooltip:
+              tooltip || <ComplianceTooltip labelFormatter={(d) => labelOf(d)} />,
+            onSegment: (p, status) =>
+              openDrilldown(
+                dimension,
+                p[categoryKey],
+                `${titlePrefix}: ${labelOf(p)} - ${statusWord(status)} lines`,
+                { statusFilter: status },
+              ),
+          })
+        )}
+      </ChartPanel>
+    </Grid>
+  );
+
+  const rcCard = (props) => (
+    <Grid item xs={12} sm={6} md={3}>
+      <KpiCard accent accentBg={RC_ACCENT_BG} accentBorder={RC_ACCENT_BORDER} loading={loading} {...props} />
+    </Grid>
+  );
+
+  const hdrCard = (props) => (
+    <Grid item xs={12} sm={6} md={3}>
+      <KpiCard accent loading={loading} {...props} />
+    </Grid>
   );
 
   return (
@@ -1061,14 +1231,13 @@ const ExecutiveDashboard = () => {
               color: "#64748b",
             }}
           >
-            Every PO below is checked against 19 audit points: 9{" "}
-            <strong>Header</strong> points (one result per whole PO — shown
-            first, in the indigo-tinted panels) and 10{" "}
-            <strong>Line-Item</strong> points (one result per PO line). Both
-            sets of points cover the same POs — see "Total POs" below.
-            Separately, every Rate Contract gets one <strong>RC Overlap</strong>{" "}
-            check (shown in the teal-tinted panels at the bottom).
-            Criticality of each checkpoint is managed on the Risk
+            Every PO is checked against 19 audit points: 9{" "}
+            <strong>Header</strong> points (one result per PO) and 10{" "}
+            <strong>Line-Item</strong> points (one result per PO line). Every
+            Rate Contract gets one <strong>RC Overlap</strong> check. Section 1
+            below shows all of them in <strong>one unit (checks)</strong> so
+            the numbers add up; section 2 shows the same data as POs, lines and
+            RCs. Criticality of each checkpoint is managed on the Risk
             Categorization Master page.
           </Typography>
           {restrictedNotice && (
@@ -1207,10 +1376,7 @@ const ExecutiveDashboard = () => {
                   "&:hover": { bgcolor: alpha("#4f46e5", 0.2) },
                 }}
               >
-                <RefreshRoundedIcon
-                  fontSize="small"
-                  sx={{ color: "#4f46e5" }}
-                />
+                <RefreshRoundedIcon fontSize="small" sx={{ color: "#4f46e5" }} />
               </IconButton>
             </Box>
           </MuiTooltip>
@@ -1246,19 +1412,19 @@ const ExecutiveDashboard = () => {
         </Paper>
       )}
 
-      {/* OVERVIEW STRIP */}
-      <Typography
-        variant="overline"
-        sx={{
-          fontWeight: 800,
-          color: "#64748b",
-          letterSpacing: 1.5,
-          display: "block",
-          mb: 1.5,
-        }}
-      >
+      {/* ===== PO STATUS SUMMARY (start here) ===== */}
+      <PoStatusSummaryTables
+        data={poStatus}
+        loading={poStatusLoading}
+        onList={openPoList}
+        onPoints={(trigger) => setRemarksImpactDialog(trigger)}
+        rcByGroup={remarksImpact?.byPurchaseGroup}
+      />
+
+      {/* ===== PORTFOLIO OVERVIEW ===== */}
+      <LevelHeading color="#64748b" unit="unit: POs / lines / PRs">
         Portfolio Overview
-      </Typography>
+      </LevelHeading>
       <Grid container spacing={3} sx={{ mb: 2 }}>
         <Grid item xs={12} sm={6} md={3}>
           <KpiCard
@@ -1266,7 +1432,7 @@ const ExecutiveDashboard = () => {
             label="Total POs"
             value={kpis.totalPOCount ?? "—"}
             valueColor={OVERVIEW_ACCENT}
-            sublabel="Every point below — header and line-item — is measured against this same set of POs. Click to view all PO lines."
+            sublabel="Distinct PO numbers. Header and line-item sections are both measured on this same set."
             loading={loading}
             info={
               kpiDefs.totalPOCount ||
@@ -1283,7 +1449,7 @@ const ExecutiveDashboard = () => {
           <KpiCard
             label="Total PO Line Items"
             value={kpis.totalPOLineItems ?? "—"}
-            sublabel="Sum of line items across all POs above. Click to view all PO lines."
+            sublabel="All lines of the POs above."
             loading={loading}
             info={kpiDefs.totalPOLineItems || "Total count of individual PO line items"}
             onClick={
@@ -1297,7 +1463,7 @@ const ExecutiveDashboard = () => {
           <KpiCard
             label="Total PR Count"
             value={kpis.totalPRCount ?? "—"}
-            sublabel="Click to view all PO lines"
+            sublabel="Distinct Purchase Requisitions."
             loading={loading}
             info={kpiDefs.totalPRCount || "Distinct Purchase Requisitions driving these POs"}
             onClick={
@@ -1315,7 +1481,7 @@ const ExecutiveDashboard = () => {
                 ? `${kpis.exceptionValueExposure.toLocaleString()}`
                 : "—"
             }
-            sublabel="Line-item exceptions. Click to drill in"
+            sublabel={`Net value of the ${fmt(kpis.exceptionLineCount)} lines with ≥ 1 Not Verified check.`}
             loading={loading}
             info={kpiDefs.exceptionValueExposure || "Total financial value of lines flagged with at least one exception"}
             onClick={
@@ -1332,13 +1498,7 @@ const ExecutiveDashboard = () => {
         </Grid>
       </Grid>
 
-      {/* REMARKS IMPACT — the required identity per section:
-          Total Not Verified = Pending + Points/RCs Closed. Moves the
-          instant a remark is added/edited/deleted (see
-          getRemarksImpactSummary in dashboard-controller.js) — the
-          underlying system result is never rewritten; these are
-          read-time derived counts. Each card is clickable through to the
-          actual list behind the number (this used to be a dead end). */}
+      {/* ===== REMARKS IMPACT ===== */}
       <Typography
         variant="overline"
         sx={{
@@ -1347,16 +1507,17 @@ const ExecutiveDashboard = () => {
           letterSpacing: 1.5,
           display: "block",
           mb: 1.5,
+          mt: 3,
         }}
       >
-        Remarks Impact
+        Remarks Impact — Total Not Verified = Closed + Pending (unit: checks)
       </Typography>
       <Grid container spacing={3} sx={{ mb: 5 }}>
         {[
-          { key: "header", title: "Header", closedLabel: "Points Closed" },
-          { key: "line", title: "Line Item", closedLabel: "Points Closed" },
-          { key: "rc", title: "RC Overlap", closedLabel: "RCs Closed" },
-        ].map(({ key, title, closedLabel }) => {
+          { key: "header", title: "Header", unitLabel: "header checks" },
+          { key: "line", title: "Line Item", unitLabel: "line-item checks" },
+          { key: "rc", title: "RC Overlap", unitLabel: "RCs" },
+        ].map(({ key, title, unitLabel }) => {
           const section = remarksImpact?.[key] || {};
           const totalNotVerified = section.systemGenerated ?? 0;
           const pending = section.pending ?? 0;
@@ -1376,14 +1537,19 @@ const ExecutiveDashboard = () => {
               >
                 <RemarksImpactCardBody
                   title={title}
-                  closedLabel={closedLabel}
-                  pending={pending}
+                  unitLabel={unitLabel}
                   closed={closed}
+                  pending={pending}
                   totalNotVerified={totalNotVerified}
                   loading={remarksImpactLoading}
                   nothingPending={nothingPending}
                   onBucketClick={(bucket) =>
-                    setRemarksImpactDialog({ section: key, title, bucket, closedLabel })
+                    setRemarksImpactDialog({
+                      section: key,
+                      title,
+                      bucket,
+                      closedLabel: key === "rc" ? "RCs Closed" : "Points Closed",
+                    })
                   }
                 />
               </Card>
@@ -1391,21 +1557,6 @@ const ExecutiveDashboard = () => {
           );
         })}
       </Grid>
-
-      {/* PURCHASE GROUP COMPLIANCE — Admin / Procurement Manager / SSB
-          Digital only. No client-side role check needed: the backend
-          (getRemarksImpactSummary) only ever populates
-          remarksImpact.byPurchaseGroup for those roles, so for a Buyer
-          this key is simply absent and the whole block renders nothing. */}
-      {remarksImpact?.byPurchaseGroup && (
-        <Box sx={{ mb: 5 }}>
-          <PurchaseGroupRemarksImpactTable
-            groups={remarksImpact.byPurchaseGroup}
-            loading={remarksImpactLoading}
-            onDrilldown={(trigger) => setRemarksImpactDialog(trigger)}
-          />
-        </Box>
-      )}
 
       {missingHeaderDataCount > 0 && (
         <Paper
@@ -1433,119 +1584,129 @@ const ExecutiveDashboard = () => {
           </Typography>
         </Paper>
       )}
-      {!missingHeaderDataCount && <Box sx={{ mb: 5 }} />}
 
-      {/* HEADER-LEVEL (distinct indigo styling) */}
-      <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1.5 }}>
-        <LayersRoundedIcon sx={{ color: HEADER_ACCENT, fontSize: 20 }} />
-        <Typography
-          variant="overline"
-          sx={{ fontWeight: 800, color: HEADER_ACCENT, letterSpacing: 1.5 }}
-        >
-          Header Level (9 points, one result per whole PO — points 1-9)
-        </Typography>
-      </Box>
+      {/* ===== HEADER LEVEL ===== */}
+      <LevelHeading
+        icon={<LayersRoundedIcon sx={{ color: HEADER_ACCENT, fontSize: 20 }} />}
+        color={HEADER_ACCENT}
+        unit="unit: POs and header checks"
+        unitColor={HEADER_ACCENT}
+        unitBg={HEADER_ACCENT_BG}
+      >
+        Header Level (9 points, one result per whole PO — points 1-9)
+      </LevelHeading>
+      <Grid container spacing={3} sx={{ mb: 3 }}>
+        {hdrCard({
+          label: "Header Compliance",
+          value:
+            headerKpis.overallComplianceScore != null
+              ? `${headerKpis.overallComplianceScore}%`
+              : "—",
+          sublabel: `Verified ÷ Applicable = ${fmt(headerKpis.verifiedCount)} ÷ ${fmt(headerKpis.applicableChecks)} checks. Click to view all POs.`,
+          info:
+            kpiDefs.headerComplianceScore ||
+            "Verified ÷ (Verified + Not Verified) header checks",
+          onClick: headerKpis.totalPOsWithHeaderData
+            ? () =>
+                openHeaderKpiDrilldown("all", "All POs — Header-Level Detail")
+            : undefined,
+        })}
+        {hdrCard({
+          label: "POs Closed at Header Level",
+          value: hdrClosedPOs ?? "—",
+          valueColor: "#059669",
+          sublabel: ps
+            ? `Header only: ${fmt(hdrPendingPOs)} of ${fmt(ps.total)} POs still have a pending header point. Whole PO closed (header + line items) = ${fmt(wholeClosedPOs)}, because ${fmt(headerOnlyClosedPOs)} POs are closed here but still pending on line items. Click to view.`
+            : `POs with no pending header point (unit: POs). ${fmt(hdrPendingPOs)} still pending. Click to view.`,
+          info:
+            kpiDefs.closedPOCount ||
+            "POs whose header has no pending point: every point is Verified, Not Applicable, or Not Verified with a check or remark.",
+          onClick: hdrClosedPOs
+            ? () =>
+                ps
+                  ? openPoList({ metric: "headerClosed" }, "POs closed at header level")
+                  : openHeaderKpiDrilldown("closed", "POs Closed at Header Level")
+            : undefined,
+        })}
+        {hdrCard({
+          label: "Verified (Header checks)",
+          value: headerKpis.verifiedCount ?? "—",
+          valueColor: "#059669",
+          sublabel:
+            "Header checks that passed (unit: checks). Click to view POs with a verified header point.",
+          info:
+            kpiDefs.headerVerifiedCount ||
+            "Count of header checks that came back Verified.",
+          onClick: headerKpis.verifiedCount
+            ? () =>
+                openHeaderKpiDrilldown(
+                  "verifiedAny",
+                  "POs with at Least One Verified Header Point",
+                )
+            : undefined,
+        })}
+        {hdrCard({
+          label: "Not Verified (Header checks)",
+          value: headerKpis.notVerifiedCount ?? "—",
+          valueColor: "#dc2626",
+          sublabel: `Header checks that failed (unit: checks), spread over ${fmt(headerKpis.exceptionPOCount)} POs. Click to view them.`,
+          info:
+            kpiDefs.headerNotVerifiedCount ||
+            "Count of header checks that came back Not Verified.",
+          onClick: headerKpis.notVerifiedCount
+            ? () =>
+                openHeaderKpiDrilldown(
+                  "notVerifiedAny",
+                  "POs with at Least One Not-Verified Header Point",
+                )
+            : undefined,
+        })}
+      </Grid>
       <Grid container spacing={3} sx={{ mb: 5 }}>
-        <Grid item xs={12} sm={6} md={3}>
-          <KpiCard
-            accent
-            label="Header Compliance"
-            value={
-              headerKpis.overallComplianceScore != null
-                ? `${headerKpis.overallComplianceScore}%`
-                : "—"
-            }
-            loading={loading}
-            sublabel="Verified ÷ (Verified + Not Verified), per PO. Click to view all POs with header data."
-            info={kpiDefs.headerComplianceScore || "Verified ÷ (Verified + Not Verified) PO headers"}
-            onClick={
-              headerKpis.totalPOsWithHeaderData
-                ? () =>
-                    openHeaderKpiDrilldown(
-                      "all",
-                      "All POs — Header-Level Detail",
-                    )
-                : undefined
-            }
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <KpiCard
-            accent
-            label="POs Closed"
-            value={headerKpis.closedPOCount ?? "—"}
-            valueColor="#059669"
-            loading={loading}
-            sublabel={`Whole PO headers fully closed (every mandatory point covered) — not the same as the point-level "Points Closed" count below. ${headerKpis.openPOCount ?? 0} still open — out of the same Total POs above. Click to view closed POs.`}
-            info={kpiDefs.closedPOCount || "POs where header checks are locked."}
-            onClick={
-              headerKpis.closedPOCount
-                ? () =>
-                    openHeaderKpiDrilldown(
-                      "closed",
-                      "PO Headers — Closed",
-                    )
-                : undefined
-            }
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <KpiCard
-            accent
-            label="Verified (Header)"
-            value={headerKpis.verifiedCount ?? "—"}
-            valueColor="#059669"
-            loading={loading}
-            sublabel="Across all header points, all in-scope POs. Click to view POs with a verified header point."
-            info={kpiDefs.headerVerifiedCount || "POs with at least one verified header point."}
-            onClick={
-              headerKpis.verifiedCount
-                ? () =>
-                    openHeaderKpiDrilldown(
-                      "verifiedAny",
-                      "POs with at Least One Verified Header Point",
-                    )
-                : undefined
-            }
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <KpiCard
-            accent
-            label="Not Verified (Header)"
-            value={headerKpis.notVerifiedCount ?? "—"}
-            valueColor="#dc2626"
-            loading={loading}
-            sublabel="Across all header points, all in-scope POs. Click to view POs with a not-verified header point."
-            info={kpiDefs.headerNotVerifiedCount || "POs with at least one not-verified header point."}
-            onClick={
-              headerKpis.notVerifiedCount
-                ? () =>
-                    openHeaderKpiDrilldown(
-                      "notVerifiedAny",
-                      "POs with at Least One Not-Verified Header Point",
-                    )
-                : undefined
-            }
-          />
-        </Grid>
+        {hdrCard({
+          label: "Total Header Checks",
+          value: headerKpis.totalChecks ?? "—",
+          sublabel: `${fmt(headerKpis.totalPOsWithHeaderData)} POs × 9 header points.`,
+          info: "Every header check run: Verified + Not Verified + Not Applicable + Manual.",
+        })}
+        {hdrCard({
+          label: "Not Applicable (Header)",
+          value: headerKpis.notApplicableCount ?? "—",
+          sublabel: "Header checks that did not apply to that PO. Excluded from compliance.",
+          info: "Header checks that were Not Applicable to the PO (e.g. no RC, no freight term).",
+        })}
+        {hdrCard({
+          label: "Manual Review (Header)",
+          value: headerKpis.manualReviewCount ?? "—",
+          sublabel: "Header checks needing a human. Excluded from compliance.",
+          info: "Header checks the system could not decide and that need manual review.",
+        })}
+        {hdrCard({
+          label: "Header Points Closed",
+          value: remarksImpact?.header?.closed ?? "—",
+          valueColor: "#059669",
+          sublabel: `Of ${fmt(remarksImpact?.header?.systemGenerated)} Not Verified header points, ${fmt(remarksImpact?.header?.pending)} are still pending (unit: points). Click to see the closed points.`,
+          info: "Not Verified header points that now have a check or remark. Closed + Pending = Total Not Verified.",
+          onClick: remarksImpact?.header?.closed
+            ? () =>
+                setRemarksImpactDialog({
+                  section: "header",
+                  title: "Header",
+                  bucket: "closed",
+                  closedLabel: "Points Closed",
+                })
+            : undefined,
+        })}
       </Grid>
 
-      {/* LINE-ITEM LEVEL */}
-      <Typography
-        variant="overline"
-        sx={{
-          fontWeight: 800,
-          color: "#64748b",
-          letterSpacing: 1.5,
-          display: "block",
-          mb: 1.5,
-        }}
+      {/* ===== LINE-ITEM LEVEL ===== */}
+      <LevelHeading
+        color="#64748b"
+        unit="unit: PO lines and line-item checks"
       >
         Line-Item Level (10 points, one result per PO line item — points 10-19)
-      </Typography>
+      </LevelHeading>
       <Grid container spacing={3} sx={{ mb: 5 }}>
-        {/* LINE-ITEM COMPLIANCE (Moved to Front) */}
         <Grid item xs={12} sm={6} md={4}>
           <KpiCard
             label="Line-Item Compliance"
@@ -1555,8 +1716,8 @@ const ExecutiveDashboard = () => {
                 : "—"
             }
             valueColor={VERIFIED_COLOR}
-            sublabel="Verified ÷ (Verified + Not Verified), per line item"
-            info={kpiDefs.overallComplianceScore || "Verified ÷ (Verified + Not Verified) line items"}
+            sublabel={`Verified ÷ Applicable = ${fmt(kpis.verifiedCount)} ÷ ${fmt(kpis.applicableLineChecks)} checks`}
+            info={kpiDefs.overallComplianceScore || "Verified ÷ (Verified + Not Verified) line-item checks"}
             loading={loading}
           />
         </Grid>
@@ -1565,9 +1726,9 @@ const ExecutiveDashboard = () => {
             label="Verified Checks"
             value={kpis.verifiedCount ?? "—"}
             valueColor="#059669"
-            sublabel="Click to drill in"
+            sublabel="Line-item checks that passed. Click to drill in."
             loading={loading}
-            info={kpiDefs.verifiedCount || "Count of Verified line items"}
+            info={kpiDefs.verifiedCount || "Count of Verified line-item checks"}
             onClick={
               kpis.verifiedCount
                 ? () =>
@@ -1586,9 +1747,9 @@ const ExecutiveDashboard = () => {
             label="Not Verified Checks"
             value={kpis.notVerifiedCount ?? "—"}
             valueColor="#dc2626"
-            sublabel="Click to drill in"
+            sublabel={`Failed checks, spread over ${fmt(kpis.exceptionLineCount)} lines. Click to drill in.`}
             loading={loading}
-            info={kpiDefs.notVerifiedCount || "Count of Not Verified line items"}
+            info={kpiDefs.notVerifiedCount || "Count of Not Verified line-item checks"}
             onClick={
               kpis.notVerifiedCount
                 ? () =>
@@ -1603,31 +1764,11 @@ const ExecutiveDashboard = () => {
         </Grid>
         <Grid item xs={12} sm={6} md={4}>
           <KpiCard
-            label="High-Risk Alerts"
-            value={kpis.highRiskExceptions ?? "—"}
-            valueColor="#dc2626"
-            sublabel="Critical + High severity"
-            loading={loading}
-            info={kpiDefs.highRiskExceptions || "Count of Critical or High severity exceptions"}
-            onClick={
-              kpis.highRiskExceptions
-                ? () =>
-                    openDrilldown(
-                      "severity",
-                      "Critical,High",
-                      "High-Risk Exceptions (Critical + High)",
-                    )
-                : undefined
-            }
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={4}>
-          <KpiCard
             label="Not Applicable"
             value={kpis.notApplicableCount ?? "—"}
-            sublabel="Click to drill in"
+            sublabel="Did not apply to that line. Excluded from compliance. Click to drill in."
             loading={loading}
-            info={kpiDefs.notApplicableCount || "Count of Not Applicable line items"}
+            info={kpiDefs.notApplicableCount || "Count of Not Applicable line-item checks"}
             onClick={
               kpis.notApplicableCount
                 ? () =>
@@ -1645,9 +1786,9 @@ const ExecutiveDashboard = () => {
           <KpiCard
             label="Manual Review"
             value={kpis.manualReviewCount ?? "—"}
-            sublabel="Click to drill in"
+            sublabel="Need a human. Excluded from compliance. Click to drill in."
             loading={loading}
-            info={kpiDefs.manualReviewCount || "Count of items requiring human check"}
+            info={kpiDefs.manualReviewCount || "Count of line-item checks requiring human review"}
             onClick={
               kpis.manualReviewCount
                 ? () =>
@@ -1661,14 +1802,72 @@ const ExecutiveDashboard = () => {
             }
           />
         </Grid>
+        <Grid item xs={12} sm={6} md={4}>
+          <KpiCard
+            label="Total Line Checks"
+            value={kpis.totalLineChecks ?? "—"}
+            sublabel={`${fmt(kpis.totalPOLineItems)} lines × 10 line points.`}
+            loading={loading}
+            info="Every line-item check run: Verified + Not Verified + Not Applicable + Manual."
+          />
+        </Grid>
+        <Grid item xs={12} sm={6} md={4}>
+          <KpiCard
+            label="Applicable Line Checks"
+            value={kpis.applicableLineChecks ?? "—"}
+            sublabel={`Verified ${fmt(kpis.verifiedCount)} + Not Verified ${fmt(kpis.notVerifiedCount)}. Compliance denominator.`}
+            loading={loading}
+            info="Verified + Not Verified line-item checks."
+          />
+        </Grid>
+        <Grid item xs={12} sm={6} md={4}>
+          <KpiCard
+            label="POs Closed at Line Level"
+            value={ps?.line?.closed ?? "—"}
+            valueColor="#059669"
+            sublabel={
+              ps
+                ? `POs whose line items have no pending point (unit: POs). ${fmt(ps.line.pending)} of ${fmt(ps.total)} POs still have a pending line item. Click to view.`
+                : "POs whose line items have no pending point (unit: POs)."
+            }
+            loading={loading || poStatusLoading}
+            info="A PO is closed at line level when none of its line items has a pending point: every point is Verified, Not Applicable, Manual, or Not Verified with a check or remark."
+            onClick={
+              ps?.line?.closed
+                ? () => openPoList({ metric: "lineClosed" }, "POs closed at line level")
+                : undefined
+            }
+          />
+        </Grid>
+        <Grid item xs={12} sm={6} md={4}>
+          <KpiCard
+            label="Line Points Closed"
+            value={remarksImpact?.line?.closed ?? "—"}
+            valueColor="#059669"
+            sublabel={`Of ${fmt(remarksImpact?.line?.systemGenerated)} Not Verified line points, ${fmt(remarksImpact?.line?.pending)} are still pending (unit: points). Click to see the closed points.`}
+            loading={loading || remarksImpactLoading}
+            info="Not Verified line-item points that now have a check or remark. Closed + Pending = Total Not Verified."
+            onClick={
+              remarksImpact?.line?.closed
+                ? () =>
+                    setRemarksImpactDialog({
+                      section: "line",
+                      title: "Line Item",
+                      bucket: "closed",
+                      closedLabel: "Points Closed",
+                    })
+                : undefined
+            }
+          />
+        </Grid>
       </Grid>
 
       <Grid container spacing={3}>
         <Grid item xs={12}>
           <ChartPanel
             title="PO Header-Level Compliance"
-            hint="% verified per PO (9 header-level points: 1-9). Each bar's denominator is POs, not line items. Click a bar to drill in."
-            info="Header-level points describe the whole PO, not one line item, so this chart counts each PO exactly once — unlike the line-item chart below, which counts once per PO line."
+            hint="% verified per header point (9 points: 1-9). Each bar's denominator is POs where that point applied. Click a bar to drill in."
+            info="Header-level points describe the whole PO, not one line item, so this chart counts each PO once per point."
             accent
             icon={<LayersRoundedIcon sx={{ mr: 1, color: HEADER_ACCENT }} />}
             height={horizontalChartHeight(
@@ -1679,11 +1878,7 @@ const ExecutiveDashboard = () => {
             )}
           >
             {loading ? (
-              <Skeleton
-                variant="rounded"
-                height="100%"
-                sx={{ borderRadius: 2 }}
-              />
+              <Skeleton variant="rounded" height="100%" sx={{ borderRadius: 2 }} />
             ) : (
               <ResponsiveContainer width="100%" height="95%">
                 <BarChart
@@ -1735,20 +1930,14 @@ const ExecutiveDashboard = () => {
                     {(charts.headerControlWiseCompliance || []).map((d) => (
                       <Cell
                         key={d.pointNo}
-                        fill={
-                          SEVERITY_COLORS[d.severity] || "url(#gradHeaderBar)"
-                        }
+                        fill={SEVERITY_COLORS[d.severity] || "url(#gradHeaderBar)"}
                       />
                     ))}
                     <LabelList
                       dataKey="compliancePct"
                       position="right"
                       formatter={(v) => (v != null ? `${v}%` : "")}
-                      style={{
-                        fontSize: 12,
-                        fontWeight: 700,
-                        fill: "#3730a3",
-                      }}
+                      style={{ fontSize: 12, fontWeight: 700, fill: "#3730a3" }}
                     />
                   </Bar>
                 </BarChart>
@@ -1760,15 +1949,11 @@ const ExecutiveDashboard = () => {
         <Grid item xs={12} md={7}>
           <ChartPanel
             title="Control-Wise Compliance (Line-Item)"
-            hint="% verified per PO line item (10 line-item points, 10-19). Click a bar to drill in."
+            hint="% verified per line-item point (10-19). Click a bar to drill in."
             info={chartDefs.controlWiseCompliance}
           >
             {loading ? (
-              <Skeleton
-                variant="rounded"
-                height="100%"
-                sx={{ borderRadius: 2 }}
-              />
+              <Skeleton variant="rounded" height="100%" sx={{ borderRadius: 2 }} />
             ) : (
               <ResponsiveContainer width="100%" height="95%">
                 <BarChart
@@ -1830,18 +2015,14 @@ const ExecutiveDashboard = () => {
         <Grid item xs={12} md={5}>
           <ChartPanel
             title="Exceptions by Severity"
-            hint="Click a slice to drill in"
+            hint="Share of Not Verified line checks. Click a slice to drill in"
             info={
               (chartDefs.exceptionBySeverity || "") +
               " Criticality per checkpoint is set by an admin."
             }
           >
             {loading ? (
-              <Skeleton
-                variant="rounded"
-                height="100%"
-                sx={{ borderRadius: 2 }}
-              />
+              <Skeleton variant="rounded" height="100%" sx={{ borderRadius: 2 }} />
             ) : (
               <ResponsiveContainer>
                 <PieChart>
@@ -1886,452 +2067,67 @@ const ExecutiveDashboard = () => {
           </ChartPanel>
         </Grid>
 
-        <Grid item xs={12}>
-          <ChartPanel
-            title="Purchase Group-Wise Compliance"
-            hint="% verified per purchasing group, worst first. Click a segment to drill in. (Line-item)"
-            info="Shows verified vs. not-verified LINE-ITEM checkpoint counts for every purchasing group."
-            height={horizontalChartHeight(
-              (charts.purchaseGroupWiseCompliance || []).length,
-            )}
-          >
-            {loading ? (
-              <Skeleton
-                variant="rounded"
-                height="100%"
-                sx={{ borderRadius: 2 }}
-              />
-            ) : (
-              <ResponsiveContainer>
-                <BarChart
-                  data={charts.purchaseGroupWiseCompliance || []}
-                  layout="vertical"
-                  margin={{ top: 10, bottom: 10, left: 10, right: 30 }}
-                  barCategoryGap="25%"
-                >
-                  <ChartGradients />
-                  <CartesianGrid
-                    strokeDasharray="3 3"
-                    horizontal={false}
-                    stroke={GRID_COLOR}
-                  />
-                  <XAxis
-                    type="number"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: "#64748b", fontSize: 12, fontWeight: 500 }}
-                  />
-                  <YAxis
-                    type="category"
-                    dataKey="purchaseGroup"
-                    tickFormatter={(v) => {
-                      const row = (
-                        charts.purchaseGroupWiseCompliance || []
-                      ).find((c) => c.purchaseGroup === v);
-                      return truncateLabel(row?.purchaseGroupName || v, 22);
-                    }}
-                    width={170}
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: "#334155", fontSize: 13, fontWeight: 600 }}
-                  />
-                  <Tooltip
-                    content={
-                      <ComplianceTooltip
-                        labelFormatter={(d) =>
-                          d.purchaseGroupName || d.purchaseGroup
-                        }
-                      />
-                    }
-                    cursor={{ fill: alpha("#4f46e5", 0.05) }}
-                  />
-                  <Legend
-                    iconType="circle"
-                    wrapperStyle={{
-                      paddingTop: 10,
-                      fontSize: "14px",
-                      fontWeight: 600,
-                    }}
-                  />
-                  <Bar
-                    dataKey="verified"
-                    stackId="a"
-                    fill="url(#gradVerified)"
-                    name="Verified"
-                    cursor="pointer"
-                    radius={[6, 0, 0, 6]}
-                    barSize={20}
-                    onClick={(d) => {
-                      const p = payloadOf(d);
-                      openDrilldown(
-                        "purchaseGroup",
-                        p.purchaseGroup,
-                        `Purchase Group: ${p.purchaseGroupName || p.purchaseGroup} - Verified lines`,
-                        { statusFilter: "verified" },
-                      );
-                    }}
-                  />
-                  <Bar
-                    dataKey="notVerified"
-                    stackId="a"
-                    fill="url(#gradNotVerified)"
-                    name="Not Verified"
-                    radius={[0, 6, 6, 0]}
-                    cursor="pointer"
-                    barSize={20}
-                    onClick={(d) => {
-                      const p = payloadOf(d);
-                      openDrilldown(
-                        "purchaseGroup",
-                        p.purchaseGroup,
-                        `Purchase Group: ${p.purchaseGroupName || p.purchaseGroup} - Not-Verified lines`,
-                        { statusFilter: "notVerified" },
-                      );
-                    }}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </ChartPanel>
-        </Grid>
+        {lineStacked({
+          title: "Purchase Group-Wise Compliance",
+          hint: "% verified per purchasing group, worst first. Click a segment to drill in. (Line-item checks)",
+          info: "Verified vs. not-verified LINE-ITEM checks for every purchasing group.",
+          data: charts.purchaseGroupWiseCompliance,
+          categoryKey: "purchaseGroup",
+          labelOf: (d) => d?.purchaseGroupName || d?.purchaseGroup,
+          axisWidth: 170,
+          dimension: "purchaseGroup",
+          titlePrefix: "Purchase Group",
+        })}
+        {lineStacked({
+          title: "Plant-Wise Compliance",
+          hint: "% verified per plant, worst first. Click a segment to drill in. (Line-item checks)",
+          info: "Verified vs. not-verified LINE-ITEM checks for every plant.",
+          data: charts.plantWiseCompliance,
+          categoryKey: "plant",
+          labelOf: (d) => d?.plantName || d?.plant,
+          axisWidth: 170,
+          dimension: "plant",
+          titlePrefix: "Plant",
+        })}
+        {lineStacked({
+          title: "Vendor-Wise Compliance",
+          hint: "Top 15 vendors by not-verified count. Click a segment to drill in. (Line-item checks)",
+          info: "Verified vs. not-verified LINE-ITEM checks for the 15 vendors with the most exceptions.",
+          data: charts.vendorWiseCompliance,
+          categoryKey: "vendorCode",
+          labelOf: (d) => d?.vendorName || d?.vendorCode,
+          axisWidth: 200,
+          dimension: "vendor",
+          titlePrefix: "Vendor",
+        })}
+        {lineStacked({
+          title: "PO Type-Wise Compliance",
+          hint: "Click a segment to drill in. (Line-item checks)",
+          info: chartDefs.poTypeWiseCompliance,
+          data: charts.poTypeWiseCompliance,
+          categoryKey: "poType",
+          labelOf: (d) => d?.poTypeName || d?.poType,
+          axisWidth: 160,
+          dimension: "poType",
+          titlePrefix: "PO Type",
+          tooltip: <PoTypeTooltip />,
+          barSize: 22,
+          gap: "30%",
+          heightArgs: [40, 60, 180],
+        })}
 
-        <Grid item xs={12}>
-          <ChartPanel
-            title="Plant-Wise Compliance"
-            hint="% verified per plant, worst first. Click a segment to drill in. (Line-item)"
-            info="Shows verified vs. not-verified LINE-ITEM checkpoint counts for every plant."
-            height={horizontalChartHeight(
-              (charts.plantWiseCompliance || []).length,
-            )}
-          >
-            {loading ? (
-              <Skeleton
-                variant="rounded"
-                height="100%"
-                sx={{ borderRadius: 2 }}
-              />
-            ) : (
-              <ResponsiveContainer>
-                <BarChart
-                  data={charts.plantWiseCompliance || []}
-                  layout="vertical"
-                  margin={{ top: 10, bottom: 10, left: 10, right: 30 }}
-                  barCategoryGap="25%"
-                >
-                  <ChartGradients />
-                  <CartesianGrid
-                    strokeDasharray="3 3"
-                    horizontal={false}
-                    stroke={GRID_COLOR}
-                  />
-                  <XAxis
-                    type="number"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: "#64748b", fontSize: 12, fontWeight: 500 }}
-                  />
-                  <YAxis
-                    type="category"
-                    dataKey="plant"
-                    tickFormatter={(v) => {
-                      const row = (charts.plantWiseCompliance || []).find(
-                        (c) => c.plant === v,
-                      );
-                      return truncateLabel(row?.plantName || v, 22);
-                    }}
-                    width={170}
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: "#334155", fontSize: 13, fontWeight: 600 }}
-                  />
-                  <Tooltip
-                    content={
-                      <ComplianceTooltip
-                        labelFormatter={(d) => d.plantName || d.plant}
-                      />
-                    }
-                    cursor={{ fill: alpha("#4f46e5", 0.05) }}
-                  />
-                  <Legend
-                    iconType="circle"
-                    wrapperStyle={{
-                      paddingTop: 10,
-                      fontSize: "14px",
-                      fontWeight: 600,
-                    }}
-                  />
-                  <Bar
-                    dataKey="verified"
-                    stackId="a"
-                    fill="url(#gradVerified)"
-                    name="Verified"
-                    cursor="pointer"
-                    radius={[6, 0, 0, 6]}
-                    barSize={20}
-                    onClick={(d) => {
-                      const p = payloadOf(d);
-                      openDrilldown(
-                        "plant",
-                        p.plant,
-                        `Plant: ${p.plantName || p.plant} - Verified lines`,
-                        { statusFilter: "verified" },
-                      );
-                    }}
-                  />
-                  <Bar
-                    dataKey="notVerified"
-                    stackId="a"
-                    fill="url(#gradNotVerified)"
-                    name="Not Verified"
-                    radius={[0, 6, 6, 0]}
-                    cursor="pointer"
-                    barSize={20}
-                    onClick={(d) => {
-                      const p = payloadOf(d);
-                      openDrilldown(
-                        "plant",
-                        p.plant,
-                        `Plant: ${p.plantName || p.plant} - Not-Verified lines`,
-                        { statusFilter: "notVerified" },
-                      );
-                    }}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </ChartPanel>
-        </Grid>
-
-        <Grid item xs={12}>
-          <ChartPanel
-            title="Vendor-Wise Compliance"
-            hint="Top 15 vendors by not-verified count. Click a segment to drill in. (Line-item)"
-            info="Shows verified vs. not-verified LINE-ITEM checkpoint counts for the 15 vendors contributing the most compliance exceptions."
-            height={horizontalChartHeight(
-              (charts.vendorWiseCompliance || []).length,
-            )}
-          >
-            {loading ? (
-              <Skeleton
-                variant="rounded"
-                height="100%"
-                sx={{ borderRadius: 2 }}
-              />
-            ) : (
-              <ResponsiveContainer>
-                <BarChart
-                  data={charts.vendorWiseCompliance || []}
-                  layout="vertical"
-                  margin={{ top: 10, bottom: 10, left: 10, right: 30 }}
-                  barCategoryGap="25%"
-                >
-                  <ChartGradients />
-                  <CartesianGrid
-                    strokeDasharray="3 3"
-                    horizontal={false}
-                    stroke={GRID_COLOR}
-                  />
-                  <XAxis
-                    type="number"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: "#64748b", fontSize: 12, fontWeight: 500 }}
-                  />
-                  <YAxis
-                    type="category"
-                    dataKey="vendorCode"
-                    tickFormatter={(v) => {
-                      const row = (charts.vendorWiseCompliance || []).find(
-                        (c) => c.vendorCode === v,
-                      );
-                      return truncateLabel(row?.vendorName || v, 26);
-                    }}
-                    width={200}
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: "#334155", fontSize: 13, fontWeight: 600 }}
-                  />
-                  <Tooltip
-                    content={
-                      <ComplianceTooltip
-                        labelFormatter={(d) => d.vendorName || d.vendorCode}
-                      />
-                    }
-                    cursor={{ fill: alpha("#4f46e5", 0.05) }}
-                  />
-                  <Legend
-                    iconType="circle"
-                    wrapperStyle={{
-                      paddingTop: 10,
-                      fontSize: "14px",
-                      fontWeight: 600,
-                    }}
-                  />
-                  <Bar
-                    dataKey="verified"
-                    stackId="a"
-                    fill="url(#gradVerified)"
-                    name="Verified"
-                    cursor="pointer"
-                    radius={[6, 0, 0, 6]}
-                    barSize={20}
-                    onClick={(d) => {
-                      const p = payloadOf(d);
-                      openDrilldown(
-                        "vendor",
-                        p.vendorCode,
-                        `Vendor: ${p.vendorName || p.vendorCode} - Verified lines`,
-                        { statusFilter: "verified" },
-                      );
-                    }}
-                  />
-                  <Bar
-                    dataKey="notVerified"
-                    stackId="a"
-                    fill="url(#gradNotVerified)"
-                    name="Not Verified"
-                    radius={[0, 6, 6, 0]}
-                    cursor="pointer"
-                    barSize={20}
-                    onClick={(d) => {
-                      const p = payloadOf(d);
-                      openDrilldown(
-                        "vendor",
-                        p.vendorCode,
-                        `Vendor: ${p.vendorName || p.vendorCode} - Not-Verified lines`,
-                        { statusFilter: "notVerified" },
-                      );
-                    }}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </ChartPanel>
-        </Grid>
-
-        <Grid item xs={12}>
-          <ChartPanel
-            title="PO Type-Wise Compliance"
-            hint="Click a segment to drill in. (Line-item)"
-            info={chartDefs.poTypeWiseCompliance}
-            height={horizontalChartHeight(
-              (charts.poTypeWiseCompliance || []).length,
-              40,
-              60,
-              180,
-            )}
-          >
-            {loading ? (
-              <Skeleton
-                variant="rounded"
-                height="100%"
-                sx={{ borderRadius: 2 }}
-              />
-            ) : (
-              <ResponsiveContainer>
-                <BarChart
-                  data={charts.poTypeWiseCompliance || []}
-                  layout="vertical"
-                  margin={{ top: 10, bottom: 10, left: 10, right: 30 }}
-                  barCategoryGap="30%"
-                >
-                  <ChartGradients />
-                  <CartesianGrid
-                    strokeDasharray="3 3"
-                    horizontal={false}
-                    stroke={GRID_COLOR}
-                  />
-                  <XAxis
-                    type="number"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: "#64748b", fontSize: 12, fontWeight: 500 }}
-                  />
-                  <YAxis
-                    type="category"
-                    dataKey="poType"
-                    tickFormatter={(v) => {
-                      const row = (charts.poTypeWiseCompliance || []).find(
-                        (c) => c.poType === v,
-                      );
-                      return truncateLabel(row?.poTypeName || v, 22);
-                    }}
-                    width={160}
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: "#334155", fontSize: 13, fontWeight: 600 }}
-                  />
-                  <Tooltip
-                    content={<PoTypeTooltip />}
-                    cursor={{ fill: alpha("#4f46e5", 0.05) }}
-                  />
-                  <Legend
-                    iconType="circle"
-                    wrapperStyle={{
-                      paddingTop: 10,
-                      fontSize: "14px",
-                      fontWeight: 600,
-                    }}
-                  />
-                  <Bar
-                    dataKey="verified"
-                    stackId="a"
-                    fill="url(#gradVerified)"
-                    name="Verified"
-                    cursor="pointer"
-                    radius={[6, 0, 0, 6]}
-                    barSize={22}
-                    onClick={(d) => {
-                      const p = payloadOf(d);
-                      openDrilldown(
-                        "poType",
-                        p.poType,
-                        `PO Type: ${p.poTypeName || p.poType} - Verified lines`,
-                        { statusFilter: "verified" },
-                      );
-                    }}
-                  />
-                  <Bar
-                    dataKey="notVerified"
-                    stackId="a"
-                    fill="url(#gradNotVerified)"
-                    name="Not Verified"
-                    radius={[0, 6, 6, 0]}
-                    cursor="pointer"
-                    barSize={22}
-                    onClick={(d) => {
-                      const p = payloadOf(d);
-                      openDrilldown(
-                        "poType",
-                        p.poType,
-                        `PO Type: ${p.poTypeName || p.poType} - Not-Verified lines`,
-                        { statusFilter: "notVerified" },
-                      );
-                    }}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </ChartPanel>
-        </Grid>
-
-        {/* REFACTORED TO GROUPED BAR CHART TO FIX DOT OVERLAP & CLICK GLITCHES */}
         <Grid item xs={12}>
           <ChartPanel
             title="Monthly Exception Trend"
             hint="Click a bar on either series to drill in."
             info={
               (chartDefs.monthlyExceptionTrend || "") +
-              " Line-item: a PO line counts once per month if any line-level point is not verified. Header: a PO counts once per month if any header-level point is not verified."
+              " Line-item bars count PO LINES with ≥ 1 Not Verified check. Header bars count POs with ≥ 1 Not Verified header check. Different units, so do not add the two bars."
             }
             height={320}
           >
             {loading ? (
-              <Skeleton
-                variant="rounded"
-                height="100%"
-                sx={{ borderRadius: 2 }}
-              />
+              <Skeleton variant="rounded" height="100%" sx={{ borderRadius: 2 }} />
             ) : (
               <ResponsiveContainer>
                 <BarChart
@@ -2370,7 +2166,7 @@ const ExecutiveDashboard = () => {
                   />
                   <Bar
                     dataKey="lineCount"
-                    name="Line-Item Exceptions"
+                    name="Lines with an exception"
                     fill={TREND_LINE_COLOR}
                     radius={[4, 4, 0, 0]}
                     barSize={20}
@@ -2381,13 +2177,13 @@ const ExecutiveDashboard = () => {
                       openDrilldown(
                         "month",
                         p.month,
-                        `Exceptions in ${moment(p.month, "YYYY-MM").format("MMMM YYYY")}`
+                        `Exceptions in ${moment(p.month, "YYYY-MM").format("MMMM YYYY")}`,
                       );
                     }}
                   />
                   <Bar
                     dataKey="headerCount"
-                    name="Header Exceptions"
+                    name="POs with a header exception"
                     fill={TREND_HEADER_COLOR}
                     radius={[4, 4, 0, 0]}
                     barSize={20}
@@ -2398,7 +2194,7 @@ const ExecutiveDashboard = () => {
                       openHeaderKpiDrilldown(
                         "month",
                         `Header Exceptions in ${moment(p.month, "YYYY-MM").format("MMMM YYYY")}`,
-                        p.month
+                        p.month,
                       );
                     }}
                   />
@@ -2409,115 +2205,97 @@ const ExecutiveDashboard = () => {
         </Grid>
       </Grid>
 
-      {/* RC-LEVEL (RC Overlap) — distinct teal styling. One check per Rate
-          Contract, so there is no control-wise breakdown like Header/Line
-          have: an RC is simply Verified or Not Verified. Closed = a Not
-          Verified RC whose remarks are locked; Pending = still open. Only
-          purchase group / vendor / material filters can narrow these
-          figures (see buildRcWhere in dashboard-controller.js) — PO
-          number, dates, plant and PO type don't exist on an RC. */}
-      <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 5, mb: 1.5 }}>
-        <DescriptionRoundedIcon sx={{ color: RC_ACCENT, fontSize: 20 }} />
-        <Typography
-          variant="overline"
-          sx={{ fontWeight: 800, color: RC_ACCENT, letterSpacing: 1.5 }}
+      {/* ===== RC LEVEL ===== */}
+      <Box sx={{ mt: 5 }}>
+        <LevelHeading
+          icon={<DescriptionRoundedIcon sx={{ color: RC_ACCENT, fontSize: 20 }} />}
+          color={RC_ACCENT}
+          unit="unit: Rate Contracts (1 check per RC)"
+          unitColor={RC_ACCENT}
+          unitBg={RC_ACCENT_BG}
         >
-          RC Overlap Level (1 check per Rate Contract)
-        </Typography>
+          RC Overlap Level
+        </LevelHeading>
       </Box>
       <Typography
         variant="caption"
         sx={{ display: "block", mb: 2, color: "#64748b", fontWeight: 500 }}
       >
         Only the Purchase Group, Vendor and Material Code filters apply to RC
-        figures — PO number, dates, plant and PO type don't exist on a Rate
+        figures (on the KPI cards, the charts and the RC Remarks Impact card
+        alike) — PO number, dates, plant and PO type don't exist on a Rate
         Contract.
       </Typography>
+      <Grid container spacing={3} sx={{ mb: 3 }}>
+        {rcCard({
+          label: "RC Compliance",
+          value:
+            rcKpis.overallComplianceScore != null
+              ? `${rcKpis.overallComplianceScore}%`
+              : "—",
+          sublabel: `Verified ÷ Total = ${fmt(rcKpis.verifiedCount)} ÷ ${fmt(rcKpis.totalRCCount)} RCs. Click to view all RCs.`,
+          info:
+            kpiDefs.rcComplianceScore ||
+            "Verified ÷ (Verified + Not Verified) Rate Contracts",
+          onClick: rcKpis.totalRCCount
+            ? () => openRcDrilldown("all", "All RCs — RC Overlap Detail")
+            : undefined,
+        })}
+        {rcCard({
+          label: "RCs Closed",
+          value: rcKpis.closedRCCount ?? "—",
+          valueColor: "#059669",
+          sublabel: `Not Verified RCs that have been closed. ${fmt(rcKpis.pendingRCCount)} still pending, out of ${fmt(rcKpis.notVerifiedCount)} Not Verified.`,
+          info:
+            kpiDefs.closedRCCount ||
+            "Not Verified RCs where the RC-level check has been closed.",
+          onClick: rcKpis.closedRCCount
+            ? () => openRcDrilldown("closed", "RCs — Closed")
+            : undefined,
+        })}
+        {rcCard({
+          label: "Verified (RC)",
+          value: rcKpis.verifiedCount ?? "—",
+          valueColor: "#059669",
+          sublabel: "RCs with no overlap found. Click to view Verified RCs.",
+          info: kpiDefs.rcVerifiedCount || "Count of Verified Rate Contracts.",
+          onClick: rcKpis.verifiedCount
+            ? () => openRcDrilldown("verified", "RCs — Verified")
+            : undefined,
+        })}
+        {rcCard({
+          label: "Not Verified (RC)",
+          value: rcKpis.notVerifiedCount ?? "—",
+          valueColor: "#dc2626",
+          sublabel: "RCs flagged by the RC Overlap check. Click to view Not Verified RCs.",
+          info:
+            kpiDefs.rcNotVerifiedCount ||
+            "Count of Not Verified Rate Contracts (system-flagged overlaps).",
+          onClick: rcKpis.notVerifiedCount
+            ? () => openRcDrilldown("notVerified", "RCs — Not Verified")
+            : undefined,
+        })}
+      </Grid>
       <Grid container spacing={3} sx={{ mb: 5 }}>
-        <Grid item xs={12} sm={6} md={3}>
-          <KpiCard
-            accent
-            accentBg={RC_ACCENT_BG}
-            accentBorder={RC_ACCENT_BORDER}
-            label="RC Compliance"
-            value={
-              rcKpis.overallComplianceScore != null
-                ? `${rcKpis.overallComplianceScore}%`
-                : "—"
-            }
-            loading={loading}
-            sublabel={`Verified ÷ (Verified + Not Verified), per RC — ${rcKpis.totalRCCount ?? 0} RCs in scope. Click to view all RCs.`}
-            info={
-              kpiDefs.rcComplianceScore ||
-              "Verified ÷ (Verified + Not Verified) Rate Contracts"
-            }
-            onClick={
-              rcKpis.totalRCCount
-                ? () => openRcDrilldown("all", "All RCs — RC Overlap Detail")
-                : undefined
-            }
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <KpiCard
-            accent
-            accentBg={RC_ACCENT_BG}
-            accentBorder={RC_ACCENT_BORDER}
-            label="RCs Closed"
-            value={rcKpis.closedRCCount ?? "—"}
-            valueColor="#059669"
-            loading={loading}
-            sublabel={`Not Verified RCs whose remarks are locked. ${rcKpis.pendingRCCount ?? 0} still pending, out of ${rcKpis.notVerifiedCount ?? 0} Not Verified. Click to view closed RCs.`}
-            info={
-              kpiDefs.closedRCCount ||
-              "Not Verified RCs where the RC-level check has been closed (remarks locked)."
-            }
-            onClick={
-              rcKpis.closedRCCount
-                ? () => openRcDrilldown("closed", "RCs — Closed")
-                : undefined
-            }
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <KpiCard
-            accent
-            accentBg={RC_ACCENT_BG}
-            accentBorder={RC_ACCENT_BORDER}
-            label="Verified (RC)"
-            value={rcKpis.verifiedCount ?? "—"}
-            valueColor="#059669"
-            loading={loading}
-            sublabel="RCs with no overlap found. Click to view Verified RCs."
-            info={kpiDefs.rcVerifiedCount || "Count of Verified Rate Contracts."}
-            onClick={
-              rcKpis.verifiedCount
-                ? () => openRcDrilldown("verified", "RCs — Verified")
-                : undefined
-            }
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <KpiCard
-            accent
-            accentBg={RC_ACCENT_BG}
-            accentBorder={RC_ACCENT_BORDER}
-            label="Not Verified (RC)"
-            value={rcKpis.notVerifiedCount ?? "—"}
-            valueColor="#dc2626"
-            loading={loading}
-            sublabel="RCs flagged by the RC Overlap check. Click to view Not Verified RCs."
-            info={
-              kpiDefs.rcNotVerifiedCount ||
-              "Count of Not Verified Rate Contracts (system-flagged overlaps)."
-            }
-            onClick={
-              rcKpis.notVerifiedCount
-                ? () => openRcDrilldown("notVerified", "RCs — Not Verified")
-                : undefined
-            }
-          />
-        </Grid>
+        {rcCard({
+          label: "Total RCs in Scope",
+          value: rcKpis.totalRCCount ?? "—",
+          sublabel: `Verified ${fmt(rcKpis.verifiedCount)} + Not Verified ${fmt(rcKpis.notVerifiedCount)}.`,
+          info: "Every Rate Contract that has a Verified or Not Verified result.",
+          onClick: rcKpis.totalRCCount
+            ? () => openRcDrilldown("all", "All RCs — RC Overlap Detail")
+            : undefined,
+        })}
+        {rcCard({
+          label: "RCs Pending",
+          value: rcKpis.pendingRCCount ?? "—",
+          valueColor: "#d97706",
+          sublabel: "Not Verified RCs still open. Click to view them.",
+          info: "Not Verified RCs that are not closed yet.",
+          onClick: rcKpis.pendingRCCount
+            ? () => openRcDrilldown("pending", "RCs — Pending")
+            : undefined,
+        })}
       </Grid>
 
       <Grid container spacing={3}>
@@ -2525,27 +2303,33 @@ const ExecutiveDashboard = () => {
           <Grid item xs={12}>
             <ChartPanel
               title="RC Compliance by Purchase Group"
-              hint="Verified vs. Not Verified RCs per purchasing group, worst first. An RC listing several groups counts once toward each. Click a segment to drill in."
-              info="Shows verified vs. not-verified RC counts for every purchasing group. Visible to Admin, Procurement Manager and SSB Digital only."
+              hint="Verified vs. Not Verified RCs per purchasing group, worst first. An RC listing several groups counts once toward each, so group totals can exceed the RC total. Click a segment to drill in."
+              info="Verified vs. not-verified RC counts for every purchasing group. Visible to Admin, Procurement Manager and SSB Digital only."
               accent
               tone={RC_PANEL_TONE}
               icon={<DescriptionRoundedIcon sx={{ mr: 1, color: RC_ACCENT }} />}
               height={horizontalChartHeight(rcGroupChartData.length)}
             >
               {loading ? (
-                <Skeleton
-                  variant="rounded"
-                  height="100%"
-                  sx={{ borderRadius: 2 }}
-                />
+                <Skeleton variant="rounded" height="100%" sx={{ borderRadius: 2 }} />
               ) : (
-                renderRcStackedChart({
+                renderStackedChart({
                   chartData: rcGroupChartData,
                   categoryKey: "purchaseGroup",
                   labelOf: (d) => d?.purchaseGroupName || d?.purchaseGroup,
                   axisWidth: 170,
-                  drillDimension: "purchaseGroup",
-                  drillTitle: "RC Purchase Group",
+                  rc: true,
+                  tooltip: (
+                    <ComplianceTooltip
+                      labelFormatter={(d) => d?.purchaseGroupName || d?.purchaseGroup}
+                    />
+                  ),
+                  onSegment: (p, status) =>
+                    openRcDrilldown(
+                      "purchaseGroup",
+                      `RC Purchase Group: ${p.purchaseGroupName || p.purchaseGroup} - ${statusWord(status)} RCs`,
+                      { value: p.purchaseGroup, statusFilter: status },
+                    ),
                 })
               )}
             </ChartPanel>
@@ -2557,26 +2341,32 @@ const ExecutiveDashboard = () => {
             <ChartPanel
               title="RC Compliance by Vendor"
               hint="Top 15 vendors by not-verified RC count. Click a segment to drill in."
-              info="Shows verified vs. not-verified RC counts for the 15 vendors with the most Not Verified Rate Contracts."
+              info="Verified vs. not-verified RC counts for the 15 vendors with the most Not Verified Rate Contracts. Note: the same vendor can appear twice if its code is stored with and without leading zeros."
               accent
               tone={RC_PANEL_TONE}
               icon={<DescriptionRoundedIcon sx={{ mr: 1, color: RC_ACCENT }} />}
               height={horizontalChartHeight(rcVendorChartData.length)}
             >
               {loading ? (
-                <Skeleton
-                  variant="rounded"
-                  height="100%"
-                  sx={{ borderRadius: 2 }}
-                />
+                <Skeleton variant="rounded" height="100%" sx={{ borderRadius: 2 }} />
               ) : (
-                renderRcStackedChart({
+                renderStackedChart({
                   chartData: rcVendorChartData,
                   categoryKey: "vendorCode",
                   labelOf: (d) => d?.vendorName || d?.vendorCode,
                   axisWidth: 200,
-                  drillDimension: "vendor",
-                  drillTitle: "RC Vendor",
+                  rc: true,
+                  tooltip: (
+                    <ComplianceTooltip
+                      labelFormatter={(d) => d?.vendorName || d?.vendorCode}
+                    />
+                  ),
+                  onSegment: (p, status) =>
+                    openRcDrilldown(
+                      "vendor",
+                      `RC Vendor: ${p.vendorName || p.vendorCode} - ${statusWord(status)} RCs`,
+                      { value: p.vendorCode, statusFilter: status },
+                    ),
                 })
               )}
             </ChartPanel>
@@ -2586,8 +2376,8 @@ const ExecutiveDashboard = () => {
 
       <Box sx={{ mt: 5 }}>
         <PoWiseExceptionsTable
-          rows={charts.poWiseExceptions || []}
-          loading={loading}
+          rows={poStatus?.poRows || []}
+          loading={poStatusLoading && !poStatus}
           onRowAction={handleRowAction}
           viewAllHref="/po-data"
           restrictedNotice={restrictedNotice}
@@ -2604,12 +2394,12 @@ const ExecutiveDashboard = () => {
           fontWeight: 500,
         }}
       >
-        Executive P2P Compliance Control Tower — "Total POs" above is the
-        single figure for how many POs are in scope; Header-Level and
-        Line-Item sections above only report compliance against that same
-        set of POs. RC Overlap compliance is measured per Rate Contract, not
-        per PO. Checkpoint descriptions and criticality live on the
-        Risk Categorization Master page.
+        Executive P2P Compliance Control Tower — start with the PO Status
+        Summary at the top. Closed means the same thing everywhere: a point is
+        closed when it is Verified, Not Applicable, or Not Verified with a
+        check or remark; a PO is closed when it has no pending point.
+        Checkpoint descriptions and criticality live on the Risk
+        Categorization Master page.
       </Typography>
 
       <DrilldownDialog
@@ -2630,7 +2420,7 @@ const ExecutiveDashboard = () => {
         drilldown={headerKpiDrilldown}
         appliedFilters={buildSummaryBody(filters)}
         onClose={() => setHeaderKpiDrilldown(null)}
-        onViewHeader={(poNumber) => setPoPreview({ poNumber })}
+        onViewHeader={(poNumber, source_file_ts) => setPoPreview({ poNumber, source_file_ts })}
       />
       <RcKpiDrilldownDialog
         drilldown={rcDrilldown}
@@ -2645,6 +2435,13 @@ const ExecutiveDashboard = () => {
           fetchSummary(filters);
           fetchRemarksImpact(filters);
         }}
+      />
+      <PoListDialog
+        dialog={poListDialog}
+        rows={poStatus?.poRows || []}
+        version={poStatus}
+        onClose={() => setPoListDialog(null)}
+        onWork={handleWork}
       />
       <RemarksImpactListDialog
         trigger={remarksImpactDialog}

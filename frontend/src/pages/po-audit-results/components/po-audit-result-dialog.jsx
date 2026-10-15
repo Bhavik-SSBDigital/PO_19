@@ -47,7 +47,7 @@ const Field = ({ label, value }) => (
  * item this dialog is showing. Rendered as its own section, above the
  * per-line `results` breakdown, using the same AuditPointsBreakdown table.
  */
-const PoAuditResultDialog = ({ id, onClose }) => {
+const PoAuditResultDialog = ({ id, sourceFileTs, onClose }) => {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
 
@@ -59,7 +59,7 @@ const PoAuditResultDialog = ({ id, onClose }) => {
     const fetchResult = async () => {
       setLoading(true);
       try {
-        const response = await post("/getPOAuditResult", { id });
+        const response = await post("/getPOAuditResult", { id, source_file_ts: sourceFileTs });
         setResult(response);
       } catch (error) {
         console.error("Error fetching PO audit result:", error);
@@ -71,7 +71,7 @@ const PoAuditResultDialog = ({ id, onClose }) => {
     };
     fetchResult();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [id, sourceFileTs]);
 
   return (
     <Dialog open={!!id} onClose={onClose} maxWidth="md" fullWidth>

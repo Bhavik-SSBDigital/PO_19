@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { resolveAuditLine } from "../utility/po-version.js";
 import { getPurchaseGroupCode } from "../utility/master-data.js";
 import { computeTally } from "../utility/point-tally.js";
 import {
@@ -33,14 +34,12 @@ function canWriteRemarks(user, auditResult) {
   return !!ownGroup && auditResult.purchase_group === ownGroup;
 }
 
-async function resolveAuditResult({ auditResultId, poNumber, poLineItem }) {
+async function resolveAuditResult({ auditResultId, poNumber, poLineItem, sourceFileTs }) {
   if (auditResultId) {
     return prisma.auditResult.findUnique({ where: { id: auditResultId } });
   }
   if (poNumber && poLineItem) {
-    return prisma.auditResult.findFirst({
-      where: { type: "PO", po_number: poNumber, po_line_item: poLineItem },
-    });
+    return resolveAuditLine(poNumber, poLineItem, sourceFileTs).then((row) => row?.type === "PO" ? row : null);
   }
   return null;
 }
@@ -101,6 +100,7 @@ export const submitPoRemark = async (req, res) => {
       auditResultId,
       poNumber,
       poLineItem,
+      source_file_ts,
       pointNo,
       remark,
       isSystemResultWrong, // boolean — true = "system's result is wrong", false = "just informative"
@@ -124,6 +124,7 @@ export const submitPoRemark = async (req, res) => {
       auditResultId,
       poNumber,
       poLineItem,
+      sourceFileTs: source_file_ts,
     });
     if (!auditResult) {
       return res.status(404).json({ message: "PO line item not found" });
@@ -285,7 +286,7 @@ export const getPoRemarks = async (req, res) => {
       return res.status(403).json({ message: "Not authorized" });
     }
 
-    const { auditResultId, poNumber, poLineItem, pointNo } = req.body || {};
+    const { auditResultId, poNumber, poLineItem, pointNo, source_file_ts } = req.body || {};
     const isScopedToLineItem = Boolean(
       auditResultId || (poNumber && poLineItem),
     );
@@ -298,6 +299,7 @@ export const getPoRemarks = async (req, res) => {
         auditResultId,
         poNumber,
         poLineItem,
+        sourceFileTs: source_file_ts,
       });
       if (!resolvedAuditResult) {
         return res.status(404).json({ message: "PO line item not found" });
@@ -415,7 +417,7 @@ export const setAuditResultCheckedStatus = async (req, res) => {
       return res.status(403).json({ message: "Not authorized" });
     }
 
-    const { auditResultId, poNumber, poLineItem, checked } = req.body || {};
+    const { auditResultId, poNumber, poLineItem, checked, source_file_ts } = req.body || {};
     if (typeof checked !== "boolean") {
       return res.status(400).json({ message: "checked (boolean) is required" });
     }
@@ -430,6 +432,7 @@ export const setAuditResultCheckedStatus = async (req, res) => {
       auditResultId,
       poNumber,
       poLineItem,
+      sourceFileTs: source_file_ts,
     });
     if (!auditResult)
       return res.status(404).json({ message: "PO line item not found" });
@@ -486,7 +489,7 @@ export const togglePointChecked = async (req, res) => {
         .json({ message: "Only buyers can mark points as checked" });
     }
 
-    const { auditResultId, poNumber, poLineItem, pointNo, checked } =
+    const { auditResultId, poNumber, poLineItem, pointNo, checked, source_file_ts } =
       req.body || {};
     if (pointNo === undefined || pointNo === null || pointNo === "") {
       return res.status(400).json({ message: "pointNo is required" });
@@ -505,6 +508,7 @@ export const togglePointChecked = async (req, res) => {
       auditResultId,
       poNumber,
       poLineItem,
+      sourceFileTs: source_file_ts,
     });
     if (!auditResult)
       return res.status(404).json({ message: "PO line item not found" });

@@ -22,6 +22,13 @@ import {
   findSystemPoint,
 } from "../utility/system-result.js";
 
+function formatFileTimestampIst(value) {
+  if (!value) return "-";
+  const parts = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(value);
+  const part = (type) => parts.find((item) => item.type === type)?.value || "";
+  return `${part("day")}-${part("month")}-${part("year")} ${part("hour")}:${part("minute")}:${part("second")}`;
+}
+
 const SUBMITTER_SELECT = {
   id: true,
   username: true,
@@ -114,6 +121,8 @@ function buildLineReportRow(remark) {
     level: "line",
     poNumber: remark.po_number,
     lineItem: remark.po_line_item || ar.po_line_item || "",
+    source_file_ts: ar.source_file_ts?.toISOString?.() || null,
+    fileTimestamp: formatFileTimestampIst(ar.source_file_ts),
     pointNo: remark.pointNo,
     pointTitle: pointDef?.title || "",
 
@@ -303,6 +312,8 @@ function buildHeaderReportRow(remark) {
     level: "header",
     poNumber: remark.po_number,
     lineItem: "(Header)",
+    source_file_ts: hr.source_file_ts?.toISOString?.() || remark.source_file_ts?.toISOString?.() || null,
+    fileTimestamp: formatFileTimestampIst(hr.source_file_ts || remark.source_file_ts),
     pointNo: remark.pointNo,
     pointTitle: pointDef?.title || "",
 
@@ -765,6 +776,7 @@ export const getPoRemarksReportFilters = async (req, res) => {
 const REPORT_COLUMNS = [
   ["PO Number", "poNumber"],
   ["Line Item", "lineItem"],
+  ["File Timestamp", "fileTimestamp"],
   ["Point No", "pointNo"],
   ["Point Title", "pointTitle"],
   ["Buyer's Remark", "buyerRemark"],
@@ -874,6 +886,7 @@ export const downloadPoRemarksReport = async (req, res) => {
 const ISSUE_TRACKER_COLUMNS = [
   ["PO Number", "poNumber"],
   ["Line Item", "lineItem"],
+  ["File Timestamp", "fileTimestamp"],
   ["Point No", "pointNo"],
   ["Point Title", "pointTitle"],
   ["Issue Status", "issueStatus"],

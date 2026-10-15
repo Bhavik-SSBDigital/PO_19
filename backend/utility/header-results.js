@@ -15,6 +15,7 @@
 // which line item (or none) is currently being viewed.
 
 import { prisma } from "../lib/prisma.js";
+import { resolvePoHeader } from "./po-version.js";
 import { severityOf } from "./severity.js";
 // ADD near the top, alongside the other point-definitions import:
 import { computeTally } from "./point-tally.js";
@@ -68,6 +69,7 @@ function formatHeaderRemark(remark, user) {
       "",
     submittedAt: remark.submittedAt,
     isMine: userId != null && String(remark.submittedBy) === String(userId),
+    source_file_ts: remark.source_file_ts?.toISOString?.() || null,
   };
 }
 
@@ -77,10 +79,10 @@ function formatHeaderRemark(remark, user) {
 // po-header-controller.js's getPoHeaderSummary, so a header's remark
 // count/content can never disagree depending on which endpoint happened
 // to load it.
-async function getHeaderRemarksMap(poNumber, user) {
+async function getHeaderRemarksMap(poNumber, user, sourceFileTs) {
   if (!poNumber || !user) return new Map();
   const remarks = await prisma.poHeaderRemark.findMany({
-    where: { po_number: poNumber },
+    where: { po_number: poNumber, ...(sourceFileTs ? { source_file_ts: new Date(sourceFileTs) } : {}) },
     include: { submitter: { select: REMARK_SUBMITTER_SELECT } },
     orderBy: { submittedAt: "desc" },
   });
@@ -152,6 +154,7 @@ function shapeHeader(record, poNumber, remarksByPoint = new Map()) {
   if (!record) {
     return {
       poNumber,
+      source_file_ts: null,
       points: [],
       totalPoints: 0,
       verifiedCount: 0,
@@ -179,6 +182,7 @@ function shapeHeader(record, poNumber, remarksByPoint = new Map()) {
 
   return {
     poNumber: record.po_number,
+    source_file_ts: record.source_file_ts?.toISOString?.() || null,
     points,
     totalPoints: points.length,
     verifiedCount: points.filter((p) => p.verified).length,
@@ -200,41 +204,35 @@ function shapeHeader(record, poNumber, remarksByPoint = new Map()) {
 // `user` is optional (defaults to no remarks attached) so existing
 // internal callers that don't have a request user keep working, but every
 // caller that has one should pass it through to get remarks seeded.
-export async function getHeaderForPo(poNumber, user) {
+export async function getHeaderForPo(poNumber, user, sourceFileTs) {
   await ensurePointDefinitionsLoaded();
   if (!poNumber) return shapeHeader(null, poNumber);
-  const [record, remarksByPoint] = await Promise.all([
-    prisma.poHeaderResult.findUnique({ where: { po_number: poNumber } }),
-    getHeaderRemarksMap(poNumber, user),
-  ]);
+  const record = await resolvePoHeader(poNumber, sourceFileTs);
+  const remarksByPoint = await getHeaderRemarksMap(
+    poNumber,
+    user,
+    record?.source_file_ts || sourceFileTs,
+  );
   return shapeHeader(record, poNumber, remarksByPoint);
 }
 
 // Batch version - avoids N+1 queries when enriching a page of many PO
 // lines at once. Returns a Map<po_number, shapedHeader>.
-export async function getHeadersForPos(poNumbers, user) {
+export async function getHeadersForPos(poRows, user) {
   await ensurePointDefinitionsLoaded();
-  const uniqueNumbers = [...new Set((poNumbers || []).filter(Boolean))];
+  const rows = Array.isArray(poRows) ? poRows : [];
   const map = new Map();
-  if (!uniqueNumbers.length) return map;
-
-  const [records, remarksByPo] = await Promise.all([
-    prisma.poHeaderResult.findMany({
-      where: { po_number: { in: uniqueNumbers } },
-    }),
-    getHeaderRemarksMapBatch(uniqueNumbers, user),
-  ]);
-  const byPo = new Map(records.map((r) => [r.po_number, r]));
-
-  for (const poNumber of uniqueNumbers) {
-    map.set(
-      poNumber,
-      shapeHeader(
-        byPo.get(poNumber) || null,
-        poNumber,
-        remarksByPo.get(poNumber) || new Map(),
-      ),
-    );
+  const unique = new Map();
+  for (const row of rows) {
+    const poNumber = typeof row === "string" ? row : row?.po_number;
+    if (!poNumber) continue;
+    const sourceFileTs = typeof row === "string" ? undefined : row.source_file_ts;
+    unique.set(`${poNumber}\u0000${sourceFileTs?.toISOString?.() || sourceFileTs || ""}`, {poNumber, sourceFileTs});
   }
+  await Promise.all([...unique.values()].map(async ({poNumber, sourceFileTs}) => {
+    const record = await resolvePoHeader(poNumber, sourceFileTs);
+    const remarks = await getHeaderRemarksMap(poNumber, user, record?.source_file_ts || sourceFileTs);
+    map.set(`${poNumber}\u0000${record?.source_file_ts?.toISOString?.() || sourceFileTs?.toISOString?.() || sourceFileTs || ""}`, shapeHeader(record, poNumber, remarks));
+  }));
   return map;
 }

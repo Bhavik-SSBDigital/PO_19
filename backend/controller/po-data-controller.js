@@ -8,55 +8,17 @@ import { RC_PLACEHOLDER_PO_TYPES } from "../utility/rc-placeholder.js";
 import {
   getVendorName,
   getVendorInfo,
-  getPlantName,
   getPurchaseGroupName,
   getPurchaseGroupCode,
   getPurchaseGroupsList,
   searchPurchaseGroupCodes,
-  getPaymentTermDescription,
   getPoTypeName,
   getPoTypesList,
   getPlantsList,
 } from "../utility/master-data.js";
-
-const parseNum = (v) => {
-  if (v === null || v === undefined || v === "") return 0;
-  const n = Number(String(v).replace(/,/g, ""));
-  return isNaN(n) ? 0 : n;
-};
-
-const lineItemOf = (row) => {
-  if (row.po_line_item) return row.po_line_item;
-  if (row.po_material_number && row.po_material_number.includes("-")) {
-    return row.po_material_number.split("-").slice(1).join("-");
-  }
-  return null;
-};
-
-const rowIsClosed = (row) => row.remarksLocked === true;
-
-const ROW_SELECT = {
-  id: true,
-  po_number: true,
-  po_line_item: true,
-  po_material_number: true,
-  purchase_req: true,
-  po_type: true,
-  po_created_date: true,
-  plant: true,
-  purchase_group: true,
-  vendor_code: true,
-  nameOfVendor: true,
-  material_code: true,
-  net_value: true,
-  payment_term: true,
-  results: true,
-  tax_code: true,
-  GSTInOfVendor: true,
-  remarksLocked: true,
-  remarksLockedBy: true,
-  remarksLockedAt: true,
-};
+import { analyseRecord, pendingPointsOf } from "../utility/po-status.js";
+import { getScopedModel } from "../utility/data-cache.js";
+import { buildPoRows } from "../utility/po-rows.js";
 
 const HEADER_ROW_SELECT = {
   id: true,
@@ -65,12 +27,12 @@ const HEADER_ROW_SELECT = {
   purchase_group: true,
   po_type: true,
   results: true,
-  remarksLocked: true,
-  remarksLockedBy: true,
-  remarksLockedAt: true,
+  checkedPoints: true,
   auditedOn: true,
 };
 
+// Same RC-placeholder exclusion the dashboard uses (see buildWhere in
+// dashboard-controller.js) - this is what keeps the two totals identical.
 function buildBaseWhere(body = {}) {
   const where = { type: "PO", po_type: { notIn: RC_PLACEHOLDER_PO_TYPES } };
 
@@ -85,7 +47,9 @@ function buildBaseWhere(body = {}) {
     if (body.prDateTo) where.pr_create_date.lte = new Date(body.prDateTo);
   }
   if (Array.isArray(body.poType) && body.poType.length) {
-    where.po_type = { in: body.poType };
+    where.po_type = {
+      in: body.poType.filter((t) => !RC_PLACEHOLDER_PO_TYPES.includes(t)),
+    };
   }
   if (Array.isArray(body.plant) && body.plant.length) {
     where.plant = { in: body.plant };
@@ -102,10 +66,6 @@ function buildBaseWhere(body = {}) {
   return where;
 }
 
-function rowHasException(row) {
-  return (row.results || []).some((p) => classifyPoint(p) === "notVerified");
-}
-
 function pointMatchesAdvancedFilters(p, { severity, pointNo }) {
   if (classifyPoint(p) !== "notVerified") return false;
   if (pointNo && String(p.pointNo) !== String(pointNo)) return false;
@@ -117,49 +77,6 @@ function pointMatchesAdvancedFilters(p, { severity, pointNo }) {
     if (wanted.length && !wanted.includes(severityOf(p.pointNo))) return false;
   }
   return true;
-}
-
-function newBucket() {
-  return {
-    totalLines: 0,
-    exceptionLines: 0,
-    verifiedPoints: 0,
-    notVerifiedPoints: 0,
-    closedLines: 0,
-    openLines: 0,
-    lineItems: new Set(),
-    lineItemDetails: [],
-    prs: new Set(),
-    taxCodes: new Set(),
-    gstins: new Set(),
-    valueExposure: 0,
-    vendorCode: null,
-    vendorName: null,
-    poType: null,
-    plant: null,
-    purchaseGroup: null,
-    paymentTerm: null,
-    poDate: null,
-  };
-}
-
-function compliancePctOf(b) {
-  const denom = b.verifiedPoints + b.notVerifiedPoints;
-  return denom > 0
-    ? Number(((b.verifiedPoints / denom) * 100).toFixed(1))
-    : null;
-}
-
-function closedPctOf(b) {
-  return b.totalLines > 0
-    ? Number(((b.closedLines / b.totalLines) * 100).toFixed(1))
-    : null;
-}
-
-function reviewStatusOf(b) {
-  if (b.totalLines === 0 || b.closedLines === 0) return "pending";
-  if (b.closedLines === b.totalLines) return "reviewed";
-  return "in_progress";
 }
 
 export const getPoWiseExceptions = async (req, res) => {
@@ -193,105 +110,48 @@ export const getPoWiseExceptions = async (req, res) => {
         .json({ message: "Not authorized to view PO data" });
     }
 
-    const rows = await prisma.auditResult.findMany({
-      where,
-      select: ROW_SELECT,
-    });
+    // One shared, cached read (same one the dashboard uses).
+    const model = await getScopedModel(where);
 
-    const severity = body.severity;
-    const pointNo = body.pointNo;
-    const hasPointFilter = Boolean(severity || pointNo);
-
-    const byPo = {};
-    for (const row of rows) {
-      if (hasPointFilter) {
-        const anyMatch = (row.results || []).some((p) =>
-          pointMatchesAdvancedFilters(p, { severity, pointNo }),
-        );
-        if (!anyMatch) continue;
+    // With a severity / point filter keep a PO if ANY of its lines OR its
+    // header matches - but its numbers still cover ALL its lines.
+    const { severity, pointNo } = body;
+    let matchedPos = null;
+    if (severity || pointNo) {
+      matchedPos = new Set();
+      for (const row of model.lineRows) {
+        if (
+          (row.results || []).some((p) =>
+            pointMatchesAdvancedFilters(p, { severity, pointNo }),
+          )
+        )
+          matchedPos.add(row.po_number);
       }
-
-      const poKey = row.po_number || "Unassigned";
-      const vendor = getVendorInfo(row.vendor_code);
-      byPo[poKey] = byPo[poKey] || newBucket();
-      const b = byPo[poKey];
-
-      const closed = rowIsClosed(row);
-      const hasException = rowHasException(row);
-
-      b.totalLines += 1;
-      if (hasException) b.exceptionLines += 1;
-      if (closed) b.closedLines += 1;
-      else b.openLines += 1;
-
-      for (const p of row.results || []) {
-        const status = classifyPoint(p);
-        if (status === "verified") b.verifiedPoints += 1;
-        else if (status === "notVerified") b.notVerifiedPoints += 1;
+      for (const h of model.headerRows) {
+        if (
+          (h.results || []).some((p) =>
+            pointMatchesAdvancedFilters(p, { severity, pointNo }),
+          )
+        )
+          matchedPos.add(h.po_number);
       }
-
-      const li = lineItemOf(row);
-      if (li) b.lineItems.add(li);
-
-      b.lineItemDetails.push({
-        lineItem: li || row.po_material_number || "—",
-        poLineItem: row.po_line_item || null,
-        materialCode: row.material_code || null,
-        closed,
-        hasException,
-        remarksLockedAt: row.remarksLockedAt || null,
-        netValue: parseNum(row.net_value),
-      });
-
-      if (row.purchase_req) b.prs.add(row.purchase_req);
-      if (row.tax_code) b.taxCodes.add(row.tax_code);
-      const gstin = row.GSTInOfVendor || vendor?.gstin || "";
-      if (gstin) b.gstins.add(gstin);
-      b.valueExposure += parseNum(row.net_value);
-      b.vendorCode = b.vendorCode || row.vendor_code || null;
-      b.vendorName = b.vendorName || row.nameOfVendor || vendor?.name || null;
-      b.poType = b.poType || row.po_type || null;
-      b.plant = b.plant || row.plant || null;
-      b.purchaseGroup = b.purchaseGroup || row.purchase_group || null;
-      b.paymentTerm = b.paymentTerm || row.payment_term || null;
-      b.poDate = b.poDate || row.po_created_date || null;
     }
 
-    let finalResults = Object.entries(byPo)
-      .sort((a, b) => b[1].exceptionLines - a[1].exceptionLines)
-      .map(([poNumber, v]) => ({
-        poNumber,
-        poDate: v.poDate,
-        vendorCode: v.vendorCode,
-        vendorName: v.vendorName || getVendorName(v.vendorCode),
-        poType: v.poType,
-        poTypeName: getPoTypeName(v.poType),
-        plant: v.plant,
-        plantName: getPlantName(v.plant),
-        purchaseGroup: v.purchaseGroup,
-        purchaseGroupName: getPurchaseGroupName(v.purchaseGroup),
-        paymentTerm: v.paymentTerm,
-        paymentTermDescription: getPaymentTermDescription(v.paymentTerm),
-        totalLineCount: v.totalLines,
-        exceptionLineCount: v.exceptionLines,
-        compliancePct: compliancePctOf(v),
-        closedLineCount: v.closedLines,
-        openLineCount: v.openLines,
-        closedPct: closedPctOf(v),
-        reviewStatus: reviewStatusOf(v),
-        isFullyClosed: v.totalLines > 0 && v.closedLines === v.totalLines,
-        lineItemDetails: [...v.lineItemDetails].sort((a, c) =>
-          String(a.lineItem).localeCompare(String(c.lineItem), undefined, {
-            numeric: true,
-          }),
-        ),
-        distinctLineItems: v.lineItems.size,
-        lineItems: [...v.lineItems].sort(),
-        purchase_req: [...v.prs].join(", "),
-        taxCode: [...v.taxCodes].join(", "),
-        vendorGstin: [...v.gstins].join(", "),
-        valueExposure: Number(v.valueExposure.toFixed(2)),
-      }));
+    // `lite: true` skips the per-line detail array (used when only the PO
+    // rows are needed).
+    const { rows: built } = buildPoRows(model, {
+      includeLineDetails: body.lite !== true,
+    });
+
+    let finalResults = matchedPos
+      ? built.filter((r) => matchedPos.has(r.poNumber))
+      : built;
+
+    finalResults.sort(
+      (a, b) =>
+        b.totalPendingPoints - a.totalPendingPoints ||
+        b.exceptionLineCount - a.exceptionLineCount,
+    );
 
     // Post-filter logic for Vendor Search
     if (body.vendorSearch) {
@@ -303,14 +163,22 @@ export const getPoWiseExceptions = async (req, res) => {
       );
     }
 
+    // Optional status filter (pending | in_review | reviewed | perfect)
+    if (body.poStatus) {
+      const wanted = Array.isArray(body.poStatus)
+        ? body.poStatus
+        : [body.poStatus];
+      finalResults = finalResults.filter((r) => wanted.includes(r.poStatus));
+    }
+
     // Attach Remarks if specifically requested (used by Export to CSV)
-    // Structure: Maps header remarks to the PO object, and line remarks to the specific line object.
     if (body.includeRemarks) {
       const poNumbers = finalResults.map((r) => r.poNumber);
 
       const lineRemarks = await prisma.poRemark.findMany({
         where: { po_number: { in: poNumbers } },
         include: {
+          auditResult: { select: { source_file_ts: true } },
           submitter: {
             select: { firstName: true, lastName: true, username: true },
           },
@@ -334,41 +202,46 @@ export const getPoWiseExceptions = async (req, res) => {
           : "Unknown";
 
       headerRemarks.forEach((r) => {
-        if (!headerRemarksMap[r.po_number]) headerRemarksMap[r.po_number] = [];
-        headerRemarksMap[r.po_number].push(
+        const key = `${r.po_number}_${r.source_file_ts?.toISOString?.() || ""}`;
+        if (!headerRemarksMap[key]) headerRemarksMap[key] = [];
+        headerRemarksMap[key].push(
           `[Pt ${r.pointNo}]: ${r.remark} (by ${formatName(r.submitter)})`,
         );
       });
 
       lineRemarks.forEach((r) => {
-        const key = `${r.po_number}_${r.po_line_item || "Unknown"}`;
+        const key = `${r.po_number}_${r.po_line_item || "Unknown"}_${r.auditResult?.source_file_ts?.toISOString?.() || ""}`;
         if (!lineRemarksMap[key]) lineRemarksMap[key] = [];
         lineRemarksMap[key].push(
           `[Pt ${r.pointNo}]: ${r.remark} (by ${formatName(r.submitter)})`,
         );
       });
 
-      finalResults = finalResults.map((r) => {
-        r.headerRemarksText = headerRemarksMap[r.poNumber]
-          ? headerRemarksMap[r.poNumber].join(" | ")
-          : "";
-
-        r.lineItemDetails = r.lineItemDetails.map((li) => {
-          const key = `${r.poNumber}_${li.poLineItem || "Unknown"}`;
+      finalResults = finalResults.map((r) => ({
+        ...r,
+        headerRemarksText: headerRemarksMap[`${r.poNumber}_${r.source_file_ts || ""}`]
+          ? headerRemarksMap[`${r.poNumber}_${r.source_file_ts || ""}`].join(" | ")
+          : "",
+        lineItemDetails: (r.lineItemDetails || []).map((li) => {
+          const key = `${r.poNumber}_${li.poLineItem || "Unknown"}_${r.source_file_ts || ""}`;
           return {
             ...li,
             lineRemarksText: lineRemarksMap[key]
               ? lineRemarksMap[key].join(" | ")
               : "",
           };
-        });
-
-        return r;
-      });
+        }),
+      }));
     }
+
+    const statusCounts = { perfect: 0, reviewed: 0, in_review: 0, pending: 0 };
+    finalResults.forEach((r) => {
+      statusCounts[r.poStatus] += 1;
+    });
 
     return res.status(200).json({
       total: finalResults.length,
+      statusCounts,
       results: finalResults,
       scope:
         user.isBuyer && !(user.isAdmin || user.isProcurementManager)
@@ -425,6 +298,20 @@ export const getPoHeaderWiseDetails = async (req, res) => {
       orderBy: { po_number: "asc" },
     });
 
+    // "closed" = no pending header point (same rule as everywhere else)
+    const remarkRows = rows.length
+      ? await prisma.poHeaderRemark.findMany({
+          where: { po_number: { in: rows.map((r) => r.po_number) } },
+          select: { po_number: true, pointNo: true },
+        })
+      : [];
+    const remarkedByPo = new Map();
+    for (const r of remarkRows) {
+      if (!remarkedByPo.has(r.po_number))
+        remarkedByPo.set(r.po_number, new Set());
+      remarkedByPo.get(r.po_number).add(Number(r.pointNo));
+    }
+
     let results = rows.map((row) => {
       const verifiedPoints = (row.results || []).filter(
         (p) => classifyPoint(p) === "verified",
@@ -434,6 +321,9 @@ export const getPoHeaderWiseDetails = async (req, res) => {
       ).length;
       const denom = verifiedPoints + notVerifiedPoints;
       const vendor = getVendorInfo(row.vendor_code);
+      const counts = analyseRecord(row.results, row.checkedPoints, [
+        ...(remarkedByPo.get(row.po_number) || []),
+      ]);
 
       return {
         poNumber: row.po_number,
@@ -451,13 +341,14 @@ export const getPoHeaderWiseDetails = async (req, res) => {
         })),
         verifiedPoints,
         notVerifiedPoints,
+        pendingPoints: pendingPointsOf(counts),
         compliancePct:
           denom > 0
             ? Number(((verifiedPoints / denom) * 100).toFixed(1))
             : null,
-        closed: row.remarksLocked === true,
-        closedBy: row.remarksLockedBy || null,
-        closedAt: row.remarksLockedAt || null,
+        closed: pendingPointsOf(counts) === 0,
+        closedBy: null,
+        closedAt: null,
         auditedOn: row.auditedOn,
       };
     });

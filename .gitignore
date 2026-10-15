@@ -24,3 +24,6 @@ __pycache__/
 # Prisma (Optional, if you don't want local SQLite DBs committed)
 # backend/prisma/*.db
 # backend/prisma/*.db-journal
+
+backend/data
+backend/prisma/migrations

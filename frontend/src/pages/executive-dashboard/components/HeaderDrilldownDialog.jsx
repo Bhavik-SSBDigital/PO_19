@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { formatFileTimestamp } from "utils/formatFileTimestamp";
 import { useNavigate } from "react-router-dom";
 import {
   Dialog, DialogTitle, DialogContent, IconButton, Table, TableHead, TableRow,
@@ -92,8 +93,8 @@ const HeaderDrilldownDialog = ({ drilldown, appliedFilters, onClose }) => {
 
   const pageCount = Math.max(Math.ceil(total / PAGE_SIZE), 1);
 
-  const openPoHeaderView = (poNumber) => {
-    navigate(`/check-invoice-item?PONo=${encodeURIComponent(poNumber)}`);
+  const openPoHeaderView = (poNumber, sourceFileTs) => {
+    navigate(`/search-data?PONo=${encodeURIComponent(poNumber)}${sourceFileTs ? `&fileTs=${encodeURIComponent(sourceFileTs)}` : ""}`);
     onClose();
   };
 
@@ -120,6 +121,7 @@ const HeaderDrilldownDialog = ({ drilldown, appliedFilters, onClose }) => {
               <TableHead>
                 <TableRow>
                   <TableCell sx={{ bgcolor: "#eef2ff" }}>PO Number</TableCell>
+                  <TableCell sx={{ bgcolor: "#eef2ff" }}>File Timestamp</TableCell>
                   <TableCell sx={{ bgcolor: "#eef2ff" }}>Vendor</TableCell>
                   <TableCell sx={{ bgcolor: "#eef2ff" }}>PO Type</TableCell>
                   <TableCell sx={{ bgcolor: "#eef2ff" }}>Purchasing Group</TableCell>
@@ -130,8 +132,9 @@ const HeaderDrilldownDialog = ({ drilldown, appliedFilters, onClose }) => {
               </TableHead>
               <TableBody>
                 {rows.map((r) => (
-                  <TableRow key={r.po_number} hover sx={{ cursor: "pointer" }} onClick={() => openPoHeaderView(r.po_number)}>
+                  <TableRow key={`${r.po_number}:${r.source_file_ts || ""}`} hover sx={{ cursor: "pointer" }} onClick={() => openPoHeaderView(r.po_number, r.source_file_ts)}>
                     <TableCell sx={{ fontWeight: 700 }}>{r.po_number}</TableCell>
+                    <TableCell sx={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatFileTimestamp(r.source_file_ts)}</TableCell>
                     <TableCell>{r.vendorName || r.vendorCode || "—"}</TableCell>
                     <TableCell>{r.poTypeName || r.poType || "—"}</TableCell>
                     <TableCell>{r.purchaseGroupName || r.purchaseGroup || "—"}</TableCell>

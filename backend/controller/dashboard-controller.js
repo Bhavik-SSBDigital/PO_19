@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { versionKey } from "../utility/po-version.js";
 import {
   SEVERITY_LEVELS,
   severityOf,
@@ -29,6 +30,8 @@ import {
 } from "../utility/point-scope.js";
 import { getMandatoryPoints } from "../utility/not-verified-scope.js";
 import { isPointCovered } from "../utility/effective-result.js";
+import { getScopedModel, remarkNos } from "../utility/data-cache.js";
+import { analyseRecord, pendingPointsOf } from "../utility/po-status.js";
 
 const PURCHASE_GROUPS = [
   "P09",
@@ -45,15 +48,20 @@ const PURCHASE_GROUPS = [
   "P64",
 ];
 
-function buildWhere(body = {}, user = {}) {
-  const where = { type: "PO" };
+/**
+- Dashboard scope. EXPORTED so po-status-controller.js reuses it 1:1.
+ *
+- IMPORTANT: this now excludes RC_PLACEHOLDER_PO_TYPES, exactly like the
+- PO Data page always did. Before, the dashboard counted those POs and the
+- PO list did not - that is why "Total POs" on the dashboard did not match
+- the PO Data page. Both now use the same rule.
+- (To count them everywhere instead, remove the exclusion here AND in
+- po-data-controller.js buildBaseWhere.)
+ */
+export function buildWhere(body = {}, user = {}) {
+  const where = { type: "PO", po_type: { notIn: RC_PLACEHOLDER_PO_TYPES } };
 
-  // FIX: `poNumber` was accepted by the frontend's FilterBar and sent in
-  // every request body (see buildSummaryBody() in ExecutiveDashboard.jsx),
-  // but this function never read it, so typing a PO number and hitting
-  // Apply silently did nothing - every KPI, chart, and Remarks Impact
-  // number ignored it. The FilterBar's label says "Exact match", so this
-  // is an exact equality filter, not a partial/contains search.
+  // `poNumber` from the FilterBar is an exact-match filter.
   if (body.poNumber) where.po_number = body.poNumber;
 
   if (body.poDateFrom || body.poDateTo) {
@@ -67,7 +75,9 @@ function buildWhere(body = {}, user = {}) {
     if (body.prDateTo) where.pr_create_date.lte = new Date(body.prDateTo);
   }
   if (Array.isArray(body.poType) && body.poType.length) {
-    where.po_type = { in: body.poType };
+    where.po_type = {
+      in: body.poType.filter((t) => !RC_PLACEHOLDER_PO_TYPES.includes(t)),
+    };
   }
   if (body.plant) where.plant = body.plant;
   if (body.vendorCode) where.vendor_code = body.vendorCode;
@@ -89,20 +99,20 @@ function buildWhere(body = {}, user = {}) {
 }
 
 /**
- * RC-level counterpart to buildWhere().
+- RC-level counterpart to buildWhere().
  *
- * RcOverlapResult carries no po_number / po_created_date / plant /
- * po_type of its own, so only the filters that DO exist on that table can
- * narrow the RC section:
- *   - purchaseGroup (RcOverlapResult.purchaseGroups is an array -> hasSome)
- *   - vendorCode    (RcOverlapResult.vendorCode)
- *   - materialCode  (RcOverlapResult.rcMaterialCode)
- * PO number / PO date / PR date / plant / PO type filters from the filter
- * bar have nothing on an RC to filter against and are intentionally
- * ignored for RC figures.
+- RcOverlapResult carries no po_number / po_created_date / plant /
+- po_type of its own, so only the filters that DO exist on that table can
+- narrow the RC section:
+- purchaseGroup (RcOverlapResult.purchaseGroups is an array -> hasSome)
+- vendorCode    (RcOverlapResult.vendorCode)
+- materialCode  (RcOverlapResult.rcMaterialCode)
+- PO number / PO date / PR date / plant / PO type filters from the filter
+- bar have nothing on an RC to filter against and are intentionally
+- ignored for RC figures.
  *
- * A Buyer is always restricted to RCs that list their own purchase group,
- * regardless of what's in the body (same rule as everywhere else here).
+- A Buyer is always restricted to RCs that list their own purchase group,
+- regardless of what's in the body (same rule as everywhere else here).
  */
 function buildRcWhere(body = {}, user = {}) {
   const where = {};
@@ -146,29 +156,6 @@ const lineItemOf = (row) => {
 
 const uniqueKeyOf = (row) =>
   row.po_material_number || `${row.po_number}-${lineItemOf(row) ?? row.id}`;
-
-const ROW_SELECT = {
-  id: true,
-  po_number: true,
-  po_line_item: true,
-  po_material_number: true,
-  purchase_req: true,
-  po_type: true,
-  po_status: true,
-  po_created_date: true,
-  hold_due_date: true,
-  plant: true,
-  purchase_group: true,
-  vendor_code: true,
-  nameOfVendor: true,
-  material_code: true,
-  material_disc: true,
-  net_value: true,
-  payment_term: true,
-  results: true,
-  tax_code: true,
-  GSTInOfVendor: true,
-};
 
 function newRichBucket() {
   return {
@@ -237,10 +224,9 @@ export const getExecutiveSummary = async (req, res) => {
     const where = buildWhere(req.body || {}, user);
     const scope = scopeOf(user);
 
-    const rows = await prisma.auditResult.findMany({
-      where,
-      select: ROW_SELECT,
-    });
+    // One shared, cached read (also used by Remarks Impact / PO status / PO list)
+    const model = await getScopedModel(where);
+    const rows = model.lineRows;
 
     const poNumbers = new Set();
     const prNumbers = new Set();
@@ -250,6 +236,9 @@ export const getExecutiveSummary = async (req, res) => {
     let manualCount = 0;
     let highRiskExceptions = 0;
     let exceptionValueExposure = 0;
+    let exceptionLineCount = 0; // lines with >= 1 Not Verified check
+    const exceptionPOSet = new Set(); // POs with >= 1 Not Verified line check
+    let headerExceptionPOCount = 0; // POs with >= 1 Not Verified header check
 
     const controlWise = {};
     for (const pointNo of LINE_TABLE_RULE_NOS) {
@@ -262,7 +251,6 @@ export const getExecutiveSummary = async (req, res) => {
     }
     const bySeverity = Object.fromEntries(SEVERITY_LEVELS.map((s) => [s, 0]));
     const byPurchaseGroup = {};
-    const byPo = {};
     const byPlant = {};
     const byVendor = {};
     const byPoType = {};
@@ -374,51 +362,9 @@ export const getExecutiveSummary = async (req, res) => {
       }
 
       if (lineHasException) {
+        exceptionLineCount++;
+        exceptionPOSet.add(row.po_number);
         exceptionValueExposure += parseNum(row.net_value);
-
-        const poKey = row.po_number || "Unassigned";
-
-        const vendor = getVendorInfo(row.vendor_code);
-        const gstin = row.GSTInOfVendor || vendor?.gstin || "";
-
-        byPo[poKey] = byPo[poKey] || {
-          count: 0,
-          pos: new Set(),
-          lineItems: new Set(),
-          prs: new Set(),
-          taxCodes: new Set(),
-          gstins: new Set(),
-          valueExposure: 0,
-          vendorCode: row.vendor_code || null,
-          vendorName: row.nameOfVendor || vendor?.name || null,
-          poType: row.po_type || null,
-          plant: row.plant || null,
-          purchaseGroup: row.purchase_group || null,
-          paymentTerm: row.payment_term || null,
-        };
-
-        byPo[poKey].count += 1;
-        byPo[poKey].pos.add(row.po_number);
-        const lineItem = lineItemOf(row);
-        if (lineItem) {
-          byPo[poKey].lineItems.add(lineItem);
-        }
-        if (row.purchase_req) byPo[poKey].prs.add(row.purchase_req);
-        if (row.tax_code) byPo[poKey].taxCodes.add(row.tax_code);
-        if (gstin) byPo[poKey].gstins.add(gstin);
-
-        byPo[poKey].valueExposure += parseNum(row.net_value);
-        if (!byPo[poKey].vendorName && (row.nameOfVendor || vendor?.name))
-          byPo[poKey].vendorName = row.nameOfVendor || vendor?.name;
-        if (!byPo[poKey].vendorCode && row.vendor_code)
-          byPo[poKey].vendorCode = row.vendor_code;
-        if (!byPo[poKey].poType && row.po_type)
-          byPo[poKey].poType = row.po_type;
-        if (!byPo[poKey].plant && row.plant) byPo[poKey].plant = row.plant;
-        if (!byPo[poKey].purchaseGroup && row.purchase_group)
-          byPo[poKey].purchaseGroup = row.purchase_group;
-        if (!byPo[poKey].paymentTerm && row.payment_term)
-          byPo[poKey].paymentTerm = row.payment_term;
 
         const plantExcKey = row.plant || "Unassigned";
         byPlant[plantExcKey] = byPlant[plantExcKey] || newRichBucket();
@@ -447,11 +393,7 @@ export const getExecutiveSummary = async (req, res) => {
       notVerified: notVerifiedCount,
     });
 
-    const headerRecords = poNumbers.size
-      ? await prisma.poHeaderResult.findMany({
-          where: { po_number: { in: [...poNumbers] } },
-        })
-      : [];
+    const headerRecords = model.headerRows;
 
     const headerControlWise = {};
     for (const pointNo of HEADER_LEVEL_RULE_NOS) {
@@ -466,10 +408,17 @@ export const getExecutiveSummary = async (req, res) => {
     let headerNotVerifiedCount = 0;
     let headerNaCount = 0;
     let headerManualCount = 0;
-    let headerClosedCount = 0;
+    let headerClosedCount = 0; // POs with NO pending header point
 
     for (const hr of headerRecords) {
-      if (hr.remarksLocked) headerClosedCount++;
+      // "Closed" = no pending header point (Not Verified without a check or
+      // remark, or Manual). There is no lock concept any more.
+      const hc = analyseRecord(
+        hr.results,
+        hr.checkedPoints,
+        remarkNos(model.headerRemarks, versionKey(hr.po_number, hr.source_file_ts)),
+      );
+      if (pendingPointsOf(hc) === 0) headerClosedCount++;
 
       let headerHasException = false;
 
@@ -494,6 +443,7 @@ export const getExecutiveSummary = async (req, res) => {
       }
 
       if (headerHasException) {
+        headerExceptionPOCount++;
         const monthKey = poCreatedMonth[hr.po_number];
         if (monthKey) {
           headerMonthlyExceptions[monthKey] = headerMonthlyExceptions[
@@ -527,13 +477,8 @@ export const getExecutiveSummary = async (req, res) => {
     });
 
     // ---- RC-LEVEL COMPLIANCE ---------------------------------------------
-    // One check per RC (RC Overlap), so there is no "control-wise" breakdown
-    // like header/line have. An RC is either Verified or Not Verified.
-    //   Closed  = a Not Verified RC whose remarks are locked (same
-    //             definition as the Remarks Impact RC card).
-    //   Pending = a Not Verified RC that is still open.
-    // Only RcOverlapResult-native filters (purchase group / vendor /
-    // material) apply here - see buildRcWhere().
+    // One check per RC (RC Overlap). Closed = a Not Verified RC that has been
+    // checked off; Pending = a Not Verified RC still open.
     const isUnrestrictedUser = !scope;
     const rcRows = await prisma.rcOverlapResult.findMany({
       where: buildRcWhere(req.body || {}, user),
@@ -622,29 +567,6 @@ export const getExecutiveSummary = async (req, res) => {
         .slice(0, n)
         .map(([key, v]) => richBucketToJson(key, v));
 
-    const poWiseExceptionsAll = Object.entries(byPo)
-      .sort((a, b) => b[1].count - a[1].count)
-      .map(([poNumber, v]) => ({
-        poNumber,
-        vendorCode: v.vendorCode,
-        vendorName: v.vendorName || getVendorName(v.vendorCode),
-        poType: v.poType,
-        poTypeName: getPoTypeName(v.poType),
-        plant: v.plant,
-        plantName: getPlantName(v.plant),
-        purchaseGroup: v.purchaseGroup,
-        purchaseGroupName: getPurchaseGroupName(v.purchaseGroup),
-        paymentTerm: v.paymentTerm,
-        paymentTermDescription: getPaymentTermDescription(v.paymentTerm),
-        exceptionLineCount: v.count,
-        distinctLineItems: v.lineItems.size,
-        lineItems: [...v.lineItems].sort(),
-        purchase_req: [...v.prs].join(", "),
-        taxCode: [...v.taxCodes].join(", "),
-        vendorGstin: [...v.gstins].join(", "),
-        valueExposure: Number(v.valueExposure.toFixed(2)),
-      }));
-
     const plantWiseCompliance = Object.entries(byPlantCompliance)
       .map(([plant, v]) => ({
         plant,
@@ -698,6 +620,12 @@ export const getExecutiveSummary = async (req, res) => {
       scope,
       kpis: {
         totalPOCount: poNumbers.size,
+        // POs in scope that have no header-audit record yet (drives the
+        // yellow warning banner on the dashboard).
+        missingHeaderDataCount: Math.max(
+          poNumbers.size - headerRecords.length,
+          0,
+        ),
         totalPOLineItems: rows.length,
         totalPRCount: prNumbers.size,
         verifiedCount,
@@ -708,6 +636,12 @@ export const getExecutiveSummary = async (req, res) => {
         overallComplianceScore: complianceScore,
         highRiskExceptions,
         exceptionValueExposure: Number(exceptionValueExposure.toFixed(2)),
+        // Cards that read these were empty because they were never sent.
+        totalLineChecks:
+          verifiedCount + notVerifiedCount + naCount + manualCount,
+        applicableLineChecks: verifiedCount + notVerifiedCount,
+        exceptionLineCount,
+        exceptionPOCount: exceptionPOSet.size,
         header: {
           totalPOsWithHeaderData: headerRecords.length,
           verifiedCount: headerVerifiedCount,
@@ -715,6 +649,14 @@ export const getExecutiveSummary = async (req, res) => {
           notApplicableCount: headerNaCount,
           manualReviewCount: headerManualCount,
           overallComplianceScore: headerCompliancePct,
+          totalChecks:
+            headerVerifiedCount +
+            headerNotVerifiedCount +
+            headerNaCount +
+            headerManualCount,
+          applicableChecks: headerVerifiedCount + headerNotVerifiedCount,
+          exceptionPOCount: headerExceptionPOCount,
+          // POs whose header has no pending point / still has one
           closedPOCount: headerClosedCount,
           openPOCount: Math.max(headerRecords.length - headerClosedCount, 0),
         },
@@ -747,7 +689,8 @@ export const getExecutiveSummary = async (req, res) => {
         headerControlWiseCompliance,
         rcPurchaseGroupCompliance,
         rcVendorCompliance,
-        poWiseExceptions: poWiseExceptionsAll,
+        // NOTE: the PO-wise list is now served by /reports/po-status-summary
+        // (poRows) - removed from here to keep this response small and fast.
         exceptionBySeverity: SEVERITY_LEVELS.map((severity) => ({
           severity,
           count: bySeverity[severity] || 0,
@@ -826,22 +769,31 @@ export const getFilterOptions = async (req, res) => {
             getPurchaseGroupCode(user.username) || "__no_group_assigned__",
         };
 
+    // Same placeholder exclusion as the rest of the dashboard, so a filter
+    // value that can never return rows is not offered.
+    const base = { type: "PO", ...scopeWhere };
+    const notPlaceholder = { notIn: RC_PLACEHOLDER_PO_TYPES };
+
     const [plants, vendors, poTypes, groups] = await Promise.all([
       prisma.auditResult.groupBy({
         by: ["plant"],
-        where: { type: "PO", plant: { not: null }, ...scopeWhere },
+        where: { ...base, po_type: notPlaceholder, plant: { not: null } },
       }),
       prisma.auditResult.groupBy({
         by: ["vendor_code", "nameOfVendor"],
-        where: { type: "PO", vendor_code: { not: null }, ...scopeWhere },
+        where: { ...base, po_type: notPlaceholder, vendor_code: { not: null } },
       }),
       prisma.auditResult.groupBy({
         by: ["po_type"],
-        where: { type: "PO", po_type: { not: null }, ...scopeWhere },
+        where: { ...base, po_type: { not: null, ...notPlaceholder } },
       }),
       prisma.auditResult.groupBy({
         by: ["purchase_group"],
-        where: { type: "PO", purchase_group: { not: null }, ...scopeWhere },
+        where: {
+          ...base,
+          po_type: notPlaceholder,
+          purchase_group: { not: null },
+        },
       }),
     ]);
 
@@ -916,13 +868,17 @@ export const getExecutiveDrilldown = async (req, res) => {
       return res.status(400).json({ message: "dimension is required" });
 
     const where = buildWhere(filterBody, user);
-    const rows = await prisma.auditResult.findMany({
-      where,
-      select: ROW_SELECT,
-      orderBy: { po_created_date: "desc" },
-    });
+    const model = await getScopedModel(where);
+    const rows = [...model.lineRows].sort(
+      (a, b) =>
+        new Date(b.po_created_date || 0) - new Date(a.po_created_date || 0),
+    );
 
     const today = new Date();
+
+    // Quick lookup sets for dimensions that require crossing over to header data
+    const headerPoMap = new Set(model.headerRows.map((hr) => hr.po_number));
+
     const matchesDimension = (row) => {
       switch (dimension) {
         case "plant":
@@ -973,6 +929,10 @@ export const getExecutiveDrilldown = async (req, res) => {
           const overdue = new Date(row.hold_due_date) < today;
           return value === "Overdue" ? overdue : !overdue;
         }
+        case "missingHeaderData":
+          return !headerPoMap.has(row.po_number);
+        case "hasPR":
+          return Boolean(row.purchase_req);
         case "anyException":
           return rowHasException(row);
         case "verifiedAny":
@@ -1012,6 +972,7 @@ export const getExecutiveDrilldown = async (req, res) => {
       return {
         id: r.id,
         po_number: r.po_number,
+        source_file_ts: r.source_file_ts?.toISOString?.() || null,
         lineItem: lineItemOf(r),
         lineItemKey: uniqueKeyOf(r),
         purchase_req: r.purchase_req,
@@ -1066,15 +1027,9 @@ export const getExecutiveHeaderDrilldown = async (req, res) => {
       return res.status(400).json({ message: "pointNo is required" });
 
     const where = buildWhere(filterBody, user);
-    const scopedRows = await prisma.auditResult.findMany({
-      where,
-      select: { po_number: true },
-    });
-    const poNumbers = [
-      ...new Set(scopedRows.map((r) => r.po_number).filter(Boolean)),
-    ];
+    const model = await getScopedModel(where);
 
-    if (!poNumbers.length) {
+    if (!model.poNumbers.length) {
       return res.status(200).json({
         results: [],
         total: 0,
@@ -1085,11 +1040,7 @@ export const getExecutiveHeaderDrilldown = async (req, res) => {
       });
     }
 
-    const headerRows = await prisma.poHeaderResult.findMany({
-      where: { po_number: { in: poNumbers } },
-    });
-
-    const filtered = headerRows
+    const filtered = model.headerRows
       .map((hr) => {
         const point = (hr.results || []).find(
           (p) => String(p.pointNo) === String(pointNo),
@@ -1109,16 +1060,24 @@ export const getExecutiveHeaderDrilldown = async (req, res) => {
 
     const paged = filtered.slice(skip, skip + take).map(({ hr, point }) => {
       const vendor = getVendorInfo(hr.vendor_code);
+      // "headerLocked" is kept as the field name only so the existing dialog
+      // keeps working; it now simply means "this point is closed".
+      const closed = isPointCovered(
+        pointNo,
+        hr.checkedPoints,
+        remarkNos(model.headerRemarks, versionKey(hr.po_number, hr.source_file_ts)),
+      );
       return {
         po_number: hr.po_number,
+        source_file_ts: hr.source_file_ts?.toISOString?.() || null,
         vendorCode: hr.vendor_code,
         vendorName: vendor?.name || getVendorName(hr.vendor_code),
         poType: hr.po_type,
         poTypeName: getPoTypeName(hr.po_type),
         purchaseGroup: hr.purchase_group,
         purchaseGroupName: getPurchaseGroupName(hr.purchase_group),
-        headerLocked: hr.remarksLocked,
-        headerLockedAt: hr.remarksLockedAt,
+        headerLocked: closed,
+        headerLockedAt: null,
         pointNo,
         title: getPointDefinition(pointNo).title,
         result: {
@@ -1157,18 +1116,11 @@ export const getExecutiveHeaderKpiDrilldown = async (req, res) => {
     } = req.body || {};
 
     const where = buildWhere(filterBody, user);
-    const scopedRows = await prisma.auditResult.findMany({
-      where,
-      select: { po_number: true, po_created_date: true },
-    });
-
-    const poNumbers = [
-      ...new Set(scopedRows.map((r) => r.po_number).filter(Boolean)),
-    ];
+    const model = await getScopedModel(where);
 
     const poCreatedMonth = {};
     if (dimension === "month") {
-      scopedRows.forEach((r) => {
+      model.lineRows.forEach((r) => {
         if (r.po_created_date && !poCreatedMonth[r.po_number]) {
           poCreatedMonth[r.po_number] = new Date(r.po_created_date)
             .toISOString()
@@ -1177,7 +1129,7 @@ export const getExecutiveHeaderKpiDrilldown = async (req, res) => {
       });
     }
 
-    if (!poNumbers.length) {
+    if (!model.poNumbers.length) {
       return res.status(200).json({
         results: [],
         total: 0,
@@ -1189,16 +1141,20 @@ export const getExecutiveHeaderKpiDrilldown = async (req, res) => {
       });
     }
 
-    const headerRows = await prisma.poHeaderResult.findMany({
-      where: { po_number: { in: poNumbers } },
-    });
+    // header closed = NO pending header point (no lock concept)
+    const countsOf = (hr) =>
+      analyseRecord(
+        hr.results,
+        hr.checkedPoints,
+        remarkNos(model.headerRemarks, versionKey(hr.po_number, hr.source_file_ts)),
+      );
 
     const matchesDimension = (hr) => {
       switch (dimension) {
         case "closed":
-          return hr.remarksLocked === true;
+          return pendingPointsOf(countsOf(hr)) === 0;
         case "open":
-          return hr.remarksLocked !== true;
+          return pendingPointsOf(countsOf(hr)) > 0;
         case "verifiedAny":
           return (hr.results || []).some(
             (p) => classifyPoint(p) === "verified",
@@ -1219,7 +1175,7 @@ export const getExecutiveHeaderKpiDrilldown = async (req, res) => {
       }
     };
 
-    const filtered = headerRows.filter(matchesDimension);
+    const filtered = model.headerRows.filter(matchesDimension);
 
     const take = Math.min(Number(pageSize) || 25, 200);
     const skip = (Math.max(Number(page) || 1, 1) - 1) * take;
@@ -1234,14 +1190,16 @@ export const getExecutiveHeaderKpiDrilldown = async (req, res) => {
       const vendor = getVendorInfo(hr.vendor_code);
       return {
         po_number: hr.po_number,
+        source_file_ts: hr.source_file_ts?.toISOString?.() || null,
         vendorCode: hr.vendor_code,
         vendorName: vendor?.name || getVendorName(hr.vendor_code),
         poType: hr.po_type,
         poTypeName: getPoTypeName(hr.po_type),
         purchaseGroup: hr.purchase_group,
         purchaseGroupName: getPurchaseGroupName(hr.purchase_group),
-        headerLocked: hr.remarksLocked,
-        headerLockedAt: hr.remarksLockedAt,
+        // field name kept for the existing dialog; now means "closed"
+        headerLocked: pendingPointsOf(countsOf(hr)) === 0,
+        headerLockedAt: null,
         verifiedCount,
         notVerifiedCount,
         compliancePct:
@@ -1274,27 +1232,27 @@ export const getExecutiveHeaderKpiDrilldown = async (req, res) => {
 };
 
 /**
- * ============================================================================
- * RC-LEVEL drilldown - the exact list behind any RC KPI card / RC chart
- * segment on the Executive Dashboard. Mirrors getExecutiveHeaderKpiDrilldown
- * but each row is one Rate Contract (RcOverlapResult), not a PO.
+- ============================================================================
+- RC-LEVEL drilldown - the exact list behind any RC KPI card / RC chart
+- segment on the Executive Dashboard. Each row is one Rate Contract
+- (RcOverlapResult), not a PO.
  *
- * body: { dimension, value?, statusFilter?, page, pageSize, ...filters }
- *   dimension:
- *     "all"           every RC in scope
- *     "verified"      status === "Verified"
- *     "notVerified"   status === "Not Verified"
- *     "closed"        Not Verified AND remarksLocked
- *     "pending"       Not Verified AND NOT remarksLocked
- *     "purchaseGroup" RCs listing purchase group `value` ("Unassigned" =
- *                     RCs listing none)
- *     "vendor"        RCs for vendor code `value`
- *   statusFilter (optional, "verified" | "notVerified"): narrows the
- *     purchaseGroup / vendor dimensions to one side of the stacked bar.
+- body: { dimension, value?, statusFilter?, page, pageSize, ...filters }
+-   dimension:
+-     "all"           every RC in scope
+-     "verified"      status === "Verified"
+-     "notVerified"   status === "Not Verified"
+-     "closed"        Not Verified AND checked off
+-     "pending"       Not Verified AND NOT checked off
+-     "purchaseGroup" RCs listing purchase group `value` ("Unassigned" =
+-                     RCs listing none)
+-     "vendor"        RCs for vendor code `value`
+-   statusFilter (optional, "verified" | "notVerified"): narrows the
+-     purchaseGroup / vendor dimensions to one side of the stacked bar.
  *
- * Scoping is buildRcWhere(): a Buyer only ever sees RCs listing their own
- * purchase group, regardless of the body.
- * ============================================================================
+- Scoping is buildRcWhere(): a Buyer only ever sees RCs listing their own
+- purchase group, regardless of the body.
+- ============================================================================
  */
 export const getExecutiveRcDrilldown = async (req, res) => {
   try {
@@ -1422,40 +1380,19 @@ function rowHasStatus(row, status) {
 }
 
 /**
- * ============================================================================
- * "Remarks Impact" dashboard cards — Header / Line / RC, each showing the
- * required identity:
- *     Not Verified (System Generated) = Not Verified (Pending) + Closed
+- ============================================================================
+- "Remarks Impact" dashboard cards - Header / Line / RC:
+-     Not Verified (System Generated) = Not Verified (Pending) + Closed
  *
- * DIMENSION A ONLY (coverage - see utility/effective-result.js). A point/RC
- * counts as "Closed" the instant it has ANY remark or check against it,
- * regardless of the buyer's opinion (agreed with the system, disputed it,
- * or just left an informative note) - so this reflects your "for each
- * remarks change, not verified count must be reduced, everywhere" rule
- * exactly: an add/edit/delete of a remark changes these NUMBERS via this
- * live read-time derivation, but NEVER touches AuditResult.results /
- * PoHeaderResult.results / RcOverlapResult.status themselves.
+- A point counts as "Closed" the instant it has ANY remark or check against
+- it (see utility/effective-result.js). Read-time derivation only - the
+- stored system results are never rewritten.
  *
- * Scoping matches getExecutiveSummary(): Admin/PM see everything (or the
- * purchaseGroup filter they picked); a Buyer is restricted to their own
- * purchasing group's PO numbers (and RCs referencing that group).
+- Reads from the SAME shared model as the executive summary and the PO status
+- tables, so all three can never disagree.
  *
- * NOTE ON RC SCOPE: RcOverlapResult carries no po_number / po_created_date
- * / plant / vendor fields of its own (see schema.prisma) - only
- * purchaseGroups - so date/plant/vendor/PO-number filters from the filter
- * bar cannot narrow the RC section the way they narrow header/line. This
- * is a data-model limitation, not a bug: there is nothing on RcOverlapResult
- * to filter those fields against.
- *
- * PER-PURCHASE-GROUP BREAKDOWN ("byPurchaseGroup" below): Admin /
- * Procurement Manager / SSB Digital only, driven by the same
- * `isUnrestricted` flag used everywhere else in this controller. A Buyer's
- * response simply never contains this key — it isn't computed for them at
- * all, so there's nothing to accidentally leak client-side. Combines
- * Header + Line + RC into one Total/Closed/Pending per purchasing group,
- * sorted worst (most pending) first, for the "Purchase Group Compliance"
- * table on the executive dashboard.
- * ============================================================================
+- byPurchaseGroup: Admin / Procurement Manager / SSB Digital only.
+- ============================================================================
  */
 export const getRemarksImpactSummary = async (req, res) => {
   try {
@@ -1464,9 +1401,6 @@ export const getRemarksImpactSummary = async (req, res) => {
     const isUnrestricted =
       user.isAdmin || user.isProcurementManager || !user.isBuyer;
 
-    // Per-purchase-group accumulator. Only ever populated when
-    // isUnrestricted — for a Buyer this stays empty and byPurchaseGroup
-    // below becomes undefined, so the key is omitted from the JSON.
     const byGroup = {};
     const ensureGroup = (g) => {
       const key = g || "Unassigned";
@@ -1477,55 +1411,22 @@ export const getRemarksImpactSummary = async (req, res) => {
           header: { systemGenerated: 0, closed: 0, poCorrected: 0 },
           line: { systemGenerated: 0, closed: 0, poCorrected: 0 },
           rc: { systemGenerated: 0, closed: 0, poCorrected: 0 },
+          // unique PO numbers a buyer corrected in this group
+          correctedPos: new Set(),
         };
       }
       return byGroup[key];
     };
 
+    const model = await getScopedModel(buildWhere(body, user));
+
     // ---- LINE-LEVEL ----------------------------------------------------
-    const lineWhere = buildWhere(body, user);
-    const lineRows = await prisma.auditResult.findMany({
-      where: lineWhere,
-      select: {
-        id: true,
-        po_number: true,
-        purchase_group: true,
-        results: true,
-        checkedPoints: true,
-      },
-    });
-    const poNumbers = [...new Set(lineRows.map((r) => r.po_number))];
-
-    const lineRemarks = lineRows.length
-      ? await prisma.poRemark.findMany({
-          where: { auditResultId: { in: lineRows.map((r) => r.id) } },
-          orderBy: { submittedAt: "desc" },
-          select: {
-            auditResultId: true,
-            pointNo: true,
-            isSystemResultWrong: true,
-          },
-        })
-      : [];
-    const lineRemarksByRow = new Map();
-    for (const r of lineRemarks) {
-      if (!lineRemarksByRow.has(r.auditResultId)) {
-        lineRemarksByRow.set(r.auditResultId, new Map());
-      }
-      // Rows arrive newest-first, so the first one seen per point is the
-      // LATEST remark - the same one the drilldown list uses to decide
-      // "PO Corrected" vs "System Altercation".
-      const byPt = lineRemarksByRow.get(r.auditResultId);
-      if (!byPt.has(Number(r.pointNo)))
-        byPt.set(Number(r.pointNo), !!r.isSystemResultWrong);
-    }
-
     let lineSystemGenerated = 0;
     let lineClosed = 0;
-    for (const row of lineRows) {
+    for (const row of model.lineRows) {
       const mandatory = getMandatoryPoints(row.results);
       lineSystemGenerated += mandatory.length;
-      const remarkedMap = lineRemarksByRow.get(row.id) || new Map();
+      const remarkedMap = model.lineRemarks.get(row.id) || new Map();
       const remarkedNos = [...remarkedMap.keys()];
       let rowClosed = 0;
       let rowCorrected = 0;
@@ -1541,52 +1442,17 @@ export const getRemarksImpactSummary = async (req, res) => {
         g.line.systemGenerated += mandatory.length;
         g.line.closed += rowClosed;
         g.line.poCorrected += rowCorrected;
+        if (rowCorrected > 0) g.correctedPos.add(versionKey(row.po_number, row.source_file_ts));
       }
     }
 
     // ---- HEADER-LEVEL ---------------------------------------------------
-    // Scoped to the same PO numbers the line-level query already resolved
-    // (which is itself purchase-group-scoped via buildWhere), so a Buyer
-    // never sees header points for POs outside their own group.
-    const headerRows = poNumbers.length
-      ? await prisma.poHeaderResult.findMany({
-          where: { po_number: { in: poNumbers } },
-          select: {
-            id: true,
-            po_number: true,
-            purchase_group: true,
-            results: true,
-            checkedPoints: true,
-          },
-        })
-      : [];
-    const headerRemarks = headerRows.length
-      ? await prisma.poHeaderRemark.findMany({
-          where: { po_number: { in: headerRows.map((r) => r.po_number) } },
-          orderBy: { submittedAt: "desc" },
-          select: {
-            po_number: true,
-            pointNo: true,
-            isSystemResultWrong: true,
-          },
-        })
-      : [];
-    const headerRemarksByPo = new Map();
-    for (const r of headerRemarks) {
-      if (!headerRemarksByPo.has(r.po_number)) {
-        headerRemarksByPo.set(r.po_number, new Map());
-      }
-      const byPt = headerRemarksByPo.get(r.po_number);
-      if (!byPt.has(Number(r.pointNo)))
-        byPt.set(Number(r.pointNo), !!r.isSystemResultWrong);
-    }
-
     let headerSystemGenerated = 0;
     let headerClosed = 0;
-    for (const row of headerRows) {
+    for (const row of model.headerRows) {
       const mandatory = getMandatoryPoints(row.results);
       headerSystemGenerated += mandatory.length;
-      const remarkedMap = headerRemarksByPo.get(row.po_number) || new Map();
+      const remarkedMap = model.headerRemarks.get(versionKey(row.po_number, row.source_file_ts)) || new Map();
       const remarkedNos = [...remarkedMap.keys()];
       let rowClosed = 0;
       let rowCorrected = 0;
@@ -1602,6 +1468,7 @@ export const getRemarksImpactSummary = async (req, res) => {
         g.header.systemGenerated += mandatory.length;
         g.header.closed += rowClosed;
         g.header.poCorrected += rowCorrected;
+        if (rowCorrected > 0) g.correctedPos.add(versionKey(row.po_number, row.source_file_ts));
       }
     }
 
@@ -1618,9 +1485,6 @@ export const getRemarksImpactSummary = async (req, res) => {
     const rcSystemGenerated = rcRows.length;
     const rcClosed = rcRows.filter((r) => r.remarksLocked).length;
 
-    // An RC counts as "PO Corrected" when it is Closed AND the latest
-    // remark on it was submitted as "Yes - PO corrected" (same rule as the
-    // drilldown list). Only needed for the unrestricted per-group table.
     const rcCorrectedIds = new Set();
     if (isUnrestricted && rcRows.length) {
       const rcRemarks = await prisma.poRcRemark.findMany({
@@ -1636,10 +1500,8 @@ export const getRemarksImpactSummary = async (req, res) => {
       }
     }
 
-    // An RC can list several purchase groups (RcOverlapResult.purchaseGroups
-    // is an array), so — for the unrestricted breakdown only — it counts
-    // once toward each group it lists, same as the scoping filter above
-    // treats "belongs to my group" as `purchaseGroups.has(ownGroup)`.
+    // An RC can list several purchase groups, so (unrestricted breakdown
+    // only) it counts once toward each group it lists.
     if (isUnrestricted) {
       for (const rc of rcRows) {
         const groups = rc.purchaseGroups?.length
@@ -1660,13 +1522,9 @@ export const getRemarksImpactSummary = async (req, res) => {
       systemGenerated,
       closed,
       pending: Math.max(systemGenerated - closed, 0),
-      // Of the Closed ones, how many had their latest remark marked
-      // "PO corrected". Only supplied for the per-group breakdown.
       ...(poCorrected !== undefined && { poCorrected }),
     });
 
-    // Combine Header + Line + RC per group into the totals the "Purchase
-    // Group Compliance" table shows, worst (most pending) first.
     const byPurchaseGroup = isUnrestricted
       ? Object.values(byGroup)
           .map((g) => {
@@ -1692,6 +1550,17 @@ export const getRemarksImpactSummary = async (req, res) => {
               ),
               rc: shape(g.rc.systemGenerated, g.rc.closed, g.rc.poCorrected),
               total: shape(totalSystemGenerated, totalClosed, totalCorrected),
+              // "POs Corrected" column of the Purchase Group Compliance table:
+              // UNIQUE POs (header + line) where a buyer answered
+              // "Is PO corrected? = Yes". The poCorrected fields above still
+              // count POINTS and are unchanged.
+              posCorrected: g.correctedPos.size,
+              // Send the exact array of PO numbers to the frontend so drilldowns work
+              correctedPoNumbers: [...new Set(Array.from(g.correctedPos).map((key) => key.split("\u0000")[0]))],
+              correctedPoVersions: Array.from(g.correctedPos).map((key) => {
+                const [po_number, source_file_ts] = key.split("\u0000");
+                return { po_number, source_file_ts: source_file_ts || null };
+              }),
             };
           })
           .sort((a, b) => b.total.pending - a.total.pending)
@@ -1713,23 +1582,16 @@ export const getRemarksImpactSummary = async (req, res) => {
 };
 
 /**
- * ============================================================================
- * The EXACT list behind any one of the 3 numbers on a "Remarks Impact"
- * card (Total Not Verified / Pending / Closed), for any of the 3 sections
- * (header/line/rc). This is what makes those numbers clickable-through:
- * every query here is the SAME mandatory-points + coverage logic
- * getRemarksImpactSummary() uses, so the list returned always has exactly
- * as many rows as the card said it would - no separate, looser
- * "approximately this many" drilldown that could disagree with the card.
+- ============================================================================
+- The EXACT list behind any one of the 3 numbers on a "Remarks Impact" card
+- (Total Not Verified / Pending / Closed), for header / line / rc. Same
+- mandatory-points + coverage logic as getRemarksImpactSummary(), so the list
+- always has exactly as many rows as the card says.
  *
- * body: { section: "header"|"line"|"rc", bucket: "total"|"pending"|"closed",
- *         isPoCorrected?: "corrected"|"altercation" (bucket="closed" only),
- *         purchaseGroup?: string[] (optional single-group drilldown, e.g.
- *         from the "Purchase Group Compliance" table — for unrestricted
- *         roles only; a Buyer is already scoped to their own group by
- *         buildWhere()/the rcWhere branch below regardless of this field),
- *         page, pageSize, ...same scoping filters as getRemarksImpactSummary }
- * ============================================================================
+- body: { section: "header"|"line"|"rc", bucket: "total"|"pending"|"closed",
+-         isPoCorrected?: "corrected"|"altercation" (bucket="closed" only),
+-         purchaseGroup?: string[], pointNo?, page, pageSize, ...filters }
+- ============================================================================
  */
 export const getRemarksImpactList = async (req, res) => {
   try {
@@ -1770,10 +1632,6 @@ export const getRemarksImpactList = async (req, res) => {
         Array.isArray(body.purchaseGroup) &&
         body.purchaseGroup.length === 1
       ) {
-        // Drilling into one specific purchase group's RC bucket (e.g. from
-        // the "Purchase Group Compliance" table). Only reachable for
-        // unrestricted roles — a Buyer already hits the branch above and
-        // is scoped to their own group regardless of what's in the body.
         rcWhere.purchaseGroups = { has: body.purchaseGroup[0] };
       }
       const allRcs = await prisma.rcOverlapResult.findMany({
@@ -1825,9 +1683,6 @@ export const getRemarksImpactList = async (req, res) => {
             : "",
         };
       });
-      // RC has no "point number" concept - one check per RC - so
-      // availablePoints is always empty here; the frontend hides the
-      // point filter for this section accordingly.
       return res.status(200).json({
         rows,
         total,
@@ -1840,24 +1695,8 @@ export const getRemarksImpactList = async (req, res) => {
     }
 
     // ---- header/line share the same shape ----------------------------
-    const lineWhere = buildWhere(body, user);
-    const lineRows = await prisma.auditResult.findMany({
-      where: lineWhere,
-      select: {
-        id: true,
-        po_number: true,
-        po_line_item: true,
-        results: true,
-        checkedPoints: true,
-        vendor_code: true,
-        nameOfVendor: true,
-        po_created_date: true,
-        plant: true,
-        po_type: true,
-        purchase_group: true,
-      },
-    });
-    const poNumbers = [...new Set(lineRows.map((r) => r.po_number))];
+    const model = await getScopedModel(buildWhere(body, user));
+    const lineRows = model.lineRows;
 
     if (section === "line") {
       const remarks = lineRows.length
@@ -1897,8 +1736,9 @@ export const getRemarksImpactList = async (req, res) => {
               continue;
           }
           out.push({
-            key: `line-${row.id}-${p.pointNo}`,
+            key: `line-${row.id}-${row.source_file_ts?.toISOString?.() || ""}-${p.pointNo}`,
             poNumber: row.po_number,
+            source_file_ts: row.source_file_ts?.toISOString?.() || null,
             lineItem: row.po_line_item,
             poDate: fmtDate(row.po_created_date),
             poType: row.po_type,
@@ -1938,28 +1778,14 @@ export const getRemarksImpactList = async (req, res) => {
     }
 
     // section === "header"
-    // PoHeaderResult has no PO date/plant/type of its own — borrow it
-    // from any one of that PO's already-fetched line rows (same PO-level
-    // metadata is duplicated onto every line at import time).
+    // PoHeaderResult has no PO date/plant/type of its own - borrow it from
+    // any one of that PO's line rows.
     const repLineByPo = new Map();
     for (const r of lineRows) {
       if (!repLineByPo.has(r.po_number)) repLineByPo.set(r.po_number, r);
     }
 
-    const headerRows = poNumbers.length
-      ? await prisma.poHeaderResult.findMany({
-          where: { po_number: { in: poNumbers } },
-          select: {
-            id: true,
-            po_number: true,
-            results: true,
-            checkedPoints: true,
-            vendor_code: true,
-            purchase_group: true,
-            po_type: true,
-          },
-        })
-      : [];
+    const headerRows = model.headerRows;
     const headerRemarks = headerRows.length
       ? await prisma.poHeaderRemark.findMany({
           where: { po_number: { in: headerRows.map((r) => r.po_number) } },
@@ -1998,8 +1824,9 @@ export const getRemarksImpactList = async (req, res) => {
             continue;
         }
         out.push({
-          key: `header-${row.po_number}-${p.pointNo}`,
+          key: `header-${row.po_number}-${row.source_file_ts?.toISOString?.() || ""}-${p.pointNo}`,
           poNumber: row.po_number,
+          source_file_ts: row.source_file_ts?.toISOString?.() || null,
           poDate: fmtDate(repLine?.po_created_date),
           poType: row.po_type || repLine?.po_type,
           plant: repLine?.plant,

@@ -17,6 +17,7 @@ import {
   Typography,
 } from "@mui/material";
 import moment from "moment";
+import { formatFileTimestamp } from "../../utils/formatFileTimestamp";
 import { toast } from "react-toastify";
 import { useSearchParams } from "react-router-dom";
 
@@ -76,7 +77,7 @@ const PoAuditResultsPage = () => {
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedRow, setSelectedRow] = useState(null);
 
  const fetchResults = async (targetPage, targetFilters) => {
     setLoading(true);
@@ -247,6 +248,7 @@ const PoAuditResultsPage = () => {
               <TableRow sx={{ backgroundColor: "lightgray" }}>
                 <TableCell>#</TableCell>
                 <TableCell>PO Number</TableCell>
+                <TableCell>File Timestamp</TableCell>
                 <TableCell>Vendor</TableCell>
                 <TableCell>Material</TableCell>
                 <TableCell>PO Type</TableCell>
@@ -259,7 +261,7 @@ const PoAuditResultsPage = () => {
             <TableBody>
               {rows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} align="center">
+                  <TableCell colSpan={10} align="center">
                     No PO audit results found
                   </TableCell>
                 </TableRow>
@@ -269,9 +271,10 @@ const PoAuditResultsPage = () => {
                   const assignee = row.verificationWorkflow?.assignee;
                   const serialNo = (page - 1) * PAGE_SIZE + idx + 1;
                   return (
-                    <TableRow key={row.id} hover sx={{ cursor: "pointer" }} onClick={() => setSelectedId(row.id)}>
+                    <TableRow key={row.id} hover sx={{ cursor: "pointer" }} onClick={() => setSelectedRow(row)}>
                       <TableCell>{serialNo}</TableCell>
                       <TableCell>{row.po_number || "-"}</TableCell>
+                      <TableCell sx={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatFileTimestamp(row.source_file_ts)}</TableCell>
                       <TableCell>{row.nameOfVendor || row.vendor_code || "-"}</TableCell>
                       <TableCell>{row.material_code || "-"}</TableCell>
                       <TableCell>{row.po_type || "-"}</TableCell>
@@ -301,7 +304,7 @@ const PoAuditResultsPage = () => {
         <Pagination count={pageCount} page={page} onChange={(_, value) => setPage(value)} color="primary" />
       </Box>
 
-      <PoAuditResultDialog id={selectedId} onClose={() => setSelectedId(null)} />
+      <PoAuditResultDialog id={selectedRow?.id} sourceFileTs={selectedRow?.source_file_ts} onClose={() => setSelectedRow(null)} />
     </Box>
   );
 };

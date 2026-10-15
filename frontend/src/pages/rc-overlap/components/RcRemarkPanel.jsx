@@ -8,8 +8,6 @@ import {
   Button,
   alpha,
   TextField,
-  ToggleButton,
-  ToggleButtonGroup,
   Stack,
   IconButton,
 } from "@mui/material";
@@ -21,6 +19,7 @@ import DeleteRoundedIcon from "@mui/icons-material/DeleteRounded";
 
 import { toast } from "react-toastify";
 import { post } from "utils/axiosApi";
+import PoCorrectedField from "../../executive-dashboard/components/PoCorrectedField";
 
 // Changed `bg` to standard MUI `bgcolor` to ensure it applies consistently
 const CORRECTION_STYLES = {
@@ -32,6 +31,8 @@ const RESULT_STYLES = {
   Verified: { bgcolor: alpha("#059669", 0.15), color: "#059669" },
   "Not Verified": { bgcolor: alpha("#dc2626", 0.15), color: "#dc2626" },
 };
+
+const RC_RESULT_OPTIONS = ["Verified", "Not Verified"];
 
 const submitterName = (submitter) => {
   if (!submitter) return "Unknown";
@@ -57,6 +58,7 @@ const formatDateTime = (value) => {
 
 const RcRemarkPanel = ({
   rcId,
+  systemResult = "",
   roleFlags,
   currentUserId,
   onChanged,
@@ -89,11 +91,14 @@ const RcRemarkPanel = ({
   const [remarkText, setRemarkText] =
     useState("");
 
-  const [isWrong, setIsWrong] =
-    useState(false);
+  const [poCorrectedAnswer, setPoCorrectedAnswer] =
+    useState("");
 
   const [buyerResult, setBuyerResult] =
     useState("");
+
+  const [showPoCorrectedErrors, setShowPoCorrectedErrors] =
+    useState(false);
 
   const [submitting, setSubmitting] =
     useState(false);
@@ -130,8 +135,9 @@ const RcRemarkPanel = ({
     setFormOpen(compact);
     setEditingId(null);
     setRemarkText("");
-    setIsWrong(false);
+    setPoCorrectedAnswer("");
     setBuyerResult("");
+    setShowPoCorrectedErrors(false);
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rcId, load]);
@@ -144,20 +150,28 @@ const RcRemarkPanel = ({
   const startAdd = () => {
     setEditingId(null);
     setRemarkText("");
-    setIsWrong(false);
+    setPoCorrectedAnswer("");
     setBuyerResult("");
+    setShowPoCorrectedErrors(false);
     setFormOpen(true);
   };
 
   const startEdit = (remark) => {
     setEditingId(remark.id);
     setRemarkText(remark.remark);
-    setIsWrong(
-      !!remark.isSystemResultWrong
+    setPoCorrectedAnswer(
+      remark.isSystemResultWrong
+        ? "yes"
+        : "no"
     );
     setBuyerResult(
-      remark.buyerResult || ""
+      !remark.isSystemResultWrong &&
+        remark.buyerResult &&
+        remark.buyerResult !== systemResult
+        ? remark.buyerResult
+        : ""
     );
+    setShowPoCorrectedErrors(false);
     setFormOpen(true);
   };
 
@@ -165,8 +179,9 @@ const RcRemarkPanel = ({
     setFormOpen(compact);
     setEditingId(null);
     setRemarkText("");
-    setIsWrong(false);
+    setPoCorrectedAnswer("");
     setBuyerResult("");
+    setShowPoCorrectedErrors(false);
   };
 
   const submit = async () => {
@@ -177,17 +192,44 @@ const RcRemarkPanel = ({
       return;
     }
 
+    if (
+      !poCorrectedAnswer ||
+      (poCorrectedAnswer === "no" && !buyerResult)
+    ) {
+      setShowPoCorrectedErrors(true);
+      toast.info(
+        "Answer \"Is PO corrected?\" before submitting."
+      );
+      return;
+    }
+
     setSubmitting(true);
 
     try {
+      const correctionPayload = {
+        isSystemResultWrong:
+          poCorrectedAnswer === "yes",
+        ...(poCorrectedAnswer === "no"
+          ? { buyerResult }
+          : {}),
+      };
+
       if (editingId) {
-        await post("/rc-remarks/update", {
+        const res = await post("/rc-remarks/update", {
           id: editingId,
           remark: remarkText.trim(),
-          isSystemResultWrong: isWrong,
-          buyerResult:
-            buyerResult || undefined,
+          ...correctionPayload,
         });
+
+        if (res?.remark) {
+          setRemarks((current) =>
+            current.map((item) =>
+              item.id === res.remark.id
+                ? res.remark
+                : item
+            )
+          );
+        }
 
         toast.success(
           "Remark updated"
@@ -198,11 +240,23 @@ const RcRemarkPanel = ({
           {
             rcOverlapResultId: rcId,
             remark: remarkText.trim(),
-            isSystemResultWrong: isWrong,
-            buyerResult:
-              buyerResult || undefined,
+            ...correctionPayload,
           }
         );
+
+        if (res?.remark) {
+          setRemarks((current) => [
+            res.remark,
+            ...current.filter(
+              (item) => item.id !== res.remark.id
+            ),
+          ]);
+          setRemarksLocked(
+            res?.remarksLocked !== undefined
+              ? !!res.remarksLocked
+              : remarksLocked
+          );
+        }
 
         toast.success(
           res?.autoClosed
@@ -213,8 +267,9 @@ const RcRemarkPanel = ({
 
       setEditingId(null);
       setRemarkText("");
-      setIsWrong(false);
+      setPoCorrectedAnswer("");
       setBuyerResult("");
+      setShowPoCorrectedErrors(false);
       setFormOpen(compact);
 
       await load();
@@ -527,7 +582,7 @@ const RcRemarkPanel = ({
                       }}
                     />
 
-                    {remark.buyerResult && (
+                    {remark.buyerResult && remark.buyerResult !== systemResult && (
                       <Chip
                         size="small"
                         label={`Buyer result: ${remark.buyerResult}`}
@@ -675,138 +730,18 @@ const RcRemarkPanel = ({
               }}
             />
 
-            {/* IS PO CORRECTED? */}
-            <Typography
-              variant="caption"
-              sx={{
-                fontWeight: 700,
-                color: "text.secondary",
-                display: "block",
-                mb: 0.5,
-              }}
-            >
-              Is PO corrected?
-            </Typography>
-
-            <ToggleButtonGroup
-              exclusive
-              fullWidth
-              size="small"
-              value={isWrong ? "corrected" : "altercation"}
-              onChange={(_, val) => {
-                if (val) setIsWrong(val === "corrected");
-              }}
-              sx={{
-                width: "100%",
-                mb: 1.5,
-                "& .MuiToggleButton-root": {
-                  textTransform: "none",
-                  fontWeight: 500, // Softer weight when not selected
-                  fontSize: "0.8rem",
-                  color: "text.secondary", // clearly unselected grey
-                },
-                "& .MuiToggleButton-root.Mui-selected": {
-                  ...CORRECTION_STYLES.altercation, // Default selected style
-                  fontWeight: 700, // Bold when selected
-                  borderColor: "grey.400", // Clearly visible border
-                  zIndex: 1, // Fix border overlap
-                  "&:hover": {
-                    ...CORRECTION_STYLES.altercation,
-                    opacity: 0.9,
-                  }
-                },
-                "& .MuiToggleButton-root[value='corrected'].Mui-selected": {
-                  ...CORRECTION_STYLES.corrected,
-                  fontWeight: 700,
-                  borderColor: alpha("#dc2626", 0.4),
-                  zIndex: 1,
-                  "&:hover": {
-                    ...CORRECTION_STYLES.corrected,
-                    opacity: 0.9,
-                  }
-                },
-              }}
-            >
-              <ToggleButton value="altercation">
-                System Altercation
-              </ToggleButton>
-              <ToggleButton value="corrected">
-                PO Corrected
-              </ToggleButton>
-            </ToggleButtonGroup>
-
-            {/* BUYER'S RESULT */}
-            <Typography
-              variant="caption"
-              sx={{
-                fontWeight: 700,
-                color: "text.secondary",
-                display: "block",
-                mb: 0.5,
-              }}
-            >
-              Buyer's result
-            </Typography>
-
-            <ToggleButtonGroup
-              exclusive
-              fullWidth
-              size="small"
-              value={buyerResult}
-              onChange={(_, val) => {
-                setBuyerResult(val ?? "");
-              }}
-              sx={{
-                width: "100%",
-                mb: 1.5,
-                "& .MuiToggleButton-root": {
-                  textTransform: "none",
-                  fontWeight: 500, // Softer unselected state
-                  fontSize: "0.8rem",
-                  color: "text.secondary",
-                },
-                "& .MuiToggleButton-root[value='Verified'].Mui-selected": {
-                  ...RESULT_STYLES.Verified,
-                  fontWeight: 700,
-                  borderColor: alpha("#059669", 0.4),
-                  zIndex: 1,
-                  "&:hover": {
-                    ...RESULT_STYLES.Verified,
-                    opacity: 0.9,
-                  }
-                },
-                "& .MuiToggleButton-root[value='Not Verified'].Mui-selected": {
-                  ...RESULT_STYLES["Not Verified"],
-                  fontWeight: 700,
-                  borderColor: alpha("#dc2626", 0.4),
-                  zIndex: 1,
-                  "&:hover": {
-                    ...RESULT_STYLES["Not Verified"],
-                    opacity: 0.9,
-                  }
-                },
-                "& .MuiToggleButton-root[value=''].Mui-selected": {
-                  bgcolor: "grey.200",
-                  color: "#334155",
-                  fontWeight: 700,
-                  borderColor: "grey.400",
-                  zIndex: 1,
-                  "&:hover": {
-                    bgcolor: "grey.300",
-                  }
-                },
-              }}
-            >
-              <ToggleButton value="Verified">
-                Verified
-              </ToggleButton>
-              <ToggleButton value="Not Verified">
-                Not Verified
-              </ToggleButton>
-              <ToggleButton value="">
-                Not Applicable
-              </ToggleButton>
-            </ToggleButtonGroup>
+            <Box sx={{ mb: 1.5 }}>
+              <PoCorrectedField
+                value={poCorrectedAnswer}
+                onChange={setPoCorrectedAnswer}
+                systemResult={systemResult}
+                buyerResult={buyerResult}
+                onBuyerResultChange={setBuyerResult}
+                disabled={submitting}
+                allowedResults={RC_RESULT_OPTIONS}
+                showErrors={showPoCorrectedErrors}
+              />
+            </Box>
 
             {/* ACTIONS */}
             <Stack
@@ -825,7 +760,12 @@ const RcRemarkPanel = ({
               <Button
                 size="small"
                 variant="contained"
-                disabled={submitting}
+                disabled={
+                  submitting ||
+                  !remarkText.trim() ||
+                  !poCorrectedAnswer ||
+                  (poCorrectedAnswer === "no" && !buyerResult)
+                }
                 onClick={submit}
                 sx={{
                   boxShadow: "none",

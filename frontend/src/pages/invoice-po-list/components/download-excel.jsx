@@ -13,6 +13,7 @@ import {
 } from "@mui/material";
 
 import moment from "moment";
+import { formatExcelFileTimestamp } from "../../../utils/formatFileTimestamp";
 import { toast } from "react-toastify";
 import { useSelector } from "react-redux";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
@@ -78,6 +79,7 @@ const DownloadTableToExcel = ({
       "Sr No.",
       "PO Number",
       "Po Material Number",
+      "File Timestamp",
       "Purchase Request",
       "Purchase Request Date",
       "PO Created Date",
@@ -130,6 +132,7 @@ const DownloadTableToExcel = ({
       start + idx + 1,
       row.po_number || "-",
       row.po_material_number || "-",
+      formatExcelFileTimestamp(row.source_file_ts),
       row.purchase_req || "-",
       row.pr_create_date
         ? moment(row.pr_create_date).format("DD-MM-YYYY")

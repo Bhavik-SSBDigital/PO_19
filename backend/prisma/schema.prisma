@@ -211,6 +211,7 @@ model AuditResult {
 
   auditedOn               DateTime  @default(now()) @map("audited_on")
 
+  source_file_ts                       DateTime? @map("source_file_ts")
   po_number                              String?
   po_type                                String?
   po_status                              String?
@@ -270,6 +271,8 @@ model AuditResult {
   manualVerifications    ManualVerification[]
   poRemarks              PoRemark[]
 
+  @@unique([po_number, po_line_item, source_file_ts])
+  @@index([po_number, source_file_ts])
   @@index([po_number, po_line_item])
   @@index([po_number])
   @@index([po_material_number])
@@ -303,7 +306,8 @@ model AuditResult {
 // ---------------------------------------------------------------------------
 model PoHeaderResult {
   id             String   @id @default(uuid())
-  po_number      String   @unique
+  po_number      String
+  source_file_ts DateTime? @map("source_file_ts")
   vendor_code    String?
   purchase_group String?
   po_type        String?
@@ -319,6 +323,7 @@ model PoHeaderResult {
 
   headerRemarks  PoHeaderRemark[]
 
+  @@unique([po_number, source_file_ts])
   @@index([po_number])
   @@index([purchase_group])
   @@map("po_header_results")
@@ -333,6 +338,7 @@ model PoHeaderResult {
 model PoHeaderRemark {
   id            String   @id @default(uuid())
   po_number     String
+  source_file_ts DateTime? @map("source_file_ts")
   pointNo       Int      @map("point_no")
   remark        String
   submittedBy   String   @map("submitted_by")
@@ -340,11 +346,11 @@ model PoHeaderRemark {
   updatedAt     DateTime @updatedAt @map("updated_at")
   isSystemResultWrong Boolean @default(false) @map("is_system_result_wrong")
   buyerResult         String? @map("buyer_result")
-  poHeaderResult PoHeaderResult @relation(fields: [po_number], references: [po_number], onDelete: Cascade)
+  poHeaderResult PoHeaderResult? @relation(fields: [po_number, source_file_ts], references: [po_number, source_file_ts], onDelete: Cascade)
   submitter      User           @relation(fields: [submittedBy], references: [id])
 
-  @@unique([po_number, pointNo, submittedBy])
-  @@index([po_number])
+  @@unique([po_number, source_file_ts, pointNo, submittedBy])
+  @@index([po_number, source_file_ts])
   @@map("po_header_remarks")
 }
 

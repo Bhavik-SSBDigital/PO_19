@@ -4,13 +4,21 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const fileName = process.argv[2];
-const pruneDisabled = process.argv.includes("--no-prune");
+const args = process.argv.slice(2);
+const fileName = args.find((arg) => !arg.startsWith("--"));
+const fileTsIndex = args.indexOf("--file-ts");
+const fileTsRaw = fileTsIndex >= 0 ? args[fileTsIndex + 1] : null;
+function parseFileTimestamp(raw) {
+  if (!/^\d{14}$/.test(String(raw || ""))) return null;
+  const [year, month, day, hour, minute, second] = [raw.slice(0,4),raw.slice(4,6),raw.slice(6,8),raw.slice(8,10),raw.slice(10,12),raw.slice(12,14)].map(Number);
+  const d = new Date(Date.UTC(year, month-1, day, hour, minute, second));
+  if (d.getUTCFullYear() !== year || d.getUTCMonth() !== month-1 || d.getUTCDate() !== day || d.getUTCHours() !== hour || d.getUTCMinutes() !== minute || d.getUTCSeconds() !== second) return null;
+  return new Date(Date.UTC(year, month-1, day, hour-5, minute-30, second));
+}
+const sourceFileTs = parseFileTimestamp(fileTsRaw);
 
-if (!fileName) {
-  console.error(
-    "Please provide a filename: node addheader.js <filename> [--no-prune]",
-  );
+if (!fileName || !sourceFileTs) {
+  console.error("Usage: node addheader.js <filename> --file-ts YYYYMMDDHHMMSS [--no-prune]");
   process.exit(1);
 }
 
@@ -35,31 +43,12 @@ if (!fileName) {
  * extract updates `results` in place without reopening a PO a buyer has
  * already closed.
  *
- * ------------------------------------------------------------------------
- * PRUNING (added): engine.py can now remove a PO from its output ENTIRELY
- * - not mark it Not Applicable, but drop it - when every one of its line
- * items carries Deletion indicator = 'L' (see engine.py's
- * drop_lines_with_deletion_indicator()). Before this addition, this
- * script only ever INSERTED or UPDATED rows present in the new JSON; a PO
- * that disappeared from a fresh export because it's now fully excluded
- * was simply never touched, so its OLD po_header_results row (inserted by
- * a prior, older run) stayed in the database forever and kept being
- * served by the API.
- *
- * After the normal upsert loop, this script now also deletes any
- * po_header_results row whose po_number is NOT present in the JSON file
- * just imported.
- *
- * IMPORTANT ASSUMPTION: this treats the JSON file as the FULL, current
- * set of header-eligible POs from the latest extract - which is what
- * engine.py's --header-json always produces (it's not incremental/delta
- * output). If you ever need to import a deliberately partial file, run
- * with --no-prune, or every PO missing from that partial file will be
- * deleted from the database.
+ * Existing versions are preserved; updates are scoped to the source file timestamp.
  * ------------------------------------------------------------------- */
 
 const HEADER_FIELDS = [
   "po_number",
+  "source_file_ts",
   "vendor_code",
   "purchase_group",
   "po_type",
@@ -95,41 +84,6 @@ function parseDate(value) {
   return isNaN(date.getTime()) ? new Date() : date;
 }
 
-/* ----------------------------------------------------------------------
- * pruneStaleHeaderRecords
- * ========================
- * Deletes every po_header_results row whose po_number is not in
- * currentPoNumbers (the set of PO numbers present in the JSON file just
- * imported). Wrapped in try/catch so a pruning failure (e.g. a foreign
- * key constraint from another table referencing po_header_results) is
- * reported but does NOT undo or fail the upserts that already succeeded
- * above.
- * ------------------------------------------------------------------- */
-async function pruneStaleHeaderRecords(currentPoNumbers) {
-  const existing = await prisma.poHeaderResult.findMany({
-    select: { id: true, po_number: true },
-  });
-
-  const staleIds = existing
-    .filter((row) => !currentPoNumbers.has(row.po_number))
-    .map((row) => row.id);
-
-  if (staleIds.length === 0) {
-    console.log("🧹 No stale PO header records to prune.");
-    return;
-  }
-
-  const { count } = await prisma.poHeaderResult.deleteMany({
-    where: { id: { in: staleIds } },
-  });
-
-  console.log(
-    `🗑️  Pruned ${count} stale PO header record(s) - PO(s) no longer present ` +
-      `in the latest extract (fully excluded, e.g. every line item now carries ` +
-      `Deletion indicator = 'L').`,
-  );
-}
-
 async function processRecords() {
   try {
     const jsonData = fs.readFileSync(fileName, "utf8");
@@ -141,7 +95,7 @@ async function processRecords() {
 
     let insertedCount = 0;
     let updatedCount = 0;
-    const currentPoNumbers = new Set();
+    let failedCount = 0;
 
     for (let i = 0; i < parsedData.length; i++) {
       try {
@@ -162,11 +116,10 @@ async function processRecords() {
           : "";
         doc.po_type = doc.po_type ? String(doc.po_type) : "";
 
-        const data = pickHeaderFields(doc);
-        currentPoNumbers.add(data.po_number);
+        const data = pickHeaderFields({ ...doc, source_file_ts: sourceFileTs });
 
-        const existing = await prisma.poHeaderResult.findUnique({
-          where: { po_number: data.po_number },
+        const existing = await prisma.poHeaderResult.findFirst({
+          where: { po_number: data.po_number, source_file_ts: sourceFileTs },
         });
 
         if (existing) {
@@ -184,6 +137,7 @@ async function processRecords() {
           console.log(`✅ Inserted header record: ${data.po_number}`);
         }
       } catch (err) {
+        failedCount++;
         console.error(`Error in record ${i + 1}:`, err.message);
         console.error(JSON.stringify(parsedData[i], null, 2));
       }
@@ -193,19 +147,11 @@ async function processRecords() {
       `✅ ${insertedCount} PO header records inserted, ${updatedCount} updated`,
     );
 
-    if (pruneDisabled) {
-      console.log("⏭️  Skipping prune step (--no-prune passed).");
-    } else {
-      try {
-        await pruneStaleHeaderRecords(currentPoNumbers);
-      } catch (err) {
-        console.error(
-          "⚠️  Prune step failed (upserts above already succeeded):",
-          err.message,
-        );
-      }
-    }
 
+    if (failedCount > 0) {
+      console.error(`Import failed for ${failedCount} record(s); retrying this file is safe.`);
+      process.exit(1);
+    }
     process.exit(0);
   } catch (err) {
     console.error("Fatal error:", err.message);

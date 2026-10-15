@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { resolvePoHeader } from "../utility/po-version.js";
 import { ensureSeverityLoaded, classifyPoint } from "../utility/severity.js";
 import {
   getVendorInfo,
@@ -49,16 +50,13 @@ function canWriteHeaderRemarks(user, headerRecord) {
 // PoHeaderResult.results before the PO's header auto-closes. A point the
 // system already marked Verified/N-A/Manual Review never has to be
 // touched by the buyer.
-async function recomputeAndMaybeAutoCloseHeader(po_number, userId) {
-  const fresh = await prisma.poHeaderResult.findUnique({
-    where: { po_number },
-    select: { results: true, checkedPoints: true, remarksLocked: true },
-  });
+async function recomputeAndMaybeAutoCloseHeader(po_number, sourceFileTs, userId) {
+  const fresh = await resolvePoHeader(po_number, sourceFileTs);
   if (!fresh) return null;
 
   const remarkedPointNos = (
     await prisma.poHeaderRemark.findMany({
-      where: { po_number },
+      where: { po_number, source_file_ts: fresh.source_file_ts },
       distinct: ["pointNo"],
       select: { pointNo: true },
     })
@@ -75,7 +73,7 @@ async function recomputeAndMaybeAutoCloseHeader(po_number, userId) {
 
   if (tally.isComplete && !fresh.remarksLocked) {
     await prisma.poHeaderResult.update({
-      where: { po_number },
+      where: { id: fresh.id },
       data: {
         remarksLocked: true,
         remarksLockedBy: userId,
@@ -97,14 +95,15 @@ export const getPoHeaderSummary = async (req, res) => {
       return res.status(400).json({ message: "po_number is required" });
     }
 
-    const headerRecord = await prisma.poHeaderResult.findUnique({
-      where: { po_number },
-    });
+    const headerRecord = await resolvePoHeader(po_number, req.body?.source_file_ts);
+    const latestLine = headerRecord || req.body?.source_file_ts ? null : await prisma.auditResult.findFirst({ where: { type: "PO", po_number }, orderBy: { source_file_ts: "desc" }, select: { source_file_ts: true } });
+    const sourceFileTs = headerRecord?.source_file_ts || (req.body?.source_file_ts ? new Date(req.body.source_file_ts) : latestLine?.source_file_ts);
 
     const lineRows = await prisma.auditResult.findMany({
-      where: { type: "PO", po_number },
+      where: { type: "PO", po_number, ...(req.body?.source_file_ts && sourceFileTs ? { source_file_ts: sourceFileTs } : {}) },
       select: {
         id: true,
+        source_file_ts: true,
         po_line_item: true,
         po_material_number: true,
         material_code: true,
@@ -114,7 +113,7 @@ export const getPoHeaderSummary = async (req, res) => {
         remarksLocked: true,
         remarksLockedAt: true,
       },
-      orderBy: { po_line_item: "asc" },
+      orderBy: [{ source_file_ts: "desc" }, { po_line_item: "asc" }],
     });
 
     if (!headerRecord && lineRows.length === 0) {
@@ -124,7 +123,7 @@ export const getPoHeaderSummary = async (req, res) => {
     let scopeGroup = headerRecord?.purchase_group || null;
     if (!scopeGroup && lineRows.length) {
       const firstLine = await prisma.auditResult.findFirst({
-        where: { type: "PO", po_number },
+        where: { type: "PO", po_number, ...(sourceFileTs ? { source_file_ts: sourceFileTs } : {}) },
         select: { purchase_group: true, vendor_code: true, po_type: true },
       });
       scopeGroup = firstLine?.purchase_group || null;
@@ -138,7 +137,7 @@ export const getPoHeaderSummary = async (req, res) => {
         .json({ message: "Not authorized to view this PO" });
     }
 
-    const header = await getHeaderForPo(po_number, user);
+    const header = await getHeaderForPo(po_number, user, sourceFileTs);
     const headerRemarksByPoint = header.headerRemarksByPoint;
 
     const firstLine = lineRows[0];
@@ -146,7 +145,7 @@ export const getPoHeaderSummary = async (req, res) => {
       ? getVendorInfo(
           (
             await prisma.auditResult.findFirst({
-              where: { type: "PO", po_number },
+              where: { type: "PO", po_number, ...(sourceFileTs ? { source_file_ts: sourceFileTs } : {}) },
               select: { vendor_code: true },
             })
           )?.vendor_code,
@@ -155,6 +154,7 @@ export const getPoHeaderSummary = async (req, res) => {
 
     const lineItems = lineRows.map((row) => ({
       id: row.id,
+      source_file_ts: row.source_file_ts?.toISOString?.() || null,
       lineItem:
         row.po_line_item ||
         row.po_material_number?.split("-").slice(1).join("-") ||
@@ -172,6 +172,7 @@ export const getPoHeaderSummary = async (req, res) => {
     return res.status(200).json({
       scope: "po-header",
       po_number,
+      source_file_ts: sourceFileTs?.toISOString?.() || null,
       vendorCode: headerRecord?.vendor_code || vendor?.code || null,
       vendorName: vendor?.name || getVendorName(headerRecord?.vendor_code),
       vendorGstin: vendor?.gstin || "",
@@ -211,16 +212,14 @@ export const getPoHeaderRemarks = async (req, res) => {
       return res.status(400).json({ message: "po_number is required" });
     }
 
-    const headerRecord = await prisma.poHeaderResult.findUnique({
-      where: { po_number },
-    });
+    const headerRecord = await resolvePoHeader(po_number, req.body?.source_file_ts);
     if (headerRecord && !canAccessHeader(user, headerRecord)) {
       return res
         .status(403)
         .json({ message: "Not authorized to view this PO's header remarks" });
     }
 
-    const where = { po_number };
+    const where = { po_number, ...(headerRecord?.source_file_ts ? { source_file_ts: headerRecord.source_file_ts } : {}) };
     if (pointNo !== undefined && pointNo !== null && pointNo !== "") {
       where.pointNo = Number(pointNo);
     }
@@ -239,7 +238,7 @@ export const getPoHeaderRemarks = async (req, res) => {
     if (headerRecord) {
       const remarkedPointNos = (
         await prisma.poHeaderRemark.findMany({
-          where: { po_number },
+          where: { po_number, source_file_ts: headerRecord.source_file_ts },
           distinct: ["pointNo"],
           select: { pointNo: true },
         })
@@ -288,9 +287,7 @@ export const submitPoHeaderRemark = async (req, res) => {
       return res.status(400).json({ message: "pointNo is required" });
     }
 
-    const headerRecord = await prisma.poHeaderResult.findUnique({
-      where: { po_number },
-    });
+    const headerRecord = await resolvePoHeader(po_number, req.body?.source_file_ts);
     if (!headerRecord) {
       return res
         .status(404)
@@ -317,7 +314,7 @@ export const submitPoHeaderRemark = async (req, res) => {
     }
 
     const existingOwn = await prisma.poHeaderRemark.findFirst({
-      where: { po_number, pointNo: Number(pointNo), submittedBy: userId },
+      where: { po_number, source_file_ts: headerRecord.source_file_ts, pointNo: Number(pointNo), submittedBy: userId },
     });
     if (existingOwn) {
       return res.status(409).json({
@@ -334,6 +331,7 @@ export const submitPoHeaderRemark = async (req, res) => {
     const created = await prisma.poHeaderRemark.create({
       data: {
         po_number,
+        source_file_ts: headerRecord.source_file_ts,
         pointNo: Number(pointNo),
         remark: String(remark).trim(),
         submittedBy: userId,
@@ -345,7 +343,7 @@ export const submitPoHeaderRemark = async (req, res) => {
 
     if ((headerRecord.checkedPoints || []).includes(Number(pointNo))) {
       await prisma.poHeaderResult.update({
-        where: { po_number },
+        where: { id: headerRecord.id },
         data: {
           checkedPoints: headerRecord.checkedPoints.filter(
             (p) => p !== Number(pointNo),
@@ -354,7 +352,7 @@ export const submitPoHeaderRemark = async (req, res) => {
       });
     }
 
-    const tally = await recomputeAndMaybeAutoCloseHeader(po_number, userId);
+    const tally = await recomputeAndMaybeAutoCloseHeader(po_number, headerRecord.source_file_ts, userId);
 
     return res.status(201).json({
       message: tally?.autoClosed
@@ -486,9 +484,7 @@ export const setPoHeaderCheckedStatus = async (req, res) => {
       return res.status(400).json({ message: "checked (boolean) is required" });
     }
 
-    const headerRecord = await prisma.poHeaderResult.findUnique({
-      where: { po_number },
-    });
+    const headerRecord = await resolvePoHeader(po_number, req.body?.source_file_ts);
     if (!headerRecord) {
       return res
         .status(404)
@@ -502,7 +498,7 @@ export const setPoHeaderCheckedStatus = async (req, res) => {
 
     const userId = user.id || user.userId;
     const updated = await prisma.poHeaderResult.update({
-      where: { po_number },
+      where: { id: headerRecord.id },
       data: checked
         ? {
             remarksLocked: true,
@@ -520,6 +516,7 @@ export const setPoHeaderCheckedStatus = async (req, res) => {
       message: checked
         ? "PO header marked as checked. This applies to the whole PO — every line item will show it as closed."
         : "PO header reopened.",
+      source_file_ts: updated.source_file_ts?.toISOString?.() || null,
       remarksLocked: updated.remarksLocked,
       remarksLockedAt: updated.remarksLockedAt,
     });
@@ -556,9 +553,7 @@ export const toggleHeaderPointChecked = async (req, res) => {
       return res.status(400).json({ message: "checked (boolean) is required" });
     }
 
-    const headerRecord = await prisma.poHeaderResult.findUnique({
-      where: { po_number },
-    });
+    const headerRecord = await resolvePoHeader(po_number, req.body?.source_file_ts);
     if (!headerRecord) {
       return res
         .status(404)
@@ -581,7 +576,7 @@ export const toggleHeaderPointChecked = async (req, res) => {
 
     if (checked) {
       const hasRemark = await prisma.poHeaderRemark.findFirst({
-        where: { po_number, pointNo: n },
+        where: { po_number, source_file_ts: headerRecord.source_file_ts, pointNo: n },
       });
       if (hasRemark) {
         return res.status(409).json({
@@ -591,13 +586,13 @@ export const toggleHeaderPointChecked = async (req, res) => {
       }
       if (!(headerRecord.checkedPoints || []).includes(n)) {
         await prisma.poHeaderResult.update({
-          where: { po_number },
+          where: { id: headerRecord.id },
           data: { checkedPoints: { push: n } },
         });
       }
     } else {
       await prisma.poHeaderResult.update({
-        where: { po_number },
+        where: { id: headerRecord.id },
         data: {
           checkedPoints: (headerRecord.checkedPoints || []).filter(
             (p) => p !== n,
@@ -606,7 +601,7 @@ export const toggleHeaderPointChecked = async (req, res) => {
       });
     }
 
-    const tally = await recomputeAndMaybeAutoCloseHeader(po_number, userId);
+    const tally = await recomputeAndMaybeAutoCloseHeader(po_number, headerRecord.source_file_ts, userId);
 
     return res.status(200).json({
       message: tally?.autoClosed

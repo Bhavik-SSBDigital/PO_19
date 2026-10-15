@@ -30,6 +30,7 @@ import {
   downloadIssueTrackerReport,
 } from "../../api/api-functions";
 import { getRbac } from "utils/session";
+import { formatFileTimestamp } from "../../utils/formatFileTimestamp";
 
 const STATUS_COLOR = {
   Verified: "success",
@@ -96,7 +97,7 @@ function formatDate(v) {
 }
 
 function RemarksTable({ rows, loading, showPlantColumn }) {
-  const colSpan = showPlantColumn ? 10 : 9;
+  const colSpan = showPlantColumn ? 11 : 10;
 
   return (
     <TableContainer>
@@ -104,6 +105,7 @@ function RemarksTable({ rows, loading, showPlantColumn }) {
         <TableHead>
           <TableRow>
             <TableCell>PO / Line</TableCell>
+            <TableCell>File Timestamp</TableCell>
             <TableCell>Point</TableCell>
             <TableCell>Buyer's Remark</TableCell>
             <TableCell>Buyer's Result</TableCell>
@@ -130,10 +132,11 @@ function RemarksTable({ rows, loading, showPlantColumn }) {
             </TableRow>
           ) : (
             rows.map((r, idx) => (
-              <TableRow key={`${r.poNumber}-${r.lineItem}-${r.pointNo}-${idx}`}>
+              <TableRow key={`${r.poNumber}-${r.lineItem}-${r.source_file_ts || ""}-${r.pointNo}-${idx}`}>
                 <TableCell>
                   {r.poNumber} / {r.lineItem}
                 </TableCell>
+                <TableCell sx={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatFileTimestamp(r.source_file_ts)}</TableCell>
                 <TableCell>
                   #{r.pointNo}
                   {r.pointTitle && (

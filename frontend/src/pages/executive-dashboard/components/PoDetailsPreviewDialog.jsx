@@ -35,6 +35,7 @@ import { toast } from "react-toastify";
 import { post } from "utils/axiosApi";
 import { setAuditResultCheckedStatus } from "../../../api/api-functions";
 import PoHeaderChecksPanel from "./PoHeaderChecksPanel";
+import { formatFileTimestamp } from "utils/formatFileTimestamp";
 import SectionTallyBar from "../../../components/SectionTallyBar";
 import PointRemarkPanel from "./PointRemarkPanel";
 
@@ -88,6 +89,7 @@ const PREVIEW_EXCLUDE_KEYS = new Set([
 const PO_SUMMARY_FIELDS = [
   ["PO Number", (d) => d.po_number || d.poNumber],
   ["Line Item", (d) => d.lineItem || d.po_line_item],
+  ["File Timestamp", (d) => formatFileTimestamp(d.source_file_ts)],
   ["Vendor Code", (d) => d.vendorCode || d.vendor_code],
   ["Vendor", (d) => d.vendorName || d.nameOfVendor],
   ["GSTIN", (d) => d.vendorGstin || d.GSTInOfVendor],
@@ -375,6 +377,7 @@ const PoDetailsPreviewDialog = ({
       const res = await post("/getPOAuditResult", {
         po_number: preview.poNumber,
         po_line_item: targetLineItem || undefined,
+        source_file_ts: preview.source_file_ts || undefined,
       });
       setDetails(res);
     } catch (err) {
@@ -661,6 +664,7 @@ const PoDetailsPreviewDialog = ({
             </Typography>
             <PoHeaderChecksPanel
               poNumber={details.po_number}
+              sourceFileTs={details.source_file_ts}
               header={details.header}
               currentUserId={currentUserId}
               isBuyer={roleFlags.isBuyer}
@@ -686,6 +690,7 @@ const PoDetailsPreviewDialog = ({
                           <TableCell sx={{ fontWeight: 700 }}>
                             Line Item
                           </TableCell>
+                          <TableCell sx={{ fontWeight: 700 }}>File Timestamp</TableCell>
                           <TableCell sx={{ fontWeight: 700 }}>
                             Material
                           </TableCell>
@@ -705,7 +710,7 @@ const PoDetailsPreviewDialog = ({
                       <TableBody>
                         {details.lineItems.map((item) => (
                           <TableRow
-                            key={item.id || item.lineItem}
+                            key={`${item.id || item.lineItem}:${item.source_file_ts || ""}`}
                             hover
                             sx={{ cursor: "pointer" }}
                             onClick={() => switchLineItem(item.lineItem)}
@@ -713,6 +718,7 @@ const PoDetailsPreviewDialog = ({
                             <TableCell sx={{ fontWeight: 700 }}>
                               {item.lineItem}
                             </TableCell>
+                            <TableCell sx={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatFileTimestamp(item.source_file_ts)}</TableCell>
                             <TableCell>{item.materialCode || "—"}</TableCell>
                             <TableCell>
                               <Typography
@@ -807,6 +813,7 @@ const PoDetailsPreviewDialog = ({
             {details.header && (
               <PoHeaderChecksPanel
                 poNumber={details.po_number}
+                sourceFileTs={details.source_file_ts}
                 header={details.header}
                 currentUserId={currentUserId}
                 isBuyer={roleFlags.isBuyer}
@@ -1031,6 +1038,7 @@ const PoDetailsPreviewDialog = ({
                               <PointRemarkPanel
                                 poNumber={details.po_number}
                                 poLineItem={details.lineItem}
+                                sourceFileTs={details.source_file_ts}
                                 pointNo={row.pointNo}
                                 currentUserId={currentUserId}
                                 isBuyer={roleFlags.isBuyer}

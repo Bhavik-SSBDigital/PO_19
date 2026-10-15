@@ -24,6 +24,7 @@ import {
   getPointDefinition,
 } from "../utility/point-definitions.js";
 import { getHeaderForPo, getHeadersForPos } from "../utility/header-results.js";
+import { versionKey } from "../utility/po-version.js";
 import { getPoHeaderSummary } from "./po-header-controller.js";
 
 const REMARK_SUBMITTER_SELECT = {
@@ -119,6 +120,7 @@ const RESULT_INCLUDE = {
 const ROW_SELECT = {
   id: true,
   po_number: true,
+  source_file_ts: true,
   po_line_item: true,
   po_material_number: true,
   purchase_req: true,
@@ -280,7 +282,7 @@ function tallyForRow(row, remarksByPoint) {
  */
 const withExceptionPoints = async (row, user) => {
   const vendor = getVendorInfo(row.vendor_code);
-  const header = await getHeaderForPo(row.po_number, user);
+  const header = await getHeaderForPo(row.po_number, user, row.source_file_ts);
   const remarksByPoint = await getRemarksMapForAuditResult(row.id, user);
 
   return {
@@ -310,7 +312,7 @@ const withExceptionPoints = async (row, user) => {
 // query instead of once per row.
 async function withExceptionPointsBatch(rows, user) {
   const headerMap = await getHeadersForPos(
-    rows.map((r) => r.po_number),
+    rows,
     user,
   );
   const remarksMap = await getRemarksMapForAuditResults(
@@ -333,8 +335,9 @@ async function withExceptionPointsBatch(rows, user) {
         row.checkedPoints,
       ),
       lineTally: tallyForRow(row, remarksByPoint),
-      header: headerMap.get(row.po_number) || {
+      header: headerMap.get(versionKey(row.po_number, row.source_file_ts)) || {
         poNumber: row.po_number,
+        source_file_ts: row.source_file_ts?.toISOString?.() || null,
         points: [],
         totalPoints: 0,
         verifiedCount: 0,
@@ -432,7 +435,7 @@ export const get_po_audit_result = async (req, res) => {
   try {
     await Promise.all([ensureSeverityLoaded(), ensurePointDefinitionsLoaded()]);
     const user = req.user || {};
-    const { poMaterialNumber, id, po_number, po_line_item, fiscalYear } =
+    const { poMaterialNumber, id, po_number, po_line_item, fiscalYear, source_file_ts } =
       req.body || {};
 
     if (!id && !poMaterialNumber && !po_number) {
@@ -449,14 +452,17 @@ export const get_po_audit_result = async (req, res) => {
       const where = { type: "PO" };
       if (id) where.id = id;
       if (poMaterialNumber) where.po_material_number = poMaterialNumber;
+      if (source_file_ts && !id) where.source_file_ts = new Date(source_file_ts);
       if (!id && !poMaterialNumber && po_number && po_line_item) {
         where.po_number = po_number;
         where.po_line_item = po_line_item;
+        if (source_file_ts) where.source_file_ts = new Date(source_file_ts);
       }
       if (fiscalYear) where.fiscalYear = fiscalYear;
 
       const result = await prisma.auditResult.findFirst({
         where,
+        orderBy: source_file_ts ? undefined : { source_file_ts: "desc" },
         include: RESULT_INCLUDE,
       });
 
@@ -490,17 +496,19 @@ export const get_po_lines = async (req, res) => {
   try {
     await Promise.all([ensureSeverityLoaded(), ensurePointDefinitionsLoaded()]);
     const user = req.user || {};
-    const { poNumber } = req.body || {};
+    const { poNumber, source_file_ts } = req.body || {};
     if (!poNumber)
       return res.status(400).json({ message: "poNumber is required" });
 
+    const latest = source_file_ts ? null : await prisma.auditResult.findFirst({ where: { type: "PO", po_number: poNumber }, orderBy: { source_file_ts: "desc" }, select: { source_file_ts: true } });
+    const selectedTs = source_file_ts ? new Date(source_file_ts) : latest?.source_file_ts;
     const rows = await prisma.auditResult.findMany({
-      where: { type: "PO", po_number: poNumber },
+      where: { type: "PO", po_number: poNumber, ...(selectedTs ? { source_file_ts: selectedTs } : {}) },
       select: ROW_SELECT,
       orderBy: { po_line_item: "asc" },
     });
 
-    const header = await getHeaderForPo(poNumber, user);
+    const header = await getHeaderForPo(poNumber, user, selectedTs);
     const remarksMap = await getRemarksMapForAuditResults(
       rows.map((r) => r.id),
       user,

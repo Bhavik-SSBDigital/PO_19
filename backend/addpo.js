@@ -4,13 +4,24 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const fileName = process.argv[2];
-const pruneDisabled = process.argv.includes("--no-prune");
+const args = process.argv.slice(2);
+const fileName = args.find((arg) => !arg.startsWith("--"));
+const fileTsIndex = args.indexOf("--file-ts");
+const fileTsRaw = fileTsIndex >= 0 ? args[fileTsIndex + 1] : null;
+function parseFileTimestamp(raw) {
+  if (!/^\d{14}$/.test(String(raw || ""))) return null;
+  const [year, month, day, hour, minute, second] = [
+    raw.slice(0, 4), raw.slice(4, 6), raw.slice(6, 8),
+    raw.slice(8, 10), raw.slice(10, 12), raw.slice(12, 14),
+  ].map(Number);
+  const local = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  if (local.getUTCFullYear() !== year || local.getUTCMonth() !== month - 1 || local.getUTCDate() !== day || local.getUTCHours() !== hour || local.getUTCMinutes() !== minute || local.getUTCSeconds() !== second) return null;
+  return new Date(Date.UTC(year, month - 1, day, hour - 5, minute - 30, second));
+}
+const sourceFileTs = parseFileTimestamp(fileTsRaw);
 
-if (!fileName) {
-  console.error(
-    "Please provide a filename: node addpo.js <filename> [--no-prune]",
-  );
+if (!fileName || !sourceFileTs) {
+  console.error("Usage: node addpo.js <filename> --file-ts YYYYMMDDHHMMSS [--no-prune]");
   process.exit(1);
 }
 
@@ -141,6 +152,7 @@ const AUDIT_RESULT_FIELDS = [
   "auditedOn",
   "po_number",
   "po_line_item",
+  "source_file_ts",
   "po_type",
   "po_status",
   "hold_due_date",
@@ -191,57 +203,6 @@ function pickAuditResultFields(obj) {
   return out;
 }
 
-/* ----------------------------------------------------------------------
- * pruneStaleAuditResults
- * ========================
- * engine.py can now drop a PO LINE ITEM entirely from its output - not
- * mark it Not Applicable, but remove it - when that line item itself
- * carries Deletion indicator = 'L' (see engine.py's
- * drop_lines_with_deletion_indicator()). Before this addition, addpo.js
- * only ever INSERTED or UPDATED audit_results rows present in the new
- * JSON; a line item that disappeared from a fresh export (now excluded)
- * was simply never touched, so its OLD audit_results row (from a prior,
- * older run) stayed in the database and kept being served by the API.
- *
- * Deletes every audit_results row whose po_material_number is not in
- * currentMaterialNumbers (the set of po_material_number values present in
- * the JSON file just imported). Wrapped in try/catch by the caller so a
- * pruning failure (e.g. a foreign key constraint from
- * verification_workflows.audit_result_id) is reported but does not undo
- * or fail the upserts that already succeeded above.
- *
- * IMPORTANT ASSUMPTION: this treats the JSON file as the FULL, current
- * set of line items from the latest extract - which is what engine.py's
- * --addpo-json always produces (it's not incremental/delta output). If
- * you ever need to import a deliberately partial file, run with
- * --no-prune, or every line item missing from that partial file will be
- * deleted from the database.
- * ------------------------------------------------------------------- */
-async function pruneStaleAuditResults(currentMaterialNumbers) {
-  const existing = await prisma.auditResult.findMany({
-    select: { id: true, po_material_number: true },
-  });
-
-  const staleIds = existing
-    .filter((row) => !currentMaterialNumbers.has(row.po_material_number))
-    .map((row) => row.id);
-
-  if (staleIds.length === 0) {
-    console.log("🧹 No stale audit_results records to prune.");
-    return;
-  }
-
-  const { count } = await prisma.auditResult.deleteMany({
-    where: { id: { in: staleIds } },
-  });
-
-  console.log(
-    `🗑️  Pruned ${count} stale audit_results record(s) - PO line item(s) no ` +
-      `longer present in the latest extract (fully excluded, e.g. Deletion ` +
-      `indicator = 'L' on that line).`,
-  );
-}
-
 /* ---------------- MAIN PROCESS ---------------- */
 async function processDocuments() {
   try {
@@ -254,7 +215,7 @@ async function processDocuments() {
 
     let insertedCount = 0;
     let updatedCount = 0;
-    const currentMaterialNumbers = new Set();
+    let failedCount = 0;
 
     for (let i = 0; i < parsedData.length; i++) {
       try {
@@ -320,6 +281,7 @@ async function processDocuments() {
           nameOfVendor: doc.vendor_name || doc.nameOfVendor || "",
           GSTInOfVendor: doc.vendor_gstin || doc.GSTInOfVendor || "",
           po_number: String(doc.po_number || ""),
+          source_file_ts: sourceFileTs,
           po_line_item: doc.po_line_item ? String(doc.po_line_item) : "",
           vendor_code: String(doc.vendor_code || ""),
           tax_code: String(doc.tax_code || ""),
@@ -328,16 +290,13 @@ async function processDocuments() {
           plant: String(doc.plant || ""),
         });
 
-        if (auditData.po_material_number) {
-          currentMaterialNumbers.add(auditData.po_material_number);
-        }
-
-        /* ---------- CHECK EXISTING DOC ---------- */
-        const existingQuery = { po_material_number: doc.po_material_number };
-        if (doc.fiscalYear) existingQuery.fiscalYear = doc.fiscalYear;
-
+        /* ---------- CHECK SAME FILE VERSION ---------- */
         const existingDoc = await prisma.auditResult.findFirst({
-          where: existingQuery,
+          where: {
+            po_number: auditData.po_number,
+            po_line_item: auditData.po_line_item,
+            source_file_ts: sourceFileTs,
+          },
         });
 
         // NOTE: the original Mongo version re-fetched the VerificationWorkflow
@@ -360,6 +319,7 @@ async function processDocuments() {
           console.log(`✅ Inserted: ${doc.po_material_number}`);
         }
       } catch (err) {
+        failedCount++;
         console.error(`Error in doc ${i + 1}:`, err.message);
         console.error(JSON.stringify(parsedData[i], null, 2));
       }
@@ -369,19 +329,11 @@ async function processDocuments() {
       `✅ ${insertedCount} documents inserted, ${updatedCount} updated`,
     );
 
-    if (pruneDisabled) {
-      console.log("⏭️  Skipping prune step (--no-prune passed).");
-    } else {
-      try {
-        await pruneStaleAuditResults(currentMaterialNumbers);
-      } catch (err) {
-        console.error(
-          "⚠️  Prune step failed (upserts above already succeeded):",
-          err.message,
-        );
-      }
-    }
 
+    if (failedCount > 0) {
+      console.error(`Import failed for ${failedCount} record(s); retrying this file is safe.`);
+      process.exit(1);
+    }
     process.exit(0);
   } catch (err) {
     console.error("Fatal error:", err.message);

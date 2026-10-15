@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import {
   Box,
   Button,
@@ -24,6 +24,7 @@ import {
 } from "@mui/material";
 
 import moment from "moment";
+import { formatFileTimestamp } from "../../../utils/formatFileTimestamp";
 import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
@@ -346,11 +347,12 @@ const humanizeKey = (k) =>
     .replace(/_/g, " ")
     .replace(/^./, (c) => c.toUpperCase());
 
-const buildPoSearchUrl = (poNumber, lineItem, fiscalYear) => {
+const buildPoSearchUrl = (poNumber, lineItem, fiscalYear, fileTs) => {
   const params = new URLSearchParams();
   if (poNumber) params.set("PONo", poNumber);
   if (lineItem) params.set("poLineItem", lineItem);
   if (fiscalYear) params.set("year", fiscalYear);
+  if (fileTs) params.set("fileTs", fileTs);
   return `/search-data?${params.toString()}`;
 };
 
@@ -637,7 +639,8 @@ const TableAuditorView = ({ type, tableData = [], loading, comp }) => {
           return buildPoSearchUrl(
             row.po_number || row.documentNumber,
             row.po_material_number,
-            row.fiscalYear
+            row.fiscalYear,
+            row.source_file_ts
           );
         default:
           return "#";
@@ -663,15 +666,15 @@ const TableAuditorView = ({ type, tableData = [], loading, comp }) => {
     const poNumber = row.po_number || row.documentNumber;
     const lineItem = row.po_material_number;
     if (mode === "newtab") {
-      window.open(buildPoSearchUrl(poNumber, lineItem, row.fiscalYear), "_blank", "noopener,noreferrer");
+      window.open(buildPoSearchUrl(poNumber, lineItem, row.fiscalYear, row.source_file_ts), "_blank", "noopener,noreferrer");
     } else {
-      setPoPreview({ poNumber, lineItem, fiscalYear: row.fiscalYear });
+      setPoPreview({ poNumber, lineItem, fiscalYear: row.fiscalYear, source_file_ts: row.source_file_ts });
     }
   };
 
   const openFullSearchPage = (preview, newTab) => {
     if (!preview) return;
-    const url = buildPoSearchUrl(preview.poNumber, preview.lineItem, preview.fiscalYear);
+    const url = buildPoSearchUrl(preview.poNumber, preview.lineItem, preview.fiscalYear, preview.source_file_ts);
     if (newTab) {
       window.open(url, "_blank", "noopener,noreferrer");
     } else {
@@ -701,7 +704,7 @@ const TableAuditorView = ({ type, tableData = [], loading, comp }) => {
             <TableRow>
               <TableCell>Sr No</TableCell>
               {columns.map((col) => (
-                <TableCell key={col.key}>{col.label}</TableCell>
+                <Fragment key={col.key}><TableCell>{col.label}</TableCell>{type === "PO" && col.key === "po_number" && <TableCell>File Timestamp</TableCell>}</Fragment>
               ))}
               {type === "PJV" && <TableCell>View</TableCell>}
               {type === "NONPO" && <TableCell>View</TableCell>}
@@ -712,16 +715,16 @@ const TableAuditorView = ({ type, tableData = [], loading, comp }) => {
             {tableData?.length ? (
               tableData.map((row, index) => (
                 <TableRow
-                  key={index}
+                  key={type === "PO" ? `${row.po_number}:${row.po_line_item || ""}:${row.source_file_ts || ""}` : index}
                   hover={type === "PO"}
                   sx={type === "PO" ? { cursor: "pointer" } : undefined}
                   onClick={(e) => openRowMenu(e, row)}
                 >
                   <TableCell>{1 + index}</TableCell>
                   {columns.map((col) => (
-                    <TableCell key={col.key}>
+                    <Fragment key={col.key}><TableCell>
                       {col.render ? col.render(row) : row[col.key] || "-"}
-                    </TableCell>
+                    </TableCell>{type === "PO" && col.key === "po_number" && <TableCell sx={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatFileTimestamp(row.source_file_ts)}</TableCell>}</Fragment>
                   ))}
                   {type === "PJV" && (
                     <TableCell onClick={(e) => e.stopPropagation()}>

@@ -4,6 +4,10 @@ import {
   getRcOverlapDetail,
   getRcOverlapSummary,
 } from "./controller/rc-overlap-controller.js";
+import {
+  getPoStatusSummary,
+  getPoStatusDetail,
+} from "./controller/po-status-controller.js";
 import { downloadRcOverlapReport } from "./controller/rc-overlap-export-controller.js";
 import {
   login,
@@ -205,6 +209,22 @@ router.post(
   requireAuth,
   requireAnyOf("isAdmin"),
   reloadPointConfig,
+);
+
+router.post(
+  "/reports/po-status-summary",
+  requireAuth,
+  requireAnyOf("isAdmin", "isBuyer", "isProcurementManager", "isSsbDigital"),
+  getPoStatusSummary,
+);
+
+// Click-through detail for ONE PO (header points + line items) - used by the
+// PO-Wise Review Status table on the dashboard and on the PO Data page.
+router.post(
+  "/reports/po-status-detail",
+  requireAuth,
+  requireAnyOf("isAdmin", "isBuyer", "isProcurementManager", "isSsbDigital"),
+  getPoStatusDetail,
 );
 
 // --- Buyer point-level remarks (LINE-LEVEL) ---
