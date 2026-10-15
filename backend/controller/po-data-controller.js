@@ -23,6 +23,7 @@ import { buildPoRows } from "../utility/po-rows.js";
 const HEADER_ROW_SELECT = {
   id: true,
   po_number: true,
+  source_file_ts: true,
   vendor_code: true,
   purchase_group: true,
   po_type: true,
@@ -302,14 +303,14 @@ export const getPoHeaderWiseDetails = async (req, res) => {
     const remarkRows = rows.length
       ? await prisma.poHeaderRemark.findMany({
           where: { po_number: { in: rows.map((r) => r.po_number) } },
-          select: { po_number: true, pointNo: true },
+          select: { po_number: true, source_file_ts: true, pointNo: true },
         })
       : [];
     const remarkedByPo = new Map();
     for (const r of remarkRows) {
-      if (!remarkedByPo.has(r.po_number))
-        remarkedByPo.set(r.po_number, new Set());
-      remarkedByPo.get(r.po_number).add(Number(r.pointNo));
+      const key = `${r.po_number}\u0000${r.source_file_ts?.toISOString?.() || ""}`;
+      if (!remarkedByPo.has(key)) remarkedByPo.set(key, new Set());
+      remarkedByPo.get(key).add(Number(r.pointNo));
     }
 
     let results = rows.map((row) => {
@@ -321,12 +322,14 @@ export const getPoHeaderWiseDetails = async (req, res) => {
       ).length;
       const denom = verifiedPoints + notVerifiedPoints;
       const vendor = getVendorInfo(row.vendor_code);
+      const versionKey = `${row.po_number}\u0000${row.source_file_ts?.toISOString?.() || ""}`;
       const counts = analyseRecord(row.results, row.checkedPoints, [
-        ...(remarkedByPo.get(row.po_number) || []),
+        ...(remarkedByPo.get(versionKey) || []),
       ]);
 
       return {
         poNumber: row.po_number,
+        source_file_ts: row.source_file_ts?.toISOString?.() || null,
         vendorCode: row.vendor_code,
         vendorName: vendor?.name || getVendorName(row.vendor_code),
         poType: row.po_type,

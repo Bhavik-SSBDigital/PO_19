@@ -221,8 +221,25 @@ export const getPoStatusDetail = async (req, res) => {
 
     const where = buildWhere({ poNumber }, user);
     const requestedTs = req.body?.source_file_ts ? new Date(req.body.source_file_ts) : null;
-    const latestRow = requestedTs ? null : await prisma.auditResult.findFirst({ where, orderBy: { source_file_ts: "desc" }, select: { source_file_ts: true } });
-    const sourceFileTs = requestedTs || latestRow?.source_file_ts;
+    if (requestedTs && Number.isNaN(requestedTs.getTime())) {
+      return res.status(400).json({ message: "Invalid source_file_ts" });
+    }
+    const versionRows = await prisma.auditResult.findMany({
+      where: { ...where, source_file_ts: { not: null } },
+      select: { source_file_ts: true },
+      distinct: ["source_file_ts"],
+      orderBy: { source_file_ts: "desc" },
+    });
+    const availableSourceFileTimestamps = versionRows
+      .map((row) => row.source_file_ts)
+      .filter(Boolean);
+    if (
+      requestedTs &&
+      !availableSourceFileTimestamps.some((ts) => ts.getTime() === requestedTs.getTime())
+    ) {
+      return res.status(404).json({ message: "PO version not found for that file timestamp" });
+    }
+    const sourceFileTs = requestedTs || availableSourceFileTimestamps[0] || null;
     if (sourceFileTs) where.source_file_ts = sourceFileTs;
     const lines = await prisma.auditResult.findMany({
       where,
@@ -369,6 +386,7 @@ export const getPoStatusDetail = async (req, res) => {
     return res.status(200).json({
       poNumber,
       source_file_ts: sourceFileTs?.toISOString?.() || null,
+      available_source_file_timestamps: availableSourceFileTimestamps.map((ts) => ts.toISOString()),
       poStatus: poStatusOf(hCounts, lCounts),
       header: headerOut,
       lines: lineOut,

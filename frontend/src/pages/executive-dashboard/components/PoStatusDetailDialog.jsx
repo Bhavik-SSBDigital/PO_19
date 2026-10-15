@@ -12,6 +12,7 @@ import {
   DialogTitle,
   FormControlLabel,
   IconButton,
+  MenuItem,
   Switch,
   Tab,
   Table,
@@ -21,6 +22,7 @@ import {
   TableRow,
   Tabs,
   Typography,
+  TextField,
   alpha,
 } from "@mui/material";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
@@ -378,6 +380,7 @@ const PoStatusDetailDialog = ({
   const [error, setError] = useState("");
   const [onlyNv, setOnlyNv] = useState(true);
   const [refresh, setRefresh] = useState(0);
+  const [selectedTimestamp, setSelectedTimestamp] = useState(detail?.source_file_ts || "");
 
   const role =
     typeof window !== "undefined" ? localStorage.getItem("role") : "";
@@ -393,6 +396,10 @@ const PoStatusDetailDialog = ({
     if (poNumber) setTab(detail.tab || "header");
   }, [poNumber, detail?.tab]);
 
+  useEffect(() => {
+    setSelectedTimestamp(detail?.source_file_ts || "");
+  }, [poNumber, detail?.source_file_ts]);
+
   const lastPo = useRef(null);
   useEffect(() => {
     if (!poNumber) {
@@ -405,7 +412,10 @@ const PoStatusDetailDialog = ({
     lastPo.current = poNumber;
     setError("");
     setLoading(true);
-    post("/reports/po-status-detail", { poNumber, source_file_ts: detail?.source_file_ts })
+    post("/reports/po-status-detail", {
+      poNumber,
+      source_file_ts: selectedTimestamp || undefined,
+    })
       .then((res) => {
         if (!cancelled) setData(res);
       })
@@ -421,7 +431,7 @@ const PoStatusDetailDialog = ({
     return () => {
       cancelled = true;
     };
-  }, [poNumber, detail?.source_file_ts, version, refresh]);
+  }, [poNumber, selectedTimestamp, version, refresh]);
 
   // Called by the remark panel after add / delete / check. The numbers are
   // patched locally RIGHT AWAY; the refetch below only reconciles quietly.
@@ -510,6 +520,22 @@ const PoStatusDetailDialog = ({
             <CloseRoundedIcon />
           </IconButton>
         </Box>
+        {data?.available_source_file_timestamps?.length > 0 && (
+          <TextField
+            select
+            size="small"
+            label="PO file timestamp"
+            value={selectedTimestamp || data.source_file_ts || ""}
+            onChange={(event) => setSelectedTimestamp(event.target.value)}
+            sx={{ mt: 1, minWidth: 300 }}
+          >
+            {data.available_source_file_timestamps.map((timestamp, index) => (
+              <MenuItem key={timestamp} value={timestamp}>
+                {index === 0 ? "Latest — " : ""}{formatFileTimestamp(timestamp)}
+              </MenuItem>
+            ))}
+          </TextField>
+        )}
         <Tabs
           value={tab}
           onChange={(_, v) => setTab(v)}
