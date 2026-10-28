@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { hashAccessToken } from "./access-token.js";
 
 /**
  * Verifies a bearer token against the `tokens` table and returns the
@@ -17,12 +18,14 @@ export const verifyUser = async (accessToken) => {
   if (!accessToken) return "Unauthorized";
 
   const token = await prisma.token.findFirst({
-    where: { token: accessToken },
+    where: {
+      token: hashAccessToken(accessToken),
+      expiresAt: { gt: new Date() },
+    },
     include: { user: { include: { role: true } } },
   });
 
   if (!token || !token.user) return "Unauthorized";
-  if (token.expiresAt && token.expiresAt < new Date()) return "Unauthorized";
 
   const { user } = token;
   return {

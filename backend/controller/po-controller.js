@@ -18,6 +18,7 @@ import {
   getPurchaseGroupName,
   getPaymentTermDescription,
   getPoTypeName,
+  getPurchaseGroupCode,
 } from "../utility/master-data.js";
 import {
   ensurePointDefinitionsLoaded,
@@ -34,7 +35,7 @@ const REMARK_SUBMITTER_SELECT = {
   lastName: true,
 };
 
-function buildWhere(body = {}) {
+function buildWhere(body = {}, user = {}) {
   const and = [{ type: "PO" }];
 
   if (body.poNumber)
@@ -43,6 +44,15 @@ function buildWhere(body = {}) {
   if (body.fiscalYear) and.push({ fiscalYear: body.fiscalYear });
   if (body.poType) and.push({ po_type: body.poType });
   if (body.purchaseGroup) and.push({ purchase_group: body.purchaseGroup });
+  if (
+    user.isBuyer &&
+    !(user.isAdmin || user.isProcurementManager || user.isSsbDigital)
+  ) {
+    and.push({
+      purchase_group:
+        getPurchaseGroupCode(user.username) || "__no_group_assigned__",
+    });
+  }
   if (body.plant) and.push({ plant: body.plant });
 
   if (body.holdOnly === true || body.holdOnly === "true") {
@@ -311,10 +321,7 @@ const withExceptionPoints = async (row, user) => {
 // once, so header status AND buyer remarks are each fetched in a single
 // query instead of once per row.
 async function withExceptionPointsBatch(rows, user) {
-  const headerMap = await getHeadersForPos(
-    rows,
-    user,
-  );
+  const headerMap = await getHeadersForPos(rows, user);
   const remarksMap = await getRemarksMapForAuditResults(
     rows.map((r) => r.id),
     user,
@@ -371,7 +378,17 @@ export const get_po_audit_results = async (req, res) => {
       severity,
       notVerifiedPointNo,
     } = req.body || {};
-    const where = buildWhere(req.body || {});
+    if (
+      !(
+        user.isBuyer ||
+        user.isAdmin ||
+        user.isProcurementManager ||
+        user.isSsbDigital
+      )
+    ) {
+      return res.status(403).json({ message: "Not authorized" });
+    }
+    const where = buildWhere(req.body || {}, user);
     const take = Math.min(Number(pageSize) || 25, 200);
     const skip = (Math.max(Number(page) || 1, 1) - 1) * take;
 
@@ -435,8 +452,24 @@ export const get_po_audit_result = async (req, res) => {
   try {
     await Promise.all([ensureSeverityLoaded(), ensurePointDefinitionsLoaded()]);
     const user = req.user || {};
-    const { poMaterialNumber, id, po_number, po_line_item, fiscalYear, source_file_ts } =
-      req.body || {};
+    if (
+      !(
+        user.isBuyer ||
+        user.isAdmin ||
+        user.isProcurementManager ||
+        user.isSsbDigital
+      )
+    ) {
+      return res.status(403).json({ message: "Not authorized" });
+    }
+    const {
+      poMaterialNumber,
+      id,
+      po_number,
+      po_line_item,
+      fiscalYear,
+      source_file_ts,
+    } = req.body || {};
 
     if (!id && !poMaterialNumber && !po_number) {
       return res
@@ -464,6 +497,13 @@ export const get_po_audit_result = async (req, res) => {
         where.po_line_item = po_line_item;
       }
       if (fiscalYear) where.fiscalYear = fiscalYear;
+      if (
+        user.isBuyer &&
+        !(user.isAdmin || user.isProcurementManager || user.isSsbDigital)
+      ) {
+        where.purchase_group =
+          getPurchaseGroupCode(user.username) || "__no_group_assigned__";
+      }
 
       const result = await prisma.auditResult.findFirst({
         where,
@@ -485,6 +525,14 @@ export const get_po_audit_result = async (req, res) => {
           type: "PO",
           po_number: result.po_number,
           po_line_item: result.po_line_item,
+          ...(user.isBuyer &&
+          !(user.isAdmin || user.isProcurementManager || user.isSsbDigital)
+            ? {
+                purchase_group:
+                  getPurchaseGroupCode(user.username) ||
+                  "__no_group_assigned__",
+              }
+            : {}),
           source_file_ts: { not: null },
         },
         select: { source_file_ts: true },
@@ -517,6 +565,16 @@ export const get_po_lines = async (req, res) => {
   try {
     await Promise.all([ensureSeverityLoaded(), ensurePointDefinitionsLoaded()]);
     const user = req.user || {};
+    if (
+      !(
+        user.isBuyer ||
+        user.isAdmin ||
+        user.isProcurementManager ||
+        user.isSsbDigital
+      )
+    ) {
+      return res.status(403).json({ message: "Not authorized" });
+    }
     const { poNumber, source_file_ts } = req.body || {};
     if (!poNumber)
       return res.status(400).json({ message: "poNumber is required" });
@@ -525,8 +583,21 @@ export const get_po_lines = async (req, res) => {
     if (requestedTs && Number.isNaN(requestedTs.getTime())) {
       return res.status(400).json({ message: "Invalid source_file_ts" });
     }
+    const buyerScope =
+      user.isBuyer &&
+      !(user.isAdmin || user.isProcurementManager || user.isSsbDigital)
+        ? {
+            purchase_group:
+              getPurchaseGroupCode(user.username) || "__no_group_assigned__",
+          }
+        : {};
     const versionRows = await prisma.auditResult.findMany({
-      where: { type: "PO", po_number: poNumber, source_file_ts: { not: null } },
+      where: {
+        type: "PO",
+        po_number: poNumber,
+        ...buyerScope,
+        source_file_ts: { not: null },
+      },
       select: { source_file_ts: true },
       distinct: ["source_file_ts"],
       orderBy: { source_file_ts: "desc" },
@@ -536,13 +607,22 @@ export const get_po_lines = async (req, res) => {
       .filter(Boolean);
     if (
       requestedTs &&
-      !availableSourceFileTimestamps.some((ts) => ts.getTime() === requestedTs.getTime())
+      !availableSourceFileTimestamps.some(
+        (ts) => ts.getTime() === requestedTs.getTime(),
+      )
     ) {
-      return res.status(404).json({ message: "PO version not found for that file timestamp" });
+      return res
+        .status(404)
+        .json({ message: "PO version not found for that file timestamp" });
     }
     const selectedTs = requestedTs || availableSourceFileTimestamps[0] || null;
     const rows = await prisma.auditResult.findMany({
-      where: { type: "PO", po_number: poNumber, ...(selectedTs ? { source_file_ts: selectedTs } : {}) },
+      where: {
+        type: "PO",
+        po_number: poNumber,
+        ...buyerScope,
+        ...(selectedTs ? { source_file_ts: selectedTs } : {}),
+      },
       select: ROW_SELECT,
       orderBy: { po_line_item: "asc" },
     });
@@ -575,16 +655,16 @@ export const get_po_lines = async (req, res) => {
       };
     });
 
-    return res
-      .status(200)
-      .json({
-        poNumber,
-        source_file_ts: selectedTs?.toISOString?.() || null,
-        available_source_file_timestamps: availableSourceFileTimestamps.map((ts) => ts.toISOString()),
-        header,
-        total: lines.length,
-        lines,
-      });
+    return res.status(200).json({
+      poNumber,
+      source_file_ts: selectedTs?.toISOString?.() || null,
+      available_source_file_timestamps: availableSourceFileTimestamps.map(
+        (ts) => ts.toISOString(),
+      ),
+      header,
+      total: lines.length,
+      lines,
+    });
   } catch (error) {
     console.error("Error in get_po_lines:", error);
     return res.status(500).json({ message: "Failed to fetch PO lines" });

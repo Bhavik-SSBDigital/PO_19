@@ -2,6 +2,7 @@ import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import nodemailer from "nodemailer";
 import { prisma } from "../lib/prisma.js";
+import { hashAccessToken } from "../utility/access-token.js";
 
 import dotenv from "dotenv";
 dotenv.config();
@@ -724,7 +725,7 @@ export const login = async (req, res) => {
 
     await prisma.token.create({
       data: {
-        token: accessToken,
+        token: hashAccessToken(accessToken),
         userId: user.id,
       },
     });
@@ -799,7 +800,7 @@ export const logout = async (req, res) => {
     if (accessToken) {
       await prisma.token.deleteMany({
         where: {
-          token: accessToken,
+          token: hashAccessToken(accessToken),
         },
       });
     }

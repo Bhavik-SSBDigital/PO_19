@@ -1,27 +1,34 @@
 import { prisma } from "../lib/prisma.js";
+import { hashAccessToken } from "../utility/access-token.js";
 
 /**
- * Looks up the bearer token created in auth.controller.js's `login`, and
+ * Looks up the bearer token created in user-controller.js's `login`, and
  * attaches the RBAC flags to req.user so every downstream controller can
  * make authorization decisions off a trusted, server-side source instead
  * of anything the client sends in the request body.
  *
- * ADAPT ME: this assumes `prisma.token` has a relation back to `user`
- * (with `user.role` further relating to isAdmin/isBuyer/isProcurementManager,
- * exactly like login() in auth.controller.js already reads). Rename the
- * `include`/field below to match your actual Prisma schema if it differs.
+ * Role data is reloaded from the database on every request so revoking a
+ * role takes effect immediately. Expired sessions are never accepted.
  */
 export const requireAuth = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization || "";
-    const [scheme, accessToken] = authHeader.split(" ");
+    const [scheme, accessToken, ...extra] = authHeader.trim().split(/\s+/);
 
-    if (scheme !== "Bearer" || !accessToken) {
+    if (
+      scheme !== "Bearer" ||
+      !accessToken ||
+      extra.length ||
+      accessToken.length > 256
+    ) {
       return res.status(401).json({ message: "Missing access token" });
     }
 
     const tokenRow = await prisma.token.findFirst({
-      where: { token: accessToken },
+      where: {
+        token: hashAccessToken(accessToken),
+        expiresAt: { gt: new Date() },
+      },
       include: { user: { include: { role: true } } },
     });
 
@@ -38,6 +45,10 @@ export const requireAuth = async (req, res, next) => {
       isProcurementManager: !!u.role?.isProcurementManager,
       isSsbDigital: !!u.role?.isSsbDigital,
     };
+
+    if (!Object.values(req.user).some((value) => value === true)) {
+      return res.status(403).json({ message: "Not authorized" });
+    }
 
     next();
   } catch (error) {
