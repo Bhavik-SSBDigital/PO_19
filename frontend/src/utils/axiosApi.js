@@ -1,4 +1,5 @@
 import axios from "axios";
+import { attachAuthExpiryHandler } from "./handleAuthExpiry";
 
 // Base URL for the API
 const BASE_URL =
@@ -111,5 +112,7 @@ export const del = async (url) => {
     throw error;
   }
 };
+
+attachAuthExpiryHandler(axiosInstance);
 
 export default axiosInstance;
